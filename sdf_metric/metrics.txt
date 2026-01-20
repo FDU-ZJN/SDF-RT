@@ -1,0 +1,12 @@
+=== SDF Rendering Metrics ===
+Resolution: (480, 480)
+Total Pixels: 230400
+Active Pixels (Hits): 41884
+------------------------------
+1. SDF Stepping Metrics:
+  Average Steps (All Pixels):    2.9967
+  Average Steps (Active Pixels): 4.4263
+------------------------------
+2. BBOX Triangle Metrics (Narrow Phase Tests):
+  Average Tris Tested (All Pixels):    12.0984
+  Average Tris Tested (Active Pixels): 32.8535
