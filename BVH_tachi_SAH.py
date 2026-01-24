@@ -11,7 +11,7 @@ from datetime import datetime
 ti.init(arch=ti.gpu, kernel_profiler=True)
 
 # 常量
-RENDER_RES = (3840, 2160)
+RENDER_RES = (2160, 3840)
 BVH_STACK_SIZE = 64
 TRIHOLD = 1
 
@@ -21,6 +21,8 @@ class BunnyBVHRenderer:
         # 1. 加载并归一化模型
         print(f"Loading model: {obj_path}...")
         self.mesh = trimesh.load(obj_path)
+        R = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
+        self.mesh.apply_transform(R)
         self.mesh.apply_translation(-self.mesh.centroid)
         scale = 1.8 / np.max(self.mesh.extents)
         self.mesh.apply_scale(scale)
@@ -204,7 +206,7 @@ class BunnyBVHRenderer:
                 # 计算左右子盒子的距离
                 hit_l, t_l = self.aabb_intersect_dist(ro, rd, self.bvh_nodes_min[idx_left], self.bvh_nodes_max[idx_left])
                 hit_r, t_r = self.aabb_intersect_dist(ro, rd, self.bvh_nodes_min[idx_right], self.bvh_nodes_max[idx_right])
-                
+                aabb_cnt += 2
                 # 逻辑：只压入相交且距离小于当前 min_t 的盒子
                 # 且保证更近的盒子放在栈顶（即最后压入）
                 if hit_l and t_l > min_t: hit_l = False
@@ -250,7 +252,7 @@ def create_video(frame_dir, output_name, fps=24):
     video.release()
 
 if __name__ == "__main__":
-    obj_file = 'bunny_10k.obj'
+    obj_file = 'shouban.obj'
     if not os.path.exists(obj_file):
         print(f"Error: {obj_file} not found.")
     else:
@@ -351,4 +353,4 @@ if __name__ == "__main__":
         print(f"Report Saved to: {log_path}")
         print("="*50)
 
-        create_video(frame_dir, "bunny_analysis.mp4")
+        # create_video(frame_dir, "shouban_BVH.mp4")

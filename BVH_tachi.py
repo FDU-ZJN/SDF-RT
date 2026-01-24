@@ -11,7 +11,7 @@ from datetime import datetime
 ti.init(arch=ti.gpu, kernel_profiler=True)
 
 # 常量
-RENDER_RES = (3840, 2160)
+RENDER_RES = (2160, 3840)
 BVH_STACK_SIZE = 64
 TRIHOLD = 8
 
@@ -21,6 +21,8 @@ class BunnyBVHRenderer:
         # 1. 加载并归一化模型
         print(f"Loading model: {obj_path}...")
         self.mesh = trimesh.load(obj_path)
+        R = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
+        self.mesh.apply_transform(R)
         self.mesh.apply_translation(-self.mesh.centroid)
         scale = 1.8 / np.max(self.mesh.extents)
         self.mesh.apply_scale(scale)
@@ -181,7 +183,7 @@ def create_video(frame_dir, output_name, fps=24):
     video.release()
 
 if __name__ == "__main__":
-    obj_file = 'bunny_10k.obj'
+    obj_file = 'shouban.obj'
     if not os.path.exists(obj_file):
         print(f"Error: {obj_file} not found.")
     else:
@@ -232,8 +234,8 @@ if __name__ == "__main__":
             max_tri_overall = max(max_tri_overall, int(np.max(tri_np)))
             
             # 保存渲染图
-            img_np = (renderer.image.to_numpy().swapaxes(0, 1) * 255).astype(np.uint8)
-            cv2.imwrite(os.path.join(frame_dir, f"frame_{f:03d}.png"), cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+            # img_np = (renderer.image.to_numpy().swapaxes(0, 1) * 255).astype(np.uint8)
+            # cv2.imwrite(os.path.join(frame_dir, f"frame_{f:03d}.png"), cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
             
             if f % 10 == 0:
                 print(f"Frame {f} | Time: {(k_end-k_start)*1000:.2f}ms | Active Tri: {avg_active_tri:.1f}")
@@ -282,4 +284,4 @@ if __name__ == "__main__":
         print(f"Report Saved to: {log_path}")
         print("="*50)
 
-        create_video(frame_dir, "bunny_analysis.mp4")
+        # create_video(frame_dir, "shouban_BVH.mp4")

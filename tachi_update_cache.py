@@ -19,7 +19,7 @@ MAX_STEPS = 300
 
 @ti.data_oriented
 class BunnyNestedVoxelRenderer:
-    def __init__(self, obj_path, cache_path="bunny_sdf_cache_v3.npz"):
+    def __init__(self, obj_path, cache_path="shouban_cache_v1.npz"):
         self.obj_path = obj_path
         self.cache_path = cache_path
         
@@ -70,7 +70,6 @@ class BunnyNestedVoxelRenderer:
         self.block_tri_count = ti.field(ti.i32, shape=(num_active, SUB_RES, SUB_RES, SUB_RES))
         self.block_tri_offset = ti.field(ti.i32, shape=(num_active, SUB_RES, SUB_RES, SUB_RES))
         
-        # --- 2. 计算 AABB 并分配 ---
         temp_grid = {}
         grid_to_active = self.cell_index_map.to_numpy()
         # 每个 sub-cell 的物理尺寸
@@ -640,7 +639,7 @@ def create_video(frame_dir, output_name, fps=24):
             "avg_tris_active": avg_tris_active
         }
 if __name__ == "__main__":
-    obj_file = 'bunny_10k.obj'
+    obj_file = 'shouban.obj'
     renderer = BunnyNestedVoxelRenderer(obj_file)
     
     frame_dir = "frames/sdf_rt"
