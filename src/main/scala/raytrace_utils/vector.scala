@@ -4,8 +4,8 @@ import chisel3.util._
 import raytrace_utils.fudian._
 class DotProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
-    val a = Input(new Vec3(cfg.totalWidth))
-    val b = Input(new Vec3(cfg.totalWidth))
+    val a = Input(new Vec3(cfg))
+    val b = Input(new Vec3(cfg))
     val rm = Input(UInt(3.W))
     val res = Output(UInt(cfg.totalWidth.W))
     val fflags = Output(UInt(5.W))
@@ -41,11 +41,11 @@ class DotProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 }
 class CrossProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
-    val a = Input(new Vec3(cfg.totalWidth))
-    val b = Input(new Vec3(cfg.totalWidth))
+    val a = Input(new Vec3(cfg))
+    val b = Input(new Vec3(cfg))
     val rm = Input(UInt(3.W))
 
-    val res = Output(new Vec3(cfg.totalWidth))
+    val res = Output(new Vec3(cfg))
     val fflags = Output(UInt(5.W))
   })
 

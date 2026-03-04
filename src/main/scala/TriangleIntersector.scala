@@ -6,14 +6,18 @@ import chisel3.util._
 
 class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
-    val orig, dir = Input(new Vec3(cfg.totalWidth))
-    val v0, v1, v2 = Input(new Vec3(cfg.totalWidth))
+    val ray      = Input(new Ray(cfg))
+    val tri      = Input(new Triangle(cfg))
     val in_valid = Input(Bool())
     val hit = Output(Bool())
     val t, u, v = Output(UInt(cfg.totalWidth.W))
     val out_valid = Output(Bool())
   })
-
+  val v0=io.tri.v0
+  val v1=io.tri.v1
+  val v2=io.tri.v2
+  val orig = io.ray.origin
+  val dir = io.ray.dir
   val latMUL = 3
   val latADD = 2
   val latDIV = 6
@@ -23,7 +27,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
 
   // ---------------- Stage A (T0→T2) ----------------
   def vecSub(a: Vec3, b: Vec3): Vec3 = {
-    val res = Wire(new Vec3(cfg.totalWidth))
+    val res = Wire(new Vec3(cfg))
     val subs = Seq.fill(3)(Module(new FADD(cfg)))
     val as = Seq(a.x, a.y, a.z)
     val bs = Seq(b.x, b.y, b.z)
@@ -40,11 +44,11 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     res
   }
 
-  val e1 = vecSub(io.v1, io.v0)
-  val e2 = vecSub(io.v2, io.v0)
-  val s  = vecSub(io.orig, io.v0)
+  val e1 = vecSub(v1, v0)
+  val e2 = vecSub(v2, v0)
+  val s  = vecSub(orig, v0)
 
-  val dir_d2 = ShiftRegister(io.dir, latADD)
+  val dir_d2 = ShiftRegister(dir, latADD)
 
   // ---------------- Stage B (T2→T7) ----------------
   val cp_p = Module(new CrossProductUnit(cfg))
@@ -145,7 +149,11 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
 
   val u_pos = !u_d26(cfg.totalWidth-1)
   val v_pos = !v_d26(cfg.totalWidth-1)
-  val uv_le_one = uv_sum <= fp_one || uv_sum === fp_one
+  val fcmp_uv = Module(new FCMP(cfg))
+    fcmp_uv.io.a := uv_sum
+    fcmp_uv.io.b := fp_one
+    fcmp_uv.io.signaling := false.B
+    val uv_le_one = fcmp_uv.io.le|fcmp_uv.io.eq
   val t_pos = !t_d26(cfg.totalWidth-1)
 
 

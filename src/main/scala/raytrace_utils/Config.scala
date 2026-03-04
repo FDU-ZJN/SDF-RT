@@ -1,5 +1,7 @@
 package raytrace_utils
 
+import chisel3._
+
 case class FloatConfig(
                         expWidth: Int,
                         precision: Int,
@@ -21,3 +23,9 @@ object FloatConfig {
   def FP32 = FloatConfig(8, 24, fmulLatency = 3, faddLatency = 2)
   def FP16 = FloatConfig(5, 11, fmulLatency = 2, faddLatency = 1)
 }
+case class TriPeConfig(
+                      numPEs: Int = 4,        // 块大小/PE 数量
+                      addrWidth: Int = 32,
+                      cfg: FloatConfig = FloatConfig.FP32
+                    )
+

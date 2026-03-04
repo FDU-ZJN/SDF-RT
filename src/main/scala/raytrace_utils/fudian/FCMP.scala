@@ -2,8 +2,10 @@ package raytrace_utils.fudian
 
 import chisel3._
 import chisel3.util._
-
-class FCMP(val expWidth: Int, val precision: Int) extends Module {
+import raytrace_utils.FloatConfig
+class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
+  val expWidth=cfg.expWidth
+  val precision=cfg.precision
   val io = IO(new Bundle() {
     val a, b = Input(UInt((expWidth + precision).W))
     val signaling = Input(Bool())

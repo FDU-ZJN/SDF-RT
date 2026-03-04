@@ -117,21 +117,21 @@ void runTestCase(VRayTriangleIntersection* dut, VerilatedVcdC* tfp,
     dut->reset = 0;
 
     // --- 2. 设置输入驱动 ---
-    dut->io_orig_x = floatToUint32(orig[0]);
-    dut->io_orig_y = floatToUint32(orig[1]);
-    dut->io_orig_z = floatToUint32(orig[2]);
-    dut->io_dir_x  = floatToUint32(dir[0]);
-    dut->io_dir_y  = floatToUint32(dir[1]);
-    dut->io_dir_z  = floatToUint32(dir[2]);
-    dut->io_v0_x   = floatToUint32(v0[0]);
-    dut->io_v0_y   = floatToUint32(v0[1]);
-    dut->io_v0_z   = floatToUint32(v0[2]);
-    dut->io_v1_x   = floatToUint32(v1[0]);
-    dut->io_v1_y   = floatToUint32(v1[1]);
-    dut->io_v1_z   = floatToUint32(v1[2]);
-    dut->io_v2_x   = floatToUint32(v2[0]);
-    dut->io_v2_y   = floatToUint32(v2[1]);
-    dut->io_v2_z   = floatToUint32(v2[2]);
+    dut->io_ray_origin_x = floatToUint32(orig[0]);
+    dut->io_ray_origin_y = floatToUint32(orig[1]);
+    dut->io_ray_origin_z = floatToUint32(orig[2]);
+    dut->io_ray_dir_x  = floatToUint32(dir[0]);
+    dut->io_ray_dir_y  = floatToUint32(dir[1]);
+    dut->io_ray_dir_z  = floatToUint32(dir[2]);
+    dut->io_tri_v0_x   = floatToUint32(v0[0]);
+    dut->io_tri_v0_y   = floatToUint32(v0[1]);
+    dut->io_tri_v0_z   = floatToUint32(v0[2]);
+    dut->io_tri_v1_x   = floatToUint32(v1[0]);
+    dut->io_tri_v1_y   = floatToUint32(v1[1]);
+    dut->io_tri_v1_z   = floatToUint32(v1[2]);
+    dut->io_tri_v2_x   = floatToUint32(v2[0]);
+    dut->io_tri_v2_y   = floatToUint32(v2[1]);
+    dut->io_tri_v2_z   = floatToUint32(v2[2]);
     
 
     // --- 3. 运行仿真驱动流水线 ---
