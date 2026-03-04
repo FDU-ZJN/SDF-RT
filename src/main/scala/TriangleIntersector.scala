@@ -153,7 +153,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     fcmp_uv.io.a := uv_sum
     fcmp_uv.io.b := fp_one
     fcmp_uv.io.signaling := false.B
-    val uv_le_one = fcmp_uv.io.le|fcmp_uv.io.eq
+    val uv_le_one = fcmp_uv.io.le
   val t_pos = !t_d26(cfg.totalWidth-1)
 
 
@@ -164,8 +164,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   io.u := Mux(det_is_zero_d26, 0.U, u_d26)
   io.v := Mux(det_is_zero_d26, 0.U, v_d26)
 }
-
-object RayTriangleIntersectionGen extends App {
-  val cfg = FloatConfig.FP32
-  emitVerilog(new RayTriangleIntersection(cfg), Array("--target-dir", "build"))
+object TriangleIntersectionGen extends App {
+  emitVerilog(new RayTriangleIntersection(FloatConfig.FP32), Array("--target-dir", "build"))
 }

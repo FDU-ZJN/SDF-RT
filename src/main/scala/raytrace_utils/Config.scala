@@ -25,7 +25,7 @@ object FloatConfig {
 }
 case class TriPeConfig(
                       numPEs: Int = 4,        // 块大小/PE 数量
-                      addrWidth: Int = 32,
+                      addrWidth: Int = 20,
                       cfg: FloatConfig = FloatConfig.FP32
                     )
 
