@@ -1,3 +1,13 @@
 *.mp4
 *.png
 *.npz
+*.bin
+*.vcd
+*.sv
+*.wlf
+target/
+build/
+.idea/
+.vscode/
+test_run_dir/
+.*/
