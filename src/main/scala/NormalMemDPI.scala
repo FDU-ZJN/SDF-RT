@@ -3,7 +3,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
-class NormalMemDPI(val addrWidth: Int = 32) extends BlackBox with HasBlackBoxInline {
+class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInline {
   val bytesPerNormal = 3 * 4 // 3 floats * 4 bytes
   val totalBits = bytesPerNormal * 8
 

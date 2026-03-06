@@ -21,7 +21,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val output_ready = Output(Bool())
     val out_best_hit = Output(Bool())
     val hit_id       = Output(UInt(c.addrWidth.W))
-    val out_done     = Output(Valid(Bool()))
+    val out_done     = Output(Bool())
   })
 
   // ============================================================
@@ -189,6 +189,5 @@ class TriPE(val c: TriPeConfig) extends Module {
     (RegNext(state) === s_FINISHING &&
       state === s_IDLE)
 
-  io.out_done.valid := done_pulse
-  io.out_done.bits  := global_has_hit
+  io.out_done := done_pulse
 }

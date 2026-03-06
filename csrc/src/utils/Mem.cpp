@@ -74,7 +74,26 @@ extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
         }
     }
 }
+extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
+    if (data == nullptr) return;
+    auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
+    if (out == nullptr) return;
 
+    const int totalBytes = svSize(data, 1);
+    if (totalBytes < 12) {
+        return; 
+    }
+    std::memset(out, 0, static_cast<size_t>(totalBytes));
+    if (addr < 0 || static_cast<size_t>(addr) >= normals.size()) {
+        return;
+    }
+    const std::array<float, 3>& n = normals[static_cast<size_t>(addr)];
+    // std::printf("[DPI-C DEBUG] Normal Read - Addr: %d | NX: %.4f | NY: %.4f | NZ: %.4f\n", 
+    //             addr, n[0], n[1], n[2]);
+    writeU32LE(out + 0,  floatToRawU32(n[0])); // x
+    writeU32LE(out + 4,  floatToRawU32(n[1])); // y
+    writeU32LE(out + 8,  floatToRawU32(n[2])); // z
+}
 void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,

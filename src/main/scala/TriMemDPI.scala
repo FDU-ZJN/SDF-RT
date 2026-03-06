@@ -19,7 +19,6 @@ class TriangleMemDPI(val c: TriPeConfig) extends BlackBox with HasBlackBoxInline
     val addr_q = Output(UInt(c.addrWidth.W))
   })
 
-  // 这里的 String Interpolation 会根据 c.numPEs 自动填充数值
   val svCode =
     s"""
        |import "DPI-C" function void tri_mem_read(input int addr, output byte data[]);

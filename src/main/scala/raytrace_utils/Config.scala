@@ -18,7 +18,7 @@ case class FloatConfig(
   val sigWidth = precision
   val oneHex = "3F800000"
   val oneBigInt = BigInt(oneHex, 16)
-  val addrWidth = 16
+  val addrWidth = 32
 }
 
 object FloatConfig {
@@ -28,7 +28,7 @@ object FloatConfig {
 }
 case class TriPeConfig(
                       numPEs: Int = 4,        // 块大小/PE 数量
-                      addrWidth: Int = 16,
+                      addrWidth: Int = 32,
                       cfg: FloatConfig = FloatConfig.FP32
                     )
 

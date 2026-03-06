@@ -4,13 +4,6 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 
-package sdf_rt
-
-import chisel3._
-import chisel3.util._
-import raytrace_utils._
-import raytrace_utils.fudian._
-
 class RenderStage(cfg: FloatConfig) extends Module {
   val io = IO(new Bundle {
     // 来自上游（例如求交模块）的碰撞信息
@@ -21,6 +14,7 @@ class RenderStage(cfg: FloatConfig) extends Module {
     // 输出到下游（例如 FrameBuffer 或像素写回）
     val out_rgb   = Output(new Vec3(cfg))
     val out_valid = Output(Bool())
+    val out_id    = Output(UInt(cfg.addrWidth.W))
   })
   // 1. 实例化核心计算单元 (PE)
   val pe = Module(new RenderPE(cfg))
@@ -50,4 +44,5 @@ class RenderStage(cfg: FloatConfig) extends Module {
   // C. 输出最终计算结果
   io.out_rgb   := pe.io.out_rgb
   io.out_valid := pe.io.out_valid
+  io.out_id    := pe.io.out_id
 }
