@@ -3,46 +3,43 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
-class TriangleMemDPI(val c: TriPeConfig) extends BlackBox with HasBlackBoxInline {
-  // 计算单个三角形的字节数：3顶点 * 3坐标 * (位宽/8)
-  val bytesPerTri = 3 * 3 * (c.cfg.totalWidth / 8)
-  val totalBytes = c.numPEs * bytesPerTri
-  val totalBits = totalBytes * 8
+class NormalMemDPI(val addrWidth: Int = 32) extends BlackBox with HasBlackBoxInline {
+  val bytesPerNormal = 3 * 4 // 3 floats * 4 bytes
+  val totalBits = bytesPerNormal * 8
 
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val addr = Input(UInt(c.addrWidth.W))
+    val addr = Input(UInt(addrWidth.W))
     val en = Input(Bool())
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val addr_q = Output(UInt(c.addrWidth.W))
+    val addr_q = Output(UInt(addrWidth.W))
   })
 
-  // 这里的 String Interpolation 会根据 c.numPEs 自动填充数值
   val svCode =
     s"""
-       |import "DPI-C" function void tri_mem_read(input int addr, output byte data[]);
+       |import "DPI-C" function void normal_mem_read(input int addr, output byte data[]);
        |
-       |module TriangleMemDPI (
+       |module NormalMemDPI (
        |    input clk,
        |    input reset,
-       |    input [${c.addrWidth - 1}:0] addr,
+       |    input [${addrWidth - 1}:0] addr,
        |    input en,
        |    output [${totalBits - 1}:0] data,
        |    output reg valid,
-       |    output reg [${c.addrWidth - 1}:0] addr_q
+       |    output reg [${addrWidth - 1}:0] addr_q
        |);
-       |    byte raw_buffer[${totalBytes}];
+       |    byte raw_buffer[${bytesPerNormal}];
        |
        |    always @(posedge clk) begin
        |        if (reset) begin
        |            valid  <= 1'b0;
        |            addr_q <= '0;
        |        end else if (en) begin
-       |            tri_mem_read(addr, raw_buffer);
+       |            normal_mem_read(addr, raw_buffer);
        |            valid  <= 1'b1;
-       |            addr_q <= addr;   // 打一拍
+       |            addr_q <= addr;
        |        end else begin
        |            valid <= 1'b0;
        |        end
@@ -50,7 +47,7 @@ class TriangleMemDPI(val c: TriPeConfig) extends BlackBox with HasBlackBoxInline
        |
        |    genvar i;
        |    generate
-       |        for (i = 0; i < ${totalBytes}; i = i + 1) begin
+       |        for (i = 0; i < ${bytesPerNormal}; i = i + 1) begin
        |            assign data[i*8 +: 8] = raw_buffer[i];
        |        end
        |    endgenerate
@@ -58,5 +55,5 @@ class TriangleMemDPI(val c: TriPeConfig) extends BlackBox with HasBlackBoxInline
        |endmodule
   """.stripMargin
 
-  setInline("TriangleMemDPI.sv", svCode)
+  setInline("NormalMemDPI.sv", svCode)
 }

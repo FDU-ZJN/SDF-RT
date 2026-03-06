@@ -12,6 +12,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     val hit = Output(Bool())
     val t, u, v = Output(UInt(cfg.totalWidth.W))
     val out_valid = Output(Bool())
+    val id       = Output(UInt(cfg.addrWidth.W))
   })
   val v0=io.tri.v0
   val v1=io.tri.v1
@@ -142,6 +143,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   // 总延迟修正为 26
   val totalLatency = 26
   val out_valid_final = ShiftRegister(io.in_valid, totalLatency)
+  io.id:=ShiftRegister(io.tri.id, totalLatency)
   io.out_valid := out_valid_final
 
   // ---------------- Hit 判断 ----------------
@@ -163,7 +165,4 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   io.t := Mux(det_is_zero_d26, 0.U, t_d26)
   io.u := Mux(det_is_zero_d26, 0.U, u_d26)
   io.v := Mux(det_is_zero_d26, 0.U, v_d26)
-}
-object TriangleIntersectionGen extends App {
-  emitVerilog(new RayTriangleIntersection(FloatConfig.FP32), Array("--target-dir", "build"))
 }

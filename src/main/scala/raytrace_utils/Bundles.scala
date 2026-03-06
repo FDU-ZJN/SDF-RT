@@ -17,6 +17,7 @@ class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val v0 = new Vec3(cfg)
   val v1 = new Vec3(cfg)
   val v2 = new Vec3(cfg)
+  val id = UInt(cfg.addrWidth.W)
 }
 
 class TriangleBlock(val c: TriPeConfig) extends Bundle {

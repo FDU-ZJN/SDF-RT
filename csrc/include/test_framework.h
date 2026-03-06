@@ -8,11 +8,11 @@
 #include <iomanip>
 
 #include "verilated.h"
-#include "VRayTriangleIntersection.h"
 #include "verilated_vcd_c.h"
 
 // Test result structure
-struct TestResult {
+struct TestResult
+{
     bool pass;
     int test_case;
     std::string description;
@@ -23,7 +23,8 @@ struct TestResult {
 };
 
 // Test framework class
-class TestFramework {
+class TestFramework
+{
 public:
     TestFramework();
     ~TestFramework();
@@ -34,20 +35,7 @@ public:
     // Cleanup
     void cleanup();
 
-    // Run a single test case
-    void runTestCase(VRayTriangleIntersection* dut, VerilatedVcdC* tfp, int id, 
-                 const std::string& description, 
-                 const float orig[3], const float dir[3], // 改为 const
-                 const float v0[3], const float v1[3], const float v2[3]);
-
-    // Print test summary
-    void printSummary(const std::string& filename = "test_results.log");
-
-    // Get test results
-    const std::vector<TestResult>& getResults() const;
-
 private:
-    std::vector<TestResult> test_results;
     vluint64_t main_time;
 };
 

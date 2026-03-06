@@ -11,11 +11,14 @@ case class FloatConfig(
                       ) {
   val totalWidth = expWidth + precision
   val fmacLatency=fmulLatency+faddLatency
+  val fdotLatency=fmulLatency+faddLatency+faddLatency
+  val fcrossLatency=fmulLatency+faddLatency
   val bias = (1 << (expWidth - 1)) - 1
   val maxExp = (1 << expWidth) - 1
   val sigWidth = precision
   val oneHex = "3F800000"
   val oneBigInt = BigInt(oneHex, 16)
+  val addrWidth = 16
 }
 
 object FloatConfig {
@@ -25,7 +28,7 @@ object FloatConfig {
 }
 case class TriPeConfig(
                       numPEs: Int = 4,        // 块大小/PE 数量
-                      addrWidth: Int = 20,
+                      addrWidth: Int = 16,
                       cfg: FloatConfig = FloatConfig.FP32
                     )
 
