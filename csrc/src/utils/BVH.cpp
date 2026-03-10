@@ -1,7 +1,9 @@
+
 #include <BVH.h>
 #include <Mem.h>
 #include <iostream>
 #include <cstring>
+#include <algorithm>
 
 BVH globalBVH;
 
@@ -84,87 +86,66 @@ bool BVH::rayAABBIntersect(const float orig[3], const float dir[3],
 // Build BVH recursively with midpoint splitting
 int BVH::buildRecursive(int start, int end, int depth)
 {
-    if (start >= end) {
-        return -1;
-    }
-    
+    if (start >= end) return -1;
+
     int nodeIdx = static_cast<int>(nodes.size());
     nodes.emplace_back();
-    BVHNode& node = nodes[nodeIdx];
-    
-    // Compute AABB for all triangles in this range
+
+    // 不要在这里持有 BVHNode& 引用！先做完递归再赋值
+
+    // 计算 AABB
     AABB bounds;
+    for (int i = 0; i < 3; ++i) {
+        bounds.min[i] = +1e30f;
+        bounds.max[i] = -1e30f;
+    }
     for (int i = start; i < end; ++i) {
         const Triangle& tri = triangles[triIndices[i]];
-        for (int j = 0; j < 3; ++j) {
-            bounds.min[0] = std::min(bounds.min[0], tri.v0[j]);
-            bounds.min[1] = std::min(bounds.min[1], tri.v0[j]);
-            bounds.min[2] = std::min(bounds.min[2], tri.v0[j]);
-            bounds.max[0] = std::max(bounds.max[0], tri.v0[j]);
-            bounds.max[1] = std::max(bounds.max[1], tri.v0[j]);
-            bounds.max[2] = std::max(bounds.max[2], tri.v0[j]);
-            
-            bounds.min[0] = std::min(bounds.min[0], tri.v1[j]);
-            bounds.min[1] = std::min(bounds.min[1], tri.v1[j]);
-            bounds.min[2] = std::min(bounds.min[2], tri.v1[j]);
-            bounds.max[0] = std::max(bounds.max[0], tri.v1[j]);
-            bounds.max[1] = std::max(bounds.max[1], tri.v1[j]);
-            bounds.max[2] = std::max(bounds.max[2], tri.v1[j]);
-            
-            bounds.min[0] = std::min(bounds.min[0], tri.v2[j]);
-            bounds.min[1] = std::min(bounds.min[1], tri.v2[j]);
-            bounds.min[2] = std::min(bounds.min[2], tri.v2[j]);
-            bounds.max[0] = std::max(bounds.max[0], tri.v2[j]);
-            bounds.max[1] = std::max(bounds.max[1], tri.v2[j]);
-            bounds.max[2] = std::max(bounds.max[2], tri.v2[j]);
+        for (int axis = 0; axis < 3; ++axis) {
+            bounds.min[axis] = std::min({bounds.min[axis], tri.v0[axis], tri.v1[axis], tri.v2[axis]});
+            bounds.max[axis] = std::max({bounds.max[axis], tri.v0[axis], tri.v1[axis], tri.v2[axis]});
         }
     }
-    
-    node.bounds = bounds;
-    
+
+    nodes[nodeIdx].bounds = bounds;
+
     int count = end - start;
-    
-    // Leaf node
+
     if (count <= 4) {
-        node.left = -1;
-        node.right = -1;
-        node.triStart = start;
-        node.triCount = count;
+        nodes[nodeIdx].left     = -1;
+        nodes[nodeIdx].right    = -1;
+        nodes[nodeIdx].triStart = start;
+        nodes[nodeIdx].triCount = count;
         return nodeIdx;
     }
-    
-    // Choose split axis (largest extent)
+
+    // 选轴、分割...
     float dx = bounds.max[0] - bounds.min[0];
     float dy = bounds.max[1] - bounds.min[1];
     float dz = bounds.max[2] - bounds.min[2];
     int axis = 0;
     if (dy > dx) axis = 1;
     if (dz > (axis == 0 ? dx : dy)) axis = 2;
-    
-    // Midpoint split
-    float splitPos = bounds.min[axis] + (bounds.max[axis] - bounds.min[axis]) * 0.5f;
-    
-    // Partition triangles
+
+    float splitPos = (bounds.min[axis] + bounds.max[axis]) * 0.5f;
     int mid = start;
     for (int i = start; i < end; ++i) {
         const Triangle& tri = triangles[triIndices[i]];
         float triCenter = (tri.v0[axis] + tri.v1[axis] + tri.v2[axis]) / 3.0f;
-        if (triCenter < splitPos) {
-            std::swap(triIndices[i], triIndices[mid]);
-            ++mid;
-        }
+        if (triCenter < splitPos) std::swap(triIndices[i], triIndices[mid++]);
     }
-    
-    // Prevent degenerate splits
-    if (mid == start || mid == end) {
-        mid = start + count / 2;
-    }
-    
-    node.left = buildRecursive(start, mid, depth + 1);
-    node.right = buildRecursive(mid, end, depth + 1);
-    node.triStart = -1;
-    node.triCount = 0;
-    
+    if (mid <= start) mid = start + 1;
+    else if (mid >= end) mid = end - 1;
+
+    // 递归完成后，nodes 可能已扩容，必须用 nodes[nodeIdx] 访问
+    int leftIdx  = buildRecursive(start, mid, depth + 1);
+    int rightIdx = buildRecursive(mid, end,   depth + 1);
+
+    nodes[nodeIdx].left     = leftIdx;   // ← 递归结束后再赋值，安全
+    nodes[nodeIdx].right    = rightIdx;
+    nodes[nodeIdx].triStart = -1;
+    nodes[nodeIdx].triCount = 0;
+
     return nodeIdx;
 }
 
@@ -176,7 +157,6 @@ void BVH::build(const std::vector<Triangle>& tris)
     
     nodes.clear();
     triIndices.clear();
-    
     // Initialize triangle index list
     triIndices.resize(tris.size());
     for (size_t i = 0; i < tris.size(); ++i) {
@@ -192,74 +172,89 @@ void BVH::build(const std::vector<Triangle>& tris)
 void BVH::queryNode(int nodeIdx, const float orig[3], const float dir[3],
                     float& bestT, int& bestTriId)
 {
-    if (nodeIdx < 0 || nodeIdx >= static_cast<int>(nodes.size())) {
-        return;
-    }
+    std::vector<std::pair<int, float>> stack;
+    stack.push_back({nodeIdx, 0.0f});
     
-    const BVHNode& node = nodes[nodeIdx];
-    
-    // Ray-AABB intersection test with pruning
-    float tAABB;
-    if (!rayAABBIntersect(orig, dir, node.bounds, tAABB)) {
-        return;
-    }
-    
-    // Prune if this node's closest point is farther than current best
-    if (bestT >= 0.0f && tAABB >= bestT) {
-        return;
-    }
-    
-    // Leaf node - test all triangles
-    if (node.left < 0 && node.right < 0) {
-        for (int i = 0; i < node.triCount; ++i) {
-            int triIdx = triIndices[node.triStart + i];
-            float t;
-            if (rayTriangleIntersect(orig, dir, triangles[triIdx], t)) {
-                if (t < bestT || bestT < 0.0f) {
-                    bestT = t;
-                    bestTriId = triIdx;
+    while (!stack.empty()) {
+        auto [curIdx, curDist] = stack.back();
+        stack.pop_back();
+        
+        // Validate node index
+        if (curIdx < 0 || curIdx >= static_cast<int>(nodes.size())) {
+            continue;
+        }
+        
+        const BVHNode& node = nodes[curIdx];
+        
+        // Ray-AABB intersection test with pruning
+        float tAABB;
+        if (!rayAABBIntersect(orig, dir, node.bounds, tAABB)) {
+            continue;
+        }
+        
+        // Prune if this node's closest point is farther than current best
+        if (bestT >= 0.0f && tAABB >= bestT) {
+            continue;
+        }
+        
+        // Leaf node - test all triangles
+        if (node.left < 0 && node.right < 0) {
+            for (int i = 0; i < node.triCount; ++i) {
+                int triIdx = triIndices[node.triStart + i];
+                float t;
+                if (rayTriangleIntersect(orig, dir, triangles[triIdx], t)) {
+                    if (t < bestT || bestT < 0.0f) {
+                        bestT = t;
+                        bestTriId = triIdx;
+                    }
                 }
             }
+            continue;
         }
-        return;
-    }
-    
-    // Internal node - traverse children in order of ray intersection distance
-    // First, compute ray-AABB distances for both children
-    float tLeft = 1e9f, tRight = 1e9f;
-    bool hitLeft = false, hitRight = false;
-    
-    if (node.left >= 0) {
-        const BVHNode& leftChild = nodes[node.left];
-        hitLeft = rayAABBIntersect(orig, dir, leftChild.bounds, tLeft);
-        // Prune left child if its closest point is farther than current best
-        if (bestT >= 0.0f && tLeft >= bestT) {
-            hitLeft = false;
+        
+        // Internal node - compute ray-AABB distances for both children
+        float tLeft = 1e9f, tRight = 1e9f;
+        bool hitLeft = false, hitRight = false;
+        if (curIdx == node.left || curIdx == node.right) 
+        {
+            printf("严重错误：BVH 出现环状引用！当前节点 %d 指向了自身子节点！\n", curIdx);
+            return; // 强制中断
         }
-    }
-    
-    if (node.right >= 0) {
-        const BVHNode& rightChild = nodes[node.right];
-        hitRight = rayAABBIntersect(orig, dir, rightChild.bounds, tRight);
-        // Prune right child if its closest point is farther than current best
-        if (bestT >= 0.0f && tRight >= bestT) {
-            hitRight = false;
+        if (node.left >= 0) {
+            const BVHNode& leftChild = nodes[node.left];
+            hitLeft = rayAABBIntersect(orig, dir, leftChild.bounds, tLeft);
+            // Prune left child if its closest point is farther than current best
+            if (bestT >= 0.0f && tLeft >= bestT) {
+                hitLeft = false;
+            }
         }
-    }
-    
-    // Traverse in order of ray intersection distance (closer first)
-    if (hitLeft && hitRight) {
-        if (tLeft <= tRight) {
-            queryNode(node.left, orig, dir, bestT, bestTriId);
-            queryNode(node.right, orig, dir, bestT, bestTriId);
-        } else {
-            queryNode(node.right, orig, dir, bestT, bestTriId);
-            queryNode(node.left, orig, dir, bestT, bestTriId);
+        
+        if (node.right >= 0) {
+            const BVHNode& rightChild = nodes[node.right];
+            hitRight = rayAABBIntersect(orig, dir, rightChild.bounds, tRight);
+            // Prune right child if its closest point is farther than current best
+            if (bestT >= 0.0f && tRight >= bestT) {
+                hitRight = false;
+            }
         }
-    } else if (hitLeft) {
-        queryNode(node.left, orig, dir, bestT, bestTriId);
-    } else if (hitRight) {
-        queryNode(node.right, orig, dir, bestT, bestTriId);
+        
+        // Push children onto stack in reverse order (farther first)
+        // This ensures closer node is processed first (LIFO)
+        if (hitLeft && hitRight) {
+            if (tLeft <= tRight) {
+                // Left is closer, push right first
+                stack.push_back({node.right, tRight});
+                stack.push_back({node.left, tLeft});
+            } else {
+                // Right is closer, push left first
+                stack.push_back({node.left, tLeft});
+                stack.push_back({node.right, tRight});
+            }
+        } else if (hitLeft) {
+            stack.push_back({node.left, tLeft});
+        } else if (hitRight) {
+            stack.push_back({node.right, tRight});
+        }
     }
 }
 
@@ -285,28 +280,28 @@ BVHHit BVH::query(const float orig[3], const float dir[3])
 }
 
 // 渲染函数：输入碰撞三角形索引，输出RGB值
-std::array<float, 3> BVH::render(int triIndex, const std::array<float, 3>& light_dir) {
-    // 获取法线
+std::array<uint8_t, 3> BVH::render(int triIndex, const std::array<float, 3>& light_dir) {
+    if (triIndex < 0 || static_cast<size_t>(triIndex) >= normals.size()) {
+        return {0, 0, 0};
+    }
+
     const auto& normal = normals[triIndex];
     
-    // 计算漫反射系数
+    // 计算漫反射 (Lambertian shading)
     float dot_product = normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2];
     float diff = std::max(dot_product, 0.0f);
     
-    // 基础颜色
     std::array<float, 3> base_color = {0.7f, 0.8f, 0.9f};
     
-    // 计算最终颜色
-    std::array<float, 3> color = {
-        base_color[0] * (diff + 0.15f),
-        base_color[1] * (diff + 0.15f),
-        base_color[2] * (diff + 0.15f)
-    };
-    
-    // 钳制到[0, 1]
+    std::array<uint8_t, 3> result;
     for (int i = 0; i < 3; ++i) {
-        color[i] = std::min(std::max(color[i], 0.0f), 1.0f);
+        // 计算颜色并加上环境光 (0.15f)
+        float color = base_color[i] * (diff + 0.15f);
+        
+        // 钳制到 [0, 1] 后缩放到 [0, 255] 并四舍五入
+        float scaled = std::min(std::max(color, 0.0f), 1.0f) * 255.0f;
+        result[i] = static_cast<uint8_t>(std::round(scaled));
     }
     
-    return color;
+    return result;
 }

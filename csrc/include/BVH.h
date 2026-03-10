@@ -37,7 +37,7 @@ public:
     BVHHit query(const float orig[3], const float dir[3]);
     
     // 渲染函数：输入碰撞三角形索引和光线方向，输出RGB值
-    std::array<float, 3> render(int triIndex, const std::array<float, 3>& light_dir);
+    std::array<uint8_t, 3> render(int triIndex, const std::array<float, 3>& light_dir);
     
 private:
     std::vector<BVHNode> nodes;

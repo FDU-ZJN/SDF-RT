@@ -1,133 +1,117 @@
-# 光线追踪三角形相交算法硬件实现
-
-基于Multiplier.scala（XiangShan项目的数组长乘法器）实现的光线追踪Möller-Trumbore三角形相交算法。
+# SDF-RT 光线追踪硬件系统开发文档
 
 ## 概述
+SDF-RT 是一个基于 Chisel/Scala 的光线追踪加速器项目，支持 BVH 加速结构、三角形相交、AABB 相交等核心算法的硬件实现。系统采用高并行度、流水线设计，支持多线程射线处理，目标是最大化吞吐与速度。
 
-本项目实现了光线追踪中常用的Möller-Trumbore相交算法，使用定点数运算和ArrayMultiplier进行硬件加速。
+---
 
-## 文件说明
+## 目录结构说明
 
-- `Multiplier.scala` - XiangShan项目的数组长乘法器（参考）
-- `TriangleIntersector.scala` - 主实现文件
-- `TriangleIntersectorTest.scala` - 测试文件
-- `README.md` - 本文件
+- `build.sbt`/`project/`/`target/`：Scala/Chisel 工程配置与构建产物
+- `main.cpp`：C++ 测试/仿真入口
+- `src/main/scala/`：核心硬件模块
+  - `SimTop.scala`：顶层 SoC 集成
+  - `TraceStage.scala`：射线追踪主控
+  - `RenderStage.scala`：渲染阶段控制
+  - `BvhPE.scala`：BVH 遍历处理单元
+  - `AABB.scala`：AABB 相交模块（硬件实现）
+  - `TriangleIntersector.scala`：三角形相交主模块
+  - `raytrace_utils/`：工具库（Bundle、浮点单元、向量运算等）
+    - `Bundles.scala`：射线、三角形、AABB 等数据结构
+    - `Config.scala`：浮点配置参数
+    - `vector.scala`：向量运算（点积、叉积等）
+    - `fudian/`：浮点运算单元（FMUL、FADD、FDIV、FCMP 等）
+- `build/`/`csrc/`/`software_backup/`：仿真、备份、测试数据
 
-## 主要组件
+---
 
-### 1. FixedPointMul
-定点数乘法器包装，使用ArrayMultiplier实现32位×32位定点数乘法（Q16.16格式）
+## 核心模块与算法
 
-### 2. VectorAdd/Sub/Negate
-向量加、减、取反模块
+### 1. BVH 遍历与 AABB 相交
+- **AABB 相交模块**：`AABB.scala`，实现 3 轴并行、流水线的 Ray-AABB 相交，输出 `hit`、`tNear`、`tFar`。
+- **BVH 处理单元**：`BvhPE.scala`，负责 BVH 节点遍历、剪枝、双子节点并行测试。
+- **数据结构**：`Bundles.scala` 中定义 `Ray`、`AABB`、`Triangle`、`TriangleBlock` 等。
 
-### 3. CrossProduct
-向量叉积模块，需要4次乘法运算：
-```
-cross(a, b) = (
-  a.y * b.z - a.z * b.y,
-  a.z * b.x - a.x * b.z,
-  a.x * b.y - a.y * b.x
-)
-```
+#### Ray-AABB 相交算法（硬件实现）
+- 输入：射线（origin, dir）、AABB（min, max）
+- 并行计算每轴：
+  - `invDir = 1/(dir+eps)`（防止除零）
+  - `t0 = (min-origin)*invDir`，`t1 = (max-origin)*invDir`
+  - `axisNear = min(t0, t1)`，`axisFar = max(t0, t1)`
+- 归约：
+  - `tMin = max(axisNear)`，`tMax = min(axisFar)`
+  - 命中条件：`tMax >= tMin && tMax >= 0`
+  - 最近距离：`tNear = (tMin > 0) ? tMin : tMax`
 
-### 4. DotProduct
-向量点积模块，需要3次乘法运算：
-```
-dot(a, b) = a.x * b.x + a.y * b.y + a.z * b.z
-```
+### 2. 三角形相交（Möller-Trumbore）
+- **主模块**：`TriangleIntersector.scala`，支持多线程并行射线处理。
+- **算法流程**：
+  1. `edge1 = v1 - v0`
+  2. `edge2 = v2 - v0`
+  3. `h = cross(direction, edge2)`
+  4. `f = dot(edge1, h)`
+  5. `if (f <= epsilon) return MISS`
+  6. `u = dot(origin - v0, h) / f`
+  7. `if (u < 0 || u > 1) return MISS`
+  8. `q = cross(origin - v0, edge1)`
+  9. `v = dot(direction, q) / f`
+  10. `if (v < 0 || u + v > 1) return MISS`
+  11. `t = dot(edge2, q) / f`
+  12. `if (t > epsilon) return HIT(origin + t * direction)`
+  13. `return MISS`
 
-### 5. FixedPointDiv
-定点数除法模块（Q16.16格式），使用查找表实现
+- **硬件优化**：
+  - 定点/浮点可选，支持 Q16.16 格式
+  - 叉积/点积模块独立，乘法器并行
+  - 多线程射线处理，支持批量三角形
 
-### 6. RayIntersectionThread
-单条射线与三角形相交的线程模块，实现完整的Möller-Trumbore算法
+### 3. 浮点单元与向量运算
+- **FMUL/FADD/FDIV/FCMP**：`raytrace_utils/fudian/`，支持 IEEE 754 语义
+- **向量运算**：`vector.scala`，点积、叉积、加减、取反
 
-### 7. TriangleIntersector
-多线程相交器主模块，支持并行处理多条射线
+---
 
-## Möller-Trumbore算法
+## 测试与验证
 
-```
-输入：射线(origin, direction), 三角形顶点(v0, v1, v2)
-输出：交点或无交点
+- **C++ 差分测试**：`main.cpp`、`test_results.log`，与硬件结果对拍
+- **ChiselTest 单元测试**：`TriangleIntersectorTest.scala`、可扩展到 BVH/AABB
+- **仿真数据**：`csrc/`、`software_backup/`，包含模型、测试用例、性能报告
 
-算法核心步骤：
-1. edge1 = v1 - v0
-2. edge2 = v2 - v0
-3. h = cross(direction, edge2)
-4. f = dot(edge1, h)
-5. if (f <= epsilon) return MISS
-6. u = dot(origin - v0, h) / f
-7. if (u < 0 || u > 1) return MISS
-8. q = cross(origin - v0, edge1)
-9. v = dot(direction, q) / f
-10. if (v < 0 || u + v > 1) return MISS
-11. t = dot(edge2, q) / f
-12. if (t > epsilon) return HIT(origin + t * direction)
-13. return MISS
-```
+---
 
-## 使用方法
+## 性能与并行度
 
-### 测试
+- **AABB 相交**：3 轴全并行，流水线延迟约 15 拍
+- **三角形相交**：每射线约 20 次乘法，支持多线程
+- **BVH 遍历**：双子节点并行测试，支持近远排序
 
-```bash
-# 运行测试套件
-sbt 'testOnly raytracer.TriangleIntersectorTest'
-
-# 运行特定测试
-sbt 'testOnly raytracer.TriangleIntersectorTest -- -z "should detect intersection"'
-```
-
-### 模块接口
-
-```scala
-// 主相交器实例化
-val intersector = Module(new TriangleIntersector(numThreads = 4))
-
-// 设置三角形顶点
-intersector.io.v0 := VecInit(Seq(v0x, v0y, v0z))
-intersector.io.v1 := VecInit(Seq(v1x, v1y, v1z))
-intersector.io.v2 := VecInit(Seq(v2x, v2y, v2z))
-
-// 设置射线数据（每个线程）
-intersector.io.rayOrigins(0) := VecInit(Seq(originX, originY, originZ))
-intersector.io.rayDirections(0) := VecInit(Seq(dirX, dirY, dirZ))
-
-// 启用线程
-intersector.io.enable := true.B
-```
-
-## 技术特点
-
-1. **定点数运算**：使用Q16.16格式，精度可控
-2. **子模块设计**：将向量运算、叉积、点积分离为独立模块
-3. **多线程并行**：支持N条射线同时处理
-4. **硬件加速**：利用ArrayMultiplier进行高效乘法运算
-5. **流水线设计**：考虑Multiplier的2周期延迟
-
-## 性能
-
-- 叉积：4次乘法
-- 点积：3次乘法
-- 每条射线相交：约20次乘法运算
-
-## 限制
-
-1. 定点数除法使用查找表，精度有限
-2. 固定epsilon阈值（8 in Q16.16）
-3. 简化的除法实现可能不准确
+---
 
 ## 扩展建议
 
-1. 支持浮点数运算以提高精度
-2. 实现更精确的定点数除法（牛顿迭代法）
-3. 添加BVH加速结构支持
-4. 实现三角形缓存减少重复计算
-5. 支持四边形等其他几何体
+1. 支持更高精度浮点/定点格式
+2. 优化除法单元（查找表/牛顿迭代）
+3. 增加 BVH 构建与更新模块
+4. 支持多种几何体（四边形、球体等）
+5. 增加缓存与带宽优化
+
+---
 
 ## 参考资料
-
 - Möller, T., & Trumbore, B. (1997). Fast, Minimum Storage Ray-Triangle Intersection. Journal of Graphics Tools, 2(1), 21-28.
-- XiangShan项目：https://github.com/ysyx-project/xiangshan
+- XiangShan 项目：https://github.com/ysyx-project/xiangshan
+- Chisel 官方文档：https://www.chisel-lang.org/
+
+---
+
+## 快速开发/查阅建议
+
+- 查找接口/Bundle：`src/main/scala/raytrace_utils/Bundles.scala`
+- 查找浮点单元：`src/main/scala/raytrace_utils/fudian/`
+- 查找核心算法：`AABB.scala`、`TriangleIntersector.scala`、`BvhPE.scala`
+- 查找测试用例：`TriangleIntersectorTest.scala`、`main.cpp`
+- 查找性能报告：`software_backup/performance_report.json`
+
+---
+
+> 本文档为 SDF-RT 系统开发全景说明，支持 Vibe Coding 快速查阅与接口对齐。

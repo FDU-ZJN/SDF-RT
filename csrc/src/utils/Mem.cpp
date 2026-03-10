@@ -1,3 +1,5 @@
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
 #include <Mem.h>
 #include <cmath>
 #include <array>
@@ -88,8 +90,6 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
         return;
     }
     const std::array<float, 3>& n = normals[static_cast<size_t>(addr)];
-    // std::printf("[DPI-C DEBUG] Normal Read - Addr: %d | NX: %.4f | NY: %.4f | NZ: %.4f\n", 
-    //             addr, n[0], n[1], n[2]);
     writeU32LE(out + 0,  floatToRawU32(n[0])); // x
     writeU32LE(out + 4,  floatToRawU32(n[1])); // y
     writeU32LE(out + 8,  floatToRawU32(n[2])); // z
@@ -97,103 +97,71 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
 void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,
-    std::vector<std::array<float,3>>& normals)
+    std::vector<std::array<float, 3>>& normals) 
 {
-    std::vector<std::array<float,3>> vertices;
-    std::vector<std::array<float,3>> obj_normals;
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
 
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open obj file: "
-                  << filename << std::endl;
-        return;
-    }
+    // LoadObj 函数会自动处理文件解析和三角化
+    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename.c_str());
+    float minX = 1e9f, maxX = -1e9f;
+float minY = 1e9f, maxY = -1e9f;
+float minZ = 1e9f, maxZ = -1e9f;
 
-    std::string line;
+// 遍历解析出的所有顶点
+for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
+    minX = std::min(minX, attrib.vertices[i]);
+    maxX = std::max(maxX, attrib.vertices[i]);
+    minY = std::min(minY, attrib.vertices[i+1]);
+    maxY = std::max(maxY, attrib.vertices[i+1]);
+    minZ = std::min(minZ, attrib.vertices[i+2]);
+    maxZ = std::max(maxZ, attrib.vertices[i+2]);
+}
 
-    while (std::getline(file, line)) {
-        std::stringstream ss(line);
-        std::string type;
-        ss >> type;
+float centerX = (minX + maxX) * 0.5f;
+float centerY = (minY + maxY) * 0.5f;
+float centerZ = (minZ + maxZ) * 0.5f;
 
-        // ======================
-        // 读取顶点
-        // ======================
-        if (type == "v") {
-            std::array<float,3> v;
-            ss >> v[0] >> v[1] >> v[2];
-            vertices.push_back(v);
-        }
-
-        // ======================
-        // 读取法线
-        // ======================
-        else if (type == "vn") {
-            std::array<float,3> n;
-            ss >> n[0] >> n[1] >> n[2];
-            obj_normals.push_back(n);
-        }
-
-        // ======================
-        // 读取面
-        // ======================
-        else if (type == "f") {
-
-            std::vector<int> v_indices;
-            std::vector<int> n_indices;
-
-            std::string vertex_ref;
-
-            while (ss >> vertex_ref) {
-
-                // 格式: v//n
-                size_t first_slash  = vertex_ref.find('/');
-                size_t second_slash = vertex_ref.find('/', first_slash + 1);
-
-                // 顶点索引
-                int v_idx = std::stoi(
-                    vertex_ref.substr(0, first_slash)
-                );
-
-                // 法线索引
-                int n_idx = std::stoi(
-                    vertex_ref.substr(second_slash + 1)
-                );
-
-                // 处理负索引
-                if (v_idx < 0)
-                    v_idx = vertices.size() + v_idx + 1;
-                if (n_idx < 0)
-                    n_idx = obj_normals.size() + n_idx + 1;
-
-                v_indices.push_back(v_idx - 1);
-                n_indices.push_back(n_idx - 1);
+printf("Model center: %f, %f, %f\n", centerX, centerY, centerZ);
+    if (!err.empty()) { std::cerr << "Err: " << err << std::endl; }
+    if (!ret) { return; }
+    // 遍历所有 shape
+    for (const auto& shape : shapes) {
+        size_t index_offset = 0;
+        // 遍历 shape 中的每个面 (face)
+        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
+            size_t fv = size_t(shape.mesh.num_face_vertices[f]);
+            Triangle tri;
+            int normal_idx = shape.mesh.indices[index_offset].normal_index;
+            if(normal_idx < 0) {
+                std::cerr << "Warning: Face " << f << " has no normal index. Skipping.\n";
+                index_offset += fv;
+                continue;
             }
+            std::array<float, 3> tri_normal = {
+                attrib.normals[3 * normal_idx + 0],
+                attrib.normals[3 * normal_idx + 1],
+                attrib.normals[3 * normal_idx + 2]
+            };
+            
+            for (size_t v = 0; v < fv; v++) {
+                tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
+                // 获取坐标
+                float vx = attrib.vertices[3 * idx.vertex_index + 0];
+                float vy = attrib.vertices[3 * idx.vertex_index + 1];
+                float vz = attrib.vertices[3 * idx.vertex_index + 2];
 
-            // ======================
-            // 三角化 (fan)
-            // ======================
-            for (size_t i = 1; i < v_indices.size() - 1; ++i) {
-
-                Triangle tri;
-                tri.v0 = vertices[v_indices[0]];
-                tri.v1 = vertices[v_indices[i]];
-                tri.v2 = vertices[v_indices[i+1]];
-
-                triangles.push_back(tri);
-
-                // 法线对应第一个顶点的法线
-                // （假设平面三角形法线一致）
-                normals.push_back(
-                    obj_normals[n_indices[0]]
-                );
+                if (v == 0) tri.v0 = {vx, vy, vz};
+                else if (v == 1) tri.v1 = {vx, vy, vz};
+                else if (v == 2) tri.v2 = {vx, vy, vz};
             }
+            
+            triangles.push_back(tri);
+            normals.push_back(tri_normal);
+            
+            index_offset += fv;
         }
     }
-
-    std::cout << "Loaded "
-              << triangles.size()
-              << " triangles from "
-              << filename
-              << std::endl;
 }

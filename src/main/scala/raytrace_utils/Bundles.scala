@@ -8,6 +8,12 @@ class Vec3(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val z = UInt(cfg.totalWidth.W)
 }
 
+// Axis-aligned bounding box in FP format.
+class AABB(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val min = new Vec3(cfg)
+  val max = new Vec3(cfg)
+}
+
 class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val origin = new Vec3(cfg)
   val dir = new Vec3(cfg)

@@ -28,7 +28,7 @@ INC_FLAGS = -I$(CSRC_DIR)/include \
 V_OPTS = --cc --trace --exe --build -j $(shell nproc) \
          --top-module $(TOP_MODULE) \
          --Mdir $(OBJ_DIR) \
-         --CFLAGS "$(INC_FLAGS) -O3 -std=c++17" \
+         --CFLAGS "$(INC_FLAGS) -g -Og -std=c++17" \
          -I$(CSRC_DIR)/include
 
 # 目标程序路径
