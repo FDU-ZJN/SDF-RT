@@ -144,6 +144,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   io.tFar := RegNext(tMax)
   io.hit := RegNext(hitComb)
 
-  val totalLatency = 3+cfg.faddLatency+cfg.fdivLatency+cfg.fmulLatency
+  val totalLatency = 4+cfg.faddLatency+cfg.fdivLatency+cfg.fmulLatency
   io.out_valid := ShiftRegister(io.in_valid, totalLatency)
 }
