@@ -34,3 +34,14 @@ class TriBatch(addrWidth: Int) extends Bundle {
   val base_addr = UInt(addrWidth.W)
   val count     = UInt(16.W)
 }
+
+class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val bounds = new AABB(cfg)
+  val isLeaf = Bool()
+  val leftValid = Bool()
+  val rightValid = Bool()
+  val left = UInt(addrWidth.W)
+  val right = UInt(addrWidth.W)
+  val triStart = UInt(addrWidth.W)
+  val triCount = UInt(16.W)
+}

@@ -32,3 +32,10 @@ case class TriPeConfig(
                       cfg: FloatConfig = FloatConfig.FP32
                     )
 
+case class BvhPeConfig(
+                        addrWidth: Int = 32,
+                        stackDepth: Int = 64,
+                        reqQueueDepth: Int = 16,
+                        leafQueueDepth: Int = 16,
+                        cfg: FloatConfig = FloatConfig.FP32
+                      )
