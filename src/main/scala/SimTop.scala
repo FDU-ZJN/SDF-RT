@@ -15,10 +15,25 @@ class SimTop extends Module {
     val out_id = Output(UInt(c.addrWidth.W))
   })
 
+  val seqCounter = RegInit(0.U(c.addrWidth.W))
+  val commitQueue = Module(new CommitQueue(c.cfg, depth = 8))
+
+  val rayMeta = Wire(new RayMeta(c.addrWidth))
+  rayMeta.slotId := commitQueue.io.allocSlot
+  rayMeta.seqId := seqCounter
+  rayMeta.pixelX := 0.U
+  rayMeta.pixelY := 0.U
+
   // BVHStage: ray input, root node, hit update
   val bvhStage = Module(new BVHStage(bvhC))
   val traceStage = Module(new TraceStage())
-  bvhStage.io.start := io.ray_valid
+
+  val inputReady = bvhStage.io.start_ready && traceStage.io.start_ready && commitQueue.io.allocReady
+  val inputFire = io.ray_valid && inputReady
+
+  commitQueue.io.allocValid := inputFire
+
+  bvhStage.io.start := inputFire
   bvhStage.io.rootNode := 0.U // root node index, can be parameterized
   bvhStage.io.ray_in := io.ray_in
   bvhStage.io.hit_update_valid := traceStage.io.out_best_hit
@@ -27,24 +42,31 @@ class SimTop extends Module {
   // TraceStage: connect leaf_out from BVHStage
 
   traceStage.io.ray_in := io.ray_in
-  traceStage.io.ray_valid := io.ray_valid
+  traceStage.io.ray_meta := rayMeta
+  traceStage.io.ray_valid := inputFire
   traceStage.io.tri_batch_in := bvhStage.io.leaf_out.bits
   traceStage.io.tri_batch_valid := bvhStage.io.leaf_out.valid
   traceStage.io.end_exec := bvhStage.io.done
 
   bvhStage.io.leaf_out.ready := traceStage.io.output_ready
 
-  io.out_ready := traceStage.io.output_ready
+  io.out_ready := inputReady
 
   // RenderStage: connect hit info from TraceStage
   val renderStage = Module(new RenderStage(c.cfg))
-  renderStage.io.hit_id := traceStage.io.out_id
+  renderStage.io.in_result := traceStage.io.out_result
   renderStage.io.in_valid := traceStage.io.out_valid
-  renderStage.io.in_hit := traceStage.io.out_best_hit
 
-  io.out_rgb := renderStage.io.out_rgb
-  io.out_valid := renderStage.io.out_valid
-  io.out_id := renderStage.io.out_id
+  commitQueue.io.writebackValid := renderStage.io.out_valid
+  commitQueue.io.writeback := renderStage.io.out_result
+
+  when(inputFire) {
+    seqCounter := seqCounter + 1.U
+  }
+
+  io.out_rgb := commitQueue.io.outResult.rgb
+  io.out_valid := commitQueue.io.outValid
+  io.out_id := commitQueue.io.outResult.hitId
 }
 
 object SimTopGen extends App {

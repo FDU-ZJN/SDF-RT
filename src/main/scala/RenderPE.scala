@@ -7,18 +7,14 @@ import raytrace_utils.fudian._
 
 class RenderPE(cfg: FloatConfig) extends Module {
   val io = IO(new Bundle {
+    val in_meta   = Input(new RayMeta(cfg.addrWidth))
     val hit_id    = Input(UInt(cfg.addrWidth.W))
-    val hit_valid = Input(Bool())
     val in_hit    = Input(Bool())
-    val mem_req_id = Output(UInt(cfg.addrWidth.W))
-    val mem_req_en = Output(Bool())
-
     val in_normal = Input(new Vec3(cfg))
     val in_valid  = Input(Bool())
 
-    val out_rgb   = Output(new Vec3(cfg))
-    val out_valid = Output(Bool())
-    val out_id    = Output(UInt(cfg.addrWidth.W))
+    val out_result = Output(new RenderResult(cfg, cfg.addrWidth))
+    val out_valid  = Output(Bool())
   })
 
   // 浮点常量定义 (IEEE 754)
@@ -27,11 +23,7 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val val_1_0  = "h3F800000".U // 1.0f
   val color_coeffs = VecInit("h3F333333".U, "h3F4CCCCD".U, "h3F666666".U) // 0.7, 0.8, 0.9
 
-  // --- 阶段 1: 内存请求 ---
-  io.mem_req_id := io.hit_id
-  io.mem_req_en := io.hit_valid && io.in_hit
-
-  // --- 阶段 2: 渲染计算 ---
+  // --- 阶段 1: 渲染计算 ---
   // 1. Dot Product: diff = dot(normal, light)
   val dotUnit = Module(new DotProductUnit(cfg))
   dotUnit.io.a := io.in_normal
@@ -71,13 +63,16 @@ class RenderPE(cfg: FloatConfig) extends Module {
   // --- 阶段 3: 流水线同步 ---
   // 总延迟 = 点积 + 加法 + 乘法 + 比较
   val totalLatency = cfg.fdotLatency  + cfg.faddLatency + cfg.fmulLatency
-  val hit_sync   = ShiftRegister(io.in_hit, totalLatency)
-  val valid_sync = ShiftRegister(io.hit_valid, totalLatency)
+  val hit_sync = ShiftRegister(io.in_hit, totalLatency)
+  val valid_sync = ShiftRegister(io.in_valid, totalLatency)
   val id_sync = ShiftRegister(io.hit_id, totalLatency)
+  val meta_sync = ShiftRegister(io.in_meta, totalLatency)
 
-  io.out_rgb.x := Mux(hit_sync, clampedRGB(0), val_0_0)
-  io.out_rgb.y := Mux(hit_sync, clampedRGB(1), val_0_0)
-  io.out_rgb.z := Mux(hit_sync, clampedRGB(2), val_0_0)
+  io.out_result.meta := meta_sync
+  io.out_result.hit := hit_sync
+  io.out_result.hitId := id_sync
+  io.out_result.rgb.x := Mux(hit_sync, clampedRGB(0), val_0_0)
+  io.out_result.rgb.y := Mux(hit_sync, clampedRGB(1), val_0_0)
+  io.out_result.rgb.z := Mux(hit_sync, clampedRGB(2), val_0_0)
   io.out_valid := valid_sync
-  io.out_id    := id_sync
 }

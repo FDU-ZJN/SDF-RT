@@ -9,6 +9,7 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   val io = IO(new Bundle {
     val ray_in       = Input(new Ray(c.cfg))
+    val ray_meta     = Input(new RayMeta(c.addrWidth))
     val ray_valid    = Input(Bool())
 
     val tri_batch_in    = Input(new TriBatch(c.addrWidth))
@@ -18,10 +19,12 @@ class TriPE(val c: TriPeConfig) extends Module {
     val mem_req  = Decoupled(UInt(c.addrWidth.W))
     val mem_resp = Flipped(Decoupled(new TriangleBlock(c)))
 
+    val start_ready = Output(Bool())
     val output_ready = Output(Bool())
     val out_best_hit = Output(Bool())
     val hit_id       = Output(UInt(c.addrWidth.W))
     val t_best       = Output(UInt(c.cfg.totalWidth.W))
+    val out_meta     = Output(new RayMeta(c.addrWidth))
     val out_done     = Output(Bool())
   })
 
@@ -34,6 +37,7 @@ class TriPE(val c: TriPeConfig) extends Module {
   batch_queue.io.enq.valid := io.tri_batch_valid
 
   val current_batch = Reg(new TriBatch(c.addrWidth))
+  val ray_meta_reg = Reg(new RayMeta(c.addrWidth))
   val block_offset  = RegInit(0.U(16.W))
   val batch_active  = RegInit(false.B)
   val no_more_batches = RegInit(false.B)
@@ -43,6 +47,7 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   when(state === s_IDLE && io.ray_valid) {
     state := s_BUSY
+    ray_meta_reg := io.ray_meta
     no_more_batches := false.B
   }
 
@@ -181,11 +186,13 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 5. 输出
   // ============================================================
 
+  io.start_ready := state === s_IDLE
   io.output_ready := batch_queue.io.enq.ready
 
   io.out_best_hit := global_has_hit
   io.hit_id       := global_best_id
   io.t_best       := global_best_t
+  io.out_meta     := ray_meta_reg
   val done_pulse =
     (RegNext(state) === s_FINISHING &&
       state === s_IDLE)

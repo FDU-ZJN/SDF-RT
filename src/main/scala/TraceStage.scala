@@ -10,16 +10,19 @@ class TraceStage() extends Module {
   val io = IO(new Bundle {
     // 暴露给 Verilator 的顶层接口
     val ray_in          = Input(new Ray(c.cfg))
+    val ray_meta        = Input(new RayMeta(c.addrWidth))
     val ray_valid       = Input(Bool())
     val tri_batch_in    = Input(new TriBatch(c.addrWidth))
     val tri_batch_valid = Input(Bool())
     val end_exec        = Input(Bool())
 
+    val start_ready      = Output(Bool())
     val out_best_hit    = Output(Bool())
-    val out_id           = Output(UInt(c.addrWidth.W))
-    val out_valid        = Output(Bool())
+    val out_id          = Output(UInt(c.addrWidth.W))
+    val out_valid       = Output(Bool())
+    val out_result      = Output(new TraceResult(c.cfg, c.addrWidth))
     val output_ready    = Output(Bool())
-    val best_t           = Output(UInt(c.cfg.totalWidth.W))
+    val best_t          = Output(UInt(c.cfg.totalWidth.W))
   })
 
   val pe  = Module(new TriPE(c))
@@ -32,14 +35,20 @@ class TraceStage() extends Module {
 
   // 2. 外部 IO 对接
   pe.io.ray_in          := io.ray_in
+  pe.io.ray_meta        := io.ray_meta
   pe.io.ray_valid       := io.ray_valid
   pe.io.tri_batch_in    := io.tri_batch_in
   pe.io.tri_batch_valid := io.tri_batch_valid
   pe.io.end_exec        := io.end_exec
 
+  io.start_ready        := pe.io.start_ready
   io.out_best_hit       := pe.io.out_best_hit
-  io.out_id              := pe.io.hit_id
-  io.out_valid           := pe.io.out_done
+  io.out_id             := pe.io.hit_id
+  io.out_valid          := pe.io.out_done
+  io.out_result.meta    := pe.io.out_meta
+  io.out_result.hit     := pe.io.out_best_hit
+  io.out_result.hitId   := pe.io.hit_id
+  io.out_result.hitT    := pe.io.t_best
   io.output_ready       := pe.io.output_ready
-  io.best_t              := pe.io.t_best
+  io.best_t             := pe.io.t_best
 }

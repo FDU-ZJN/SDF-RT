@@ -25,6 +25,7 @@ class BvhPE(val c: BvhPeConfig) extends Module {
 
     val leaf_out = Decoupled(new TriBatch(c.addrWidth))
 
+    val start_ready = Output(Bool())
     val busy        = Output(Bool())
     val done        = Output(Bool())
     val stack_level = Output(UInt(spWidth.W))
@@ -141,6 +142,7 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   when(donePulse) {
     active := false.B
   }
+  io.start_ready := !active
   io.busy        := active
   io.done        := donePulse
   io.stack_level := bvhStack.io.level

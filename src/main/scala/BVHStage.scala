@@ -11,6 +11,7 @@ class BVHStage(val c: BvhPeConfig) extends Module {
     val hit_update_valid = Input(Bool())
     val hit_update_t = Input(UInt(c.cfg.totalWidth.W))
     val leaf_out = Decoupled(new TriBatch(c.addrWidth))
+    val start_ready = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
     val stack_level = Output(UInt(log2Ceil(c.stackDepth + 1).W))
@@ -27,6 +28,7 @@ class BVHStage(val c: BvhPeConfig) extends Module {
   pe.io.hit_update_t := io.hit_update_t
 
   io.leaf_out <> pe.io.leaf_out
+  io.start_ready := pe.io.start_ready
   io.busy := pe.io.busy
   io.done := pe.io.done
   io.stack_level := pe.io.stack_level

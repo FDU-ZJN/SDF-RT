@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <stdexcept>
 
 #include "verilated.h"
@@ -27,6 +28,14 @@ constexpr int kWidth = 40;
 constexpr int kHeight = 40;
 constexpr int kTriCount = 10000;
 constexpr int kMaxWaitCycles = 10000;
+
+struct RayWorkItem {
+    int px = 0;
+    int py = 0;
+    array<float, 3> dir = {0.0f, 0.0f, 0.0f};
+    int expectedTriId = -1;
+    array<uint8_t, 3> expectedRgb = {0, 0, 0};
+};
 
 inline uint32_t floatToU32(float v) {
     uint32_t u = 0;
@@ -112,64 +121,108 @@ int main(int argc, char** argv) {
         tick(dut, tfp);
     }
 
+    const array<float, 3> light_dir = {0.577f, 0.577f, 0.577f};
+    const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
+    vector<RayWorkItem> workItems;
+    workItems.reserve(totalPixels);
+
+    for (int py = 0; py < kHeight; ++py) {
+        for (int px = 0; px < kWidth; ++px) {
+            RayWorkItem item;
+            item.px = px;
+            item.py = py;
+            item.dir = makeRayDir(px, py);
+
+            float rayOrig[3] = {0.0f, 0.4f, 2.8f};
+            float rayDir[3] = {item.dir[0], item.dir[1], item.dir[2]};
+            BVHHit cpuHit = globalBVH.query(rayOrig, rayDir);
+
+            item.expectedTriId = cpuHit.triId;
+            item.expectedRgb = (cpuHit.triId >= 0)
+                ? globalBVH.render(cpuHit.triId, light_dir)
+                : array<uint8_t, 3>{0, 0, 0};
+            workItems.push_back(item);
+        }
+    }
+
     vector<uint8_t> image(static_cast<size_t>(kWidth) * kHeight * 3, 0);
     size_t hitCount = 0;
     size_t mismatchCount = 0;
+    size_t issued = 0;
+    size_t retired = 0;
+    int stallCycles = 0;
 
-for (int py = 0; py < kHeight; ++py) {
-        for (int px = 0; px < kWidth; ++px) {
-            // BVH reference computation
-            const array<float, 3> dir = makeRayDir(px, py);
-            float rayOrig[3] = {0.0f, 0.4f, 2.8f};
-            float rayDir[3] = {dir[0], dir[1], dir[2]};
-            array<float, 3> light_dir = {0.577f, 0.577f, 0.577f};
-            BVHHit cpuHit = globalBVH.query(rayOrig, rayDir);
-            
-            array<uint8_t, 3> rgb= {0, 0, 0};
-            int readyWait = 0;
+    while (retired < totalPixels) {
+        const bool canIssue = (issued < totalPixels) && dut->io_out_ready;
+        if (canIssue) {
+            const RayWorkItem& item = workItems[issued];
             dut->io_ray_in_origin_x = floatToU32(0.0f);
             dut->io_ray_in_origin_y = floatToU32(0.4f);
             dut->io_ray_in_origin_z = floatToU32(2.8f);
-            dut->io_ray_in_dir_x = floatToU32(rayDir[0]);
-            dut->io_ray_in_dir_y = floatToU32(rayDir[1]);
-            dut->io_ray_in_dir_z = floatToU32(rayDir[2]);
+            dut->io_ray_in_dir_x = floatToU32(item.dir[0]);
+            dut->io_ray_in_dir_y = floatToU32(item.dir[1]);
+            dut->io_ray_in_dir_z = floatToU32(item.dir[2]);
             dut->io_ray_valid = 1;
-            tick(dut, tfp);
+        } else {
             dut->io_ray_valid = 0;
+        }
 
-            int doneWait = 0;
-            while (!dut->io_out_valid && doneWait < kMaxWaitCycles) {
-                tick(dut, tfp);
-                ++doneWait;
-            }
-            if (doneWait >= kMaxWaitCycles) {
-                std::cerr << "Timeout waiting io_out_valid at pixel (" << px << "," << py << ")" << endl;
-                delete tfp; delete dut; return 3;
-            }
-            if (cpuHit.triId >= 0) 
-            {
-                hitCount++;
-                if(dut->io_out_id!=cpuHit.triId)
-                {
-                mismatchCount++;
-                printf("Mismatch at pixel (%d,%d): CPU triId=%d, HW triId=%d\n", px, py, cpuHit.triId, dut->io_out_id);
-                }
-            }
+        tick(dut, tfp);
 
+        bool madeProgress = false;
+        if (canIssue) {
+            ++issued;
+            madeProgress = true;
+        }
 
-            // Get hardware result (assuming io_out_rgb_x contains hit triangle ID when valid)
-            // For now we just use the RGB values as in original code
-            uint8_t r = colorToByte(dut->io_out_rgb_x);
-            uint8_t g = colorToByte(dut->io_out_rgb_y);
-            uint8_t b = colorToByte(dut->io_out_rgb_z);
+        if (dut->io_out_valid) {
+            const RayWorkItem& item = workItems[retired];
 
-            const size_t idx = (static_cast<size_t>(py) * kWidth + px) * 3;
+            const uint8_t r = colorToByte(dut->io_out_rgb_x);
+            const uint8_t g = colorToByte(dut->io_out_rgb_y);
+            const uint8_t b = colorToByte(dut->io_out_rgb_z);
+
+            const size_t idx = (static_cast<size_t>(item.py) * kWidth + item.px) * 3;
             image[idx + 0] = r;
             image[idx + 1] = g;
             image[idx + 2] = b;
+
+            bool mismatch = false;
+            if (item.expectedTriId >= 0) {
+                ++hitCount;
+                if (static_cast<int>(dut->io_out_id) != item.expectedTriId) {
+                    mismatch = true;
+                    std::printf("ID mismatch at pixel (%d,%d): CPU triId=%d, HW triId=%d\n",
+                                item.px, item.py, item.expectedTriId, dut->io_out_id);
+                }
+            }
+
+            if (mismatch) {
+                ++mismatchCount;
+            }
+
+            ++retired;
+            madeProgress = true;
+            std::fflush(stdout);
+            std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
+                        100.0 * static_cast<double>(retired) / static_cast<double>(totalPixels),
+                        issued,
+                        retired);
         }
-        std::fflush(stdout);
-        printf("\rProgress: %.2f%%", 100.0 * (py + 1) / kHeight);
+
+        if (madeProgress) {
+            stallCycles = 0;
+        } else {
+            ++stallCycles;
+        }
+
+        if (stallCycles >= kMaxWaitCycles) {
+            std::cerr << "Timeout: no issue/retire progress for " << stallCycles
+                      << " cycles (issued=" << issued << ", retired=" << retired << ")" << endl;
+            delete tfp;
+            delete dut;
+            return 3;
+        }
     }
     printf("\nTotal hits: %zu, Mismatches: %zu,Average time per pixel: %.2f cycles\n", hitCount, mismatchCount, static_cast<double>(main_time/2) / (kWidth * kHeight));
     writePPM("render_400x400.ppm", image, kWidth, kHeight);

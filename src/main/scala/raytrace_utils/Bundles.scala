@@ -19,6 +19,13 @@ class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val dir = new Vec3(cfg)
 }
 
+class RayMeta(addrWidth: Int = 32, pixelWidth: Int = 16) extends Bundle {
+  val slotId = UInt(addrWidth.W)
+  val seqId = UInt(addrWidth.W)
+  val pixelX = UInt(pixelWidth.W)
+  val pixelY = UInt(pixelWidth.W)
+}
+
 class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val v0 = new Vec3(cfg)
   val v1 = new Vec3(cfg)
@@ -33,6 +40,20 @@ class TriangleBlock(val c: TriPeConfig) extends Bundle {
 class TriBatch(addrWidth: Int) extends Bundle {
   val base_addr = UInt(addrWidth.W)
   val count     = UInt(16.W)
+}
+
+class TraceResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val meta = new RayMeta(addrWidth)
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
+}
+
+class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val meta = new RayMeta(addrWidth)
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val rgb = new Vec3(cfg)
 }
 
 class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
