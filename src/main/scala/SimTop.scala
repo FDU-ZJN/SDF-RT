@@ -17,14 +17,15 @@ class SimTop extends Module {
 
   // BVHStage: ray input, root node, hit update
   val bvhStage = Module(new BVHStage(bvhC))
+  val traceStage = Module(new TraceStage())
   bvhStage.io.start := io.ray_valid
   bvhStage.io.rootNode := 0.U // root node index, can be parameterized
   bvhStage.io.ray_in := io.ray_in
-  bvhStage.io.hit_update_valid := false.B // placeholder, connect as needed
-  bvhStage.io.hit_update_t := 0.U // placeholder, connect as needed
+  bvhStage.io.hit_update_valid := traceStage.io.out_best_hit
+  bvhStage.io.hit_update_t := traceStage.io.best_t
 
   // TraceStage: connect leaf_out from BVHStage
-  val traceStage = Module(new TraceStage())
+
   traceStage.io.ray_in := io.ray_in
   traceStage.io.ray_valid := io.ray_valid
   traceStage.io.tri_batch_in := bvhStage.io.leaf_out.bits

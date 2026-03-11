@@ -21,6 +21,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val output_ready = Output(Bool())
     val out_best_hit = Output(Bool())
     val hit_id       = Output(UInt(c.addrWidth.W))
+    val t_best       = Output(UInt(c.cfg.totalWidth.W))
     val out_done     = Output(Bool())
   })
 
@@ -180,11 +181,11 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 5. 输出
   // ============================================================
 
-  io.output_ready := (state === s_IDLE)
+  io.output_ready := batch_queue.io.enq.ready
 
   io.out_best_hit := global_has_hit
   io.hit_id       := global_best_id
-
+  io.t_best       := global_best_t
   val done_pulse =
     (RegNext(state) === s_FINISHING &&
       state === s_IDLE)

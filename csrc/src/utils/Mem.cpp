@@ -8,6 +8,7 @@
 #include <string>
 #include <iostream>
 #include <cstring>
+#include <BVH.h>
 
 // Define epsilon for intersection tests
 constexpr float EPSILON = 1e-6f;
@@ -93,6 +94,47 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
     writeU32LE(out + 0,  floatToRawU32(n[0])); // x
     writeU32LE(out + 4,  floatToRawU32(n[1])); // y
     writeU32LE(out + 8,  floatToRawU32(n[2])); // z
+}
+
+extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data) {
+    if (data == nullptr) {
+        return;
+    }
+
+    auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
+    if (out == nullptr) {
+        return;
+    }
+
+    constexpr int kBytesPerBVHNode = 40; // 6 floats + 4 int32
+    const int totalBytes = svSize(data, 1);
+    if (totalBytes <= 0) {
+        return;
+    }
+
+    std::memset(out, 0, static_cast<size_t>(totalBytes));
+    const int nodeLanes = totalBytes / kBytesPerBVHNode;
+    for (int lane = 0; lane < nodeLanes; ++lane) {
+        const int nodeIdx = addr + lane;
+        if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= globalBVH.nodeCount()) {
+            continue;
+        }
+
+        const BVHNode& node = globalBVH.nodeAt(static_cast<size_t>(nodeIdx));
+        uint8_t* base = out + lane * kBytesPerBVHNode;
+
+        writeU32LE(base + 0,  floatToRawU32(node.bounds.min[0]));
+        writeU32LE(base + 4,  floatToRawU32(node.bounds.min[1]));
+        writeU32LE(base + 8,  floatToRawU32(node.bounds.min[2]));
+        writeU32LE(base + 12, floatToRawU32(node.bounds.max[0]));
+        writeU32LE(base + 16, floatToRawU32(node.bounds.max[1]));
+        writeU32LE(base + 20, floatToRawU32(node.bounds.max[2]));
+
+        writeU32LE(base + 24, static_cast<uint32_t>(node.left));
+        writeU32LE(base + 28, static_cast<uint32_t>(node.right));
+        writeU32LE(base + 32, static_cast<uint32_t>(node.triStart));
+        writeU32LE(base + 36, static_cast<uint32_t>(node.triCount));
+    }
 }
 void loadModelFromObj(
     const std::string& filename,

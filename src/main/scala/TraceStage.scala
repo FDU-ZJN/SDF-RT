@@ -19,6 +19,7 @@ class TraceStage() extends Module {
     val out_id           = Output(UInt(c.addrWidth.W))
     val out_valid        = Output(Bool())
     val output_ready    = Output(Bool())
+    val best_t           = Output(UInt(c.cfg.totalWidth.W))
   })
 
   val pe  = Module(new TriPE(c))
@@ -40,4 +41,5 @@ class TraceStage() extends Module {
   io.out_id              := pe.io.hit_id
   io.out_valid           := pe.io.out_done
   io.output_ready       := pe.io.output_ready
+  io.best_t              := pe.io.t_best
 }

@@ -149,14 +149,51 @@ int BVH::buildRecursive(int start, int end, int depth)
     return nodeIdx;
 }
 
-void BVH::build(const std::vector<Triangle>& tris)
+void BVH::reorderLeafPrimitives(std::vector<Triangle>& tris,
+                                std::vector<std::array<float, 3>>& triNormals)
 {
+    if (triIndices.empty()) {
+        return;
+    }
+
+    std::vector<Triangle> reorderedTris;
+    reorderedTris.reserve(tris.size());
+
+    const bool reorderNormals = triNormals.size() == tris.size();
+    std::vector<std::array<float, 3>> reorderedNormals;
+    if (reorderNormals) {
+        reorderedNormals.reserve(triNormals.size());
+    } else if (!triNormals.empty()) {
+        std::cerr << "Warning: normals.size() != triangles.size(); skip normal reorder." << std::endl;
+    }
+
+    for (int oldIdx : triIndices) {
+        reorderedTris.push_back(tris[static_cast<size_t>(oldIdx)]);
+        if (reorderNormals) {
+            reorderedNormals.push_back(triNormals[static_cast<size_t>(oldIdx)]);
+        }
+    }
+
+    tris.swap(reorderedTris);
+    if (reorderNormals) {
+        triNormals.swap(reorderedNormals);
+    }
+
+    for (size_t i = 0; i < triIndices.size(); ++i) {
+        triIndices[i] = static_cast<int>(i);
+    }
+}
+
+void BVH::build(std::vector<Triangle>& tris,
+                std::vector<std::array<float, 3>>& triNormals)
+{
+    nodes.clear();
+    triIndices.clear();
+
     if (tris.empty()) {
         return;
     }
-    
-    nodes.clear();
-    triIndices.clear();
+
     // Initialize triangle index list
     triIndices.resize(tris.size());
     for (size_t i = 0; i < tris.size(); ++i) {
@@ -164,6 +201,7 @@ void BVH::build(const std::vector<Triangle>& tris)
     }
     
     buildRecursive(0, static_cast<int>(tris.size()), 0);
+    reorderLeafPrimitives(tris, triNormals);
     
     std::cout << "Built BVH with " << nodes.size() << " nodes for " 
               << tris.size() << " triangles" << std::endl;
@@ -200,7 +238,7 @@ void BVH::queryNode(int nodeIdx, const float orig[3], const float dir[3],
         // Leaf node - test all triangles
         if (node.left < 0 && node.right < 0) {
             for (int i = 0; i < node.triCount; ++i) {
-                int triIdx = triIndices[node.triStart + i];
+                int triIdx = node.triStart + i;
                 float t;
                 if (rayTriangleIntersect(orig, dir, triangles[triIdx], t)) {
                     if (t < bestT || bestT < 0.0f) {

@@ -41,5 +41,6 @@ extern std::vector<Triangle> triangles;
 extern std::vector<std::array<float,3>> normals;
 
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data);
+extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data);
 
 #endif // MEM_H

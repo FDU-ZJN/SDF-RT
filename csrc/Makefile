@@ -3,7 +3,7 @@ CSRC_DIR := $(shell pwd)
 ROOT_DIR := $(abspath $(CSRC_DIR)/..)
 BUILD_DIR := $(ROOT_DIR)/build
 OBJ_DIR   := $(BUILD_DIR)/obj_dir
-
+WAVE_FILE = $(CSRC_DIR)/raytrace.vcd
 # 模块配置
 TOP_MODULE = SimTop
 # 捕获 build 目录下所有 .sv 文件，任何变化都会触发重编译

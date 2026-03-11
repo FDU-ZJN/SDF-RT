@@ -36,7 +36,7 @@ class BVHStage(val c: BvhPeConfig) extends Module {
   mem.io.reset := reset
   mem.io.addr := pe.io.node_req.bits
   mem.io.en := pe.io.node_req.valid
-  pe.io.node_req.ready := mem.io.valid
+  pe.io.node_req.ready := true.B
 
   // Unpack memory data to BvhNode
   val nodeRaw = mem.io.data
@@ -52,9 +52,10 @@ class BVHStage(val c: BvhPeConfig) extends Module {
   nodeResp.right := nodeRaw(255, 224)
   nodeResp.triStart := nodeRaw(287, 256)
   nodeResp.triCount := nodeRaw(319,288)
-  nodeResp.isLeaf := nodeResp.triCount===0.U
-  nodeResp.leftValid := nodeResp.left.asSInt>=0.S
-  nodeResp.rightValid := nodeResp.right.asSInt>=0.S
+
+  nodeResp.leftValid := nodeResp.left.asSInt>0.S
+  nodeResp.rightValid := nodeResp.right.asSInt>0.S
+  nodeResp.isLeaf := !nodeResp.rightValid & !nodeResp.leftValid
 
   pe.io.node_resp.valid := mem.io.valid
   pe.io.node_resp.bits := nodeResp

@@ -33,15 +33,22 @@ struct BVHHit {
 class BVH {
 public:
     BVH() = default;
-    void build(const std::vector<Triangle>& triangles);
+    void build(std::vector<Triangle>& triangles,
+               std::vector<std::array<float, 3>>& normals);
     BVHHit query(const float orig[3], const float dir[3]);
-    
+
+    // Read-only node access for DPI serialization.
+    size_t nodeCount() const { return nodes.size(); }
+    const BVHNode& nodeAt(size_t idx) const { return nodes[idx]; }
+
     // 渲染函数：输入碰撞三角形索引和光线方向，输出RGB值
     std::array<uint8_t, 3> render(int triIndex, const std::array<float, 3>& light_dir);
     
 private:
     std::vector<BVHNode> nodes;
     std::vector<int> triIndices;  // triangle indices sorted by BVH construction
+    void reorderLeafPrimitives(std::vector<Triangle>& triangles,
+                               std::vector<std::array<float, 3>>& normals);
     int buildRecursive(int start, int end, int depth);
     bool rayAABBIntersect(const float orig[3], const float dir[3], 
                           const AABB& aabb, float& tMin);

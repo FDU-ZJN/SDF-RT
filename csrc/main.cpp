@@ -23,8 +23,8 @@ using std::vector;
 vluint64_t main_time = 0;
 
 namespace {
-constexpr int kWidth = 400;
-constexpr int kHeight = 400;
+constexpr int kWidth = 40;
+constexpr int kHeight = 40;
 constexpr int kTriCount = 10000;
 constexpr int kMaxWaitCycles = 10000;
 
@@ -49,11 +49,10 @@ inline uint8_t colorToByte(uint32_t raw_bits) {
 void tick(VSimTop* dut, VerilatedVcdC* tfp) {
     dut->clock = 0;
     dut->eval();
-    // tfp->dump(main_time++);
+    tfp->dump(main_time++);
     dut->clock = 1;
     dut->eval();
-    main_time++;
-    // tfp->dump(main_time++);
+    tfp->dump(main_time++);
 }
 
 array<float, 3> makeRayDir(int x, int y) {
@@ -87,7 +86,7 @@ int main(int argc, char** argv) {
     }
     
     // Build BVH for CPU reference
-    globalBVH.build(triangles);
+    globalBVH.build(triangles, normals);
 
     Verilated::traceEverOn(true);
     auto* dut = new VSimTop;
@@ -98,10 +97,6 @@ int main(int argc, char** argv) {
     dut->clock = 0;
     dut->reset = 1;
     dut->io_ray_valid = 0;
-    dut->io_tri_batch_valid = 0;
-    dut->io_end_exec = 0;
-    dut->io_tri_batch_in_base_addr = 0;
-    dut->io_tri_batch_in_count = 0;
     dut->io_ray_in_origin_x = floatToU32(0.0f);
     dut->io_ray_in_origin_y = floatToU32(0.4f);
     dut->io_ray_in_origin_z = floatToU32(2.8f);
@@ -132,35 +127,15 @@ for (int py = 0; py < kHeight; ++py) {
             
             array<uint8_t, 3> rgb= {0, 0, 0};
             int readyWait = 0;
-            while (!dut->io_out_ready && readyWait < kMaxWaitCycles) {
-                dut->io_ray_valid = 0;
-                dut->io_tri_batch_valid = 0;
-                dut->io_end_exec = 0;
-                tick(dut, tfp);
-                ++readyWait;
-            }
-            if (readyWait >= kMaxWaitCycles) {
-                std::cerr << "Timeout waiting io_output_ready at pixel (" << px << "," << py << ")" << endl;
-                delete tfp; delete dut; return 2;
-            }
             dut->io_ray_in_origin_x = floatToU32(0.0f);
             dut->io_ray_in_origin_y = floatToU32(0.4f);
             dut->io_ray_in_origin_z = floatToU32(2.8f);
             dut->io_ray_in_dir_x = floatToU32(rayDir[0]);
             dut->io_ray_in_dir_y = floatToU32(rayDir[1]);
             dut->io_ray_in_dir_z = floatToU32(rayDir[2]);
-
-            dut->io_tri_batch_in_base_addr = 0;
-            dut->io_tri_batch_in_count = kTriCount;
             dut->io_ray_valid = 1;
-            dut->io_tri_batch_valid = 1;
-            dut->io_end_exec = 1;
             tick(dut, tfp);
-
-            // 3. 拉低有效信号，等待硬件计算完成
             dut->io_ray_valid = 0;
-            dut->io_tri_batch_valid = 0;
-            dut->io_end_exec = 0;
 
             int doneWait = 0;
             while (!dut->io_out_valid && doneWait < kMaxWaitCycles) {
@@ -196,7 +171,7 @@ for (int py = 0; py < kHeight; ++py) {
         std::fflush(stdout);
         printf("\rProgress: %.2f%%", 100.0 * (py + 1) / kHeight);
     }
-    printf("\nTotal hits: %zu, Mismatches: %zu,Average time per pixel: %.2f cycles\n", hitCount, mismatchCount, static_cast<double>(main_time) / (kWidth * kHeight));
+    printf("\nTotal hits: %zu, Mismatches: %zu,Average time per pixel: %.2f cycles\n", hitCount, mismatchCount, static_cast<double>(main_time/2) / (kWidth * kHeight));
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 
     tfp->close();
