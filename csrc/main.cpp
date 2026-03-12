@@ -24,8 +24,8 @@ using std::vector;
 vluint64_t main_time = 0;
 
 namespace {
-constexpr int kWidth = 40;
-constexpr int kHeight = 40;
+constexpr int kWidth = 400;
+constexpr int kHeight = 400;
 constexpr int kTriCount = 10000;
 constexpr int kMaxWaitCycles = 10000;
 
@@ -58,10 +58,12 @@ inline uint8_t colorToByte(uint32_t raw_bits) {
 void tick(VSimTop* dut, VerilatedVcdC* tfp) {
     dut->clock = 0;
     dut->eval();
-    tfp->dump(main_time++);
+    main_time++;
+    //tfp->dump(main_time);
     dut->clock = 1;
     dut->eval();
-    tfp->dump(main_time++);
+    main_time++;
+    //tfp->dump(main_time);
 }
 
 array<float, 3> makeRayDir(int x, int y) {

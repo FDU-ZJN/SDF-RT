@@ -1,13 +1,45 @@
-
 #include <BVH.h>
 #include <Mem.h>
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 
 BVH globalBVH;
 
 namespace {
+constexpr int kSahBins = 12;
+constexpr int kLeafTriThreshold = 4;
+constexpr float kCostAABB = 1.0f;
+constexpr float kCostTri = 1.5f;
+constexpr float kAxisEpsilon = 1e-6f;
+
+inline AABB triangleBounds(const Triangle& tri) {
+    AABB box;
+    for (int axis = 0; axis < 3; ++axis) {
+        box.min[axis] = std::min({tri.v0[axis], tri.v1[axis], tri.v2[axis]});
+        box.max[axis] = std::max({tri.v0[axis], tri.v1[axis], tri.v2[axis]});
+    }
+    return box;
+}
+
+inline void expandBounds(AABB& dst, const AABB& src) {
+    for (int axis = 0; axis < 3; ++axis) {
+        dst.min[axis] = std::min(dst.min[axis], src.min[axis]);
+        dst.max[axis] = std::max(dst.max[axis], src.max[axis]);
+    }
+}
+
+inline float surfaceArea(const AABB& box) {
+    const float dx = std::max(0.0f, box.max[0] - box.min[0]);
+    const float dy = std::max(0.0f, box.max[1] - box.min[1]);
+    const float dz = std::max(0.0f, box.max[2] - box.min[2]);
+    return 2.0f * (dx * dy + dy * dz + dz * dx);
+}
+
+inline float triangleCentroidAxis(const Triangle& tri, int axis) {
+    return (tri.v0[axis] + tri.v1[axis] + tri.v2[axis]) / 3.0f;
+}
 // Möller-Trumbore intersection for ray-triangle test
 bool rayTriangleIntersect(
     const float orig[3], const float dir[3],
@@ -83,66 +115,139 @@ bool BVH::rayAABBIntersect(const float orig[3], const float dir[3],
     return (tMax_ >= 0.0f);
 }
 
-// Build BVH recursively with midpoint splitting
+// Build BVH recursively with SAH bucket splitting
 int BVH::buildRecursive(int start, int end, int depth)
 {
+    (void)depth;
     if (start >= end) return -1;
 
     int nodeIdx = static_cast<int>(nodes.size());
     nodes.emplace_back();
 
-    // 不要在这里持有 BVHNode& 引用！先做完递归再赋值
-
-    // 计算 AABB
+    // 计算当前节点包围盒
     AABB bounds;
-    for (int i = 0; i < 3; ++i) {
-        bounds.min[i] = +1e30f;
-        bounds.max[i] = -1e30f;
-    }
     for (int i = start; i < end; ++i) {
         const Triangle& tri = triangles[triIndices[i]];
-        for (int axis = 0; axis < 3; ++axis) {
-            bounds.min[axis] = std::min({bounds.min[axis], tri.v0[axis], tri.v1[axis], tri.v2[axis]});
-            bounds.max[axis] = std::max({bounds.max[axis], tri.v0[axis], tri.v1[axis], tri.v2[axis]});
-        }
+        expandBounds(bounds, triangleBounds(tri));
     }
-
     nodes[nodeIdx].bounds = bounds;
 
-    int count = end - start;
-
-    if (count <= 4) {
-        nodes[nodeIdx].left     = -1;
-        nodes[nodeIdx].right    = -1;
+    const int count = end - start;
+    if (count <= kLeafTriThreshold) {
+        nodes[nodeIdx].left = -1;
+        nodes[nodeIdx].right = -1;
         nodes[nodeIdx].triStart = start;
         nodes[nodeIdx].triCount = count;
         return nodeIdx;
     }
 
-    // 选轴、分割...
-    float dx = bounds.max[0] - bounds.min[0];
-    float dy = bounds.max[1] - bounds.min[1];
-    float dz = bounds.max[2] - bounds.min[2];
-    int axis = 0;
-    if (dy > dx) axis = 1;
-    if (dz > (axis == 0 ? dx : dy)) axis = 2;
+    const float parentArea = surfaceArea(bounds);
+    const float leafCost = static_cast<float>(count) * kCostTri;
+    float bestCost = leafCost;
+    int bestAxis = -1;
+    float bestSplitPos = 0.0f;
 
-    float splitPos = (bounds.min[axis] + bounds.max[axis]) * 0.5f;
-    int mid = start;
-    for (int i = start; i < end; ++i) {
-        const Triangle& tri = triangles[triIndices[i]];
-        float triCenter = (tri.v0[axis] + tri.v1[axis] + tri.v2[axis]) / 3.0f;
-        if (triCenter < splitPos) std::swap(triIndices[i], triIndices[mid++]);
+    for (int axis = 0; axis < 3; ++axis) {
+        const float minAxis = bounds.min[axis];
+        const float maxAxis = bounds.max[axis];
+        const float extent = maxAxis - minAxis;
+        if (extent < kAxisEpsilon) {
+            continue;
+        }
+
+        std::array<int, kSahBins> binCounts{};
+        std::array<AABB, kSahBins> binBounds;
+
+        for (int i = start; i < end; ++i) {
+            const Triangle& tri = triangles[triIndices[i]];
+            const float centroid = triangleCentroidAxis(tri, axis);
+            const float norm = std::clamp((centroid - minAxis) / extent, 0.0f, 0.999999f);
+            const int bin = std::min(kSahBins - 1, static_cast<int>(norm * static_cast<float>(kSahBins)));
+            ++binCounts[bin];
+            expandBounds(binBounds[bin], triangleBounds(tri));
+        }
+
+        std::array<int, kSahBins - 1> leftCount{};
+        std::array<int, kSahBins - 1> rightCount{};
+        std::array<float, kSahBins - 1> leftArea{};
+        std::array<float, kSahBins - 1> rightArea{};
+
+        int runningCount = 0;
+        AABB runningBounds;
+        for (int b = 0; b < kSahBins - 1; ++b) {
+            runningCount += binCounts[b];
+            if (binCounts[b] > 0) {
+                expandBounds(runningBounds, binBounds[b]);
+            }
+            leftCount[b] = runningCount;
+            leftArea[b] = (runningCount > 0) ? surfaceArea(runningBounds) : 0.0f;
+        }
+
+        runningCount = 0;
+        runningBounds = AABB();
+        for (int b = kSahBins - 1; b >= 1; --b) {
+            runningCount += binCounts[b];
+            if (binCounts[b] > 0) {
+                expandBounds(runningBounds, binBounds[b]);
+            }
+            rightCount[b - 1] = runningCount;
+            rightArea[b - 1] = (runningCount > 0) ? surfaceArea(runningBounds) : 0.0f;
+        }
+
+        for (int split = 0; split < kSahBins - 1; ++split) {
+            const int lCount = leftCount[split];
+            const int rCount = rightCount[split];
+            if (lCount == 0 || rCount == 0 || parentArea <= kAxisEpsilon) {
+                continue;
+            }
+
+            const float pLeft = leftArea[split] / parentArea;
+            const float pRight = rightArea[split] / parentArea;
+            const float sahCost = 2.0f * kCostAABB +
+                                  (pLeft * static_cast<float>(lCount) +
+                                   pRight * static_cast<float>(rCount)) * kCostTri;
+
+            if (sahCost < bestCost) {
+                bestCost = sahCost;
+                bestAxis = axis;
+                bestSplitPos = minAxis + extent * (static_cast<float>(split + 1) / static_cast<float>(kSahBins));
+            }
+        }
     }
-    if (mid <= start) mid = start + 1;
-    else if (mid >= end) mid = end - 1;
 
-    // 递归完成后，nodes 可能已扩容，必须用 nodes[nodeIdx] 访问
-    int leftIdx  = buildRecursive(start, mid, depth + 1);
-    int rightIdx = buildRecursive(mid, end,   depth + 1);
+    if (bestAxis < 0) {
+        nodes[nodeIdx].left = -1;
+        nodes[nodeIdx].right = -1;
+        nodes[nodeIdx].triStart = start;
+        nodes[nodeIdx].triCount = count;
+        return nodeIdx;
+    }
 
-    nodes[nodeIdx].left     = leftIdx;   // ← 递归结束后再赋值，安全
-    nodes[nodeIdx].right    = rightIdx;
+    auto splitIt = std::partition(
+        triIndices.begin() + start,
+        triIndices.begin() + end,
+        [&](int triId) {
+            return triangleCentroidAxis(triangles[triId], bestAxis) <= bestSplitPos;
+        });
+
+    int mid = static_cast<int>(std::distance(triIndices.begin(), splitIt));
+    if (mid <= start || mid >= end) {
+        mid = start + count / 2;
+        std::nth_element(
+            triIndices.begin() + start,
+            triIndices.begin() + mid,
+            triIndices.begin() + end,
+            [&](int lhs, int rhs) {
+                return triangleCentroidAxis(triangles[lhs], bestAxis) <
+                       triangleCentroidAxis(triangles[rhs], bestAxis);
+            });
+    }
+
+    int leftIdx = buildRecursive(start, mid, depth + 1);
+    int rightIdx = buildRecursive(mid, end, depth + 1);
+
+    nodes[nodeIdx].left = leftIdx;
+    nodes[nodeIdx].right = rightIdx;
     nodes[nodeIdx].triStart = -1;
     nodes[nodeIdx].triCount = 0;
 
