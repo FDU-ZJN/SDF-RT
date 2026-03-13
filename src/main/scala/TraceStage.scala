@@ -8,21 +8,12 @@ import chisel3.util._
 class TraceStage() extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4, addrWidth = 32)
   val io = IO(new Bundle {
-    // 暴露给 Verilator 的顶层接口
-    val ray_in          = Input(new Ray(c.cfg))
-    val ray_meta        = Input(new RayMeta(c.addrWidth))
-    val ray_valid       = Input(Bool())
-    val tri_batch_in    = Input(new TriBatch(c.addrWidth))
-    val tri_batch_valid = Input(Bool())
-    val end_exec        = Input(Bool())
+    val issue_in = Flipped(Decoupled(new RayIssue(c.cfg, c.addrWidth)))
+    val tri_batch_in = Flipped(Decoupled(new TriBatch(c.addrWidth)))
+    val end_exec = Input(Bool())
 
-    val start_ready      = Output(Bool())
-    val out_best_hit    = Output(Bool())
-    val out_id          = Output(UInt(c.addrWidth.W))
-    val out_valid       = Output(Bool())
-    val out_result      = Output(new TraceResult(c.cfg, c.addrWidth))
-    val output_ready    = Output(Bool())
-    val best_t          = Output(UInt(c.cfg.totalWidth.W))
+    val hit_update = Valid(new TraceHitUpdate(c.cfg, c.addrWidth))
+    val result_out = Decoupled(new TraceResult(c.cfg, c.addrWidth))
   })
 
   val pe  = Module(new TriPE(c))
@@ -33,22 +24,30 @@ class TraceStage() extends Module {
   mem.io.req  <> pe.io.mem_req
   pe.io.mem_resp <> mem.io.resp
 
-  // 2. 外部 IO 对接
-  pe.io.ray_in          := io.ray_in
-  pe.io.ray_meta        := io.ray_meta
-  pe.io.ray_valid       := io.ray_valid
-  pe.io.tri_batch_in    := io.tri_batch_in
-  pe.io.tri_batch_valid := io.tri_batch_valid
-  pe.io.end_exec        := io.end_exec
+  pe.io.ray_in := io.issue_in.bits.ray
+  pe.io.ray_meta := io.issue_in.bits.meta
+  pe.io.ray_valid := io.issue_in.fire
+  // Stall ray issue when a previous result is still back-pressured.
+  val resultPending = RegInit(false.B)
+  io.issue_in.ready := pe.io.start_ready && !resultPending
 
-  io.start_ready        := pe.io.start_ready
-  io.out_best_hit       := pe.io.out_best_hit
-  io.out_id             := pe.io.hit_id
-  io.out_valid          := pe.io.out_done
-  io.out_result.meta    := pe.io.out_meta
-  io.out_result.hit     := pe.io.out_best_hit
-  io.out_result.hitId   := pe.io.hit_id
-  io.out_result.hitT    := pe.io.t_best
-  io.output_ready       := pe.io.output_ready
-  io.best_t             := pe.io.t_best
+  pe.io.tri_batch_in := io.tri_batch_in.bits
+  pe.io.tri_batch_valid := io.tri_batch_in.valid
+  io.tri_batch_in.ready := pe.io.output_ready
+  pe.io.end_exec := io.end_exec
+
+  io.hit_update.valid := pe.io.out_best_hit
+  io.hit_update.bits.hit := pe.io.out_best_hit
+  io.hit_update.bits.hitId := pe.io.hit_id
+  io.hit_update.bits.hitT := pe.io.t_best
+  val peResult = Wire(new TraceResult(c.cfg, c.addrWidth))
+  peResult.meta := pe.io.out_meta
+  peResult.hit := pe.io.out_best_hit
+  peResult.hitId := pe.io.hit_id
+  peResult.hitT := pe.io.t_best
+
+  io.result_out.valid := pe.io.out_done
+  io.result_out.bits := peResult
+
+
 }

@@ -59,11 +59,11 @@ void tick(VSimTop* dut, VerilatedVcdC* tfp) {
     dut->clock = 0;
     dut->eval();
     main_time++;
-    //tfp->dump(main_time);
+    // tfp->dump(main_time);
     dut->clock = 1;
     dut->eval();
     main_time++;
-    //tfp->dump(main_time);
+    // tfp->dump(main_time);
 }
 
 array<float, 3> makeRayDir(int x, int y) {
@@ -190,14 +190,16 @@ int main(int argc, char** argv) {
             image[idx + 2] = b;
 
             bool mismatch = false;
-            if (item.expectedTriId >= 0) {
+            if (item.expectedTriId >= 0) 
+            {
                 ++hitCount;
-                if (static_cast<int>(dut->io_out_id) != item.expectedTriId) {
+            if (static_cast<int>(dut->io_out_id) != item.expectedTriId) {
                     mismatch = true;
                     std::printf("ID mismatch at pixel (%d,%d): CPU triId=%d, HW triId=%d\n",
                                 item.px, item.py, item.expectedTriId, dut->io_out_id);
                 }
             }
+            
 
             if (mismatch) {
                 ++mismatchCount;

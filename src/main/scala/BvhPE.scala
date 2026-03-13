@@ -16,6 +16,7 @@ class BvhPE(val c: BvhPeConfig) extends Module {
     val start    = Input(Bool())
     val rootNode = Input(UInt(c.addrWidth.W))
     val ray_in   = Input(new Ray(c.cfg))
+    val start_meta = Input(new RayMeta(c.addrWidth))
 
     val hit_update_valid = Input(Bool())
     val hit_update_t     = Input(UInt(c.cfg.totalWidth.W))
@@ -25,10 +26,14 @@ class BvhPE(val c: BvhPeConfig) extends Module {
 
     val leaf_out = Decoupled(new TriBatch(c.addrWidth))
 
+    val no_leaf_done = Output(Bool())
+    val done_meta = Output(new RayMeta(c.addrWidth))
     val start_ready = Output(Bool())
     val busy        = Output(Bool())
     val done        = Output(Bool())
     val stack_level = Output(UInt(spWidth.W))
+    val ray_passthrough = Output(new Ray(c.cfg))
+    val first_leaf_pulse = Output(Bool())
   })
 
   // ── 全局状态寄存器 ──────────────────────────────────────────────────────────
@@ -36,6 +41,8 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   val active  = RegInit(false.B)
   val bestT   = RegInit(fpInf)
   val hasBest = RegInit(false.B)
+  val startMetaReg = Reg(new RayMeta(c.addrWidth))
+  val sawValidLeaf = RegInit(false.B)
 
   // ── 栈模块实例化 ────────────────────────────────────────────────────────────
   val bvhStack = Module(new BvhStack(c.addrWidth, c.stackDepth))
@@ -64,10 +71,11 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   when(io.start && !active) {
     active  := true.B
     rayReg  := io.ray_in
+    startMetaReg := io.start_meta
     bestT   := fpInf
     hasBest := false.B
+    sawValidLeaf := false.B
     outstandingNodes := 1.S
-    // 直接通过栈接口压入根节点（借助 pushLeft；pop=false, pushRight=false）
   }
 
   // ── 外部命中更新 ────────────────────────────────────────────────────────────
@@ -86,7 +94,8 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   cmpPrune.io.signaling := false.B
 
   // ── 节点接受与分类 ──────────────────────────────────────────────────────────
-  val nodeAccepted = nodeCtxValid && aabb.io.hit&& (!hasBest || cmpPrune.io.lt)
+  val nodeAccepted = nodeCtxValid && aabb.io.hit
+//  && (!hasBest || cmpPrune.io.lt)
   val isLeaf       = nodeCtxPipe.isLeaf
 
   val pushLeft  = nodeAccepted && !isLeaf && nodeCtxPipe.leftValid
@@ -107,9 +116,13 @@ class BvhPE(val c: BvhPeConfig) extends Module {
     bvhStack.io.pushRight := false.B
     bvhStack.io.pop       := false.B
   }
-
   // ── 叶子节点输出 ────────────────────────────────────────────────────────────
   val leafAccepted      = nodeAccepted && isLeaf&&nodeCtxPipe.triCount>0.U
+  val firstLeafPulse = leafAccepted && !sawValidLeaf
+  when(leafAccepted) {
+    sawValidLeaf := true.B
+  }
+  io.first_leaf_pulse := firstLeafPulse
   io.leaf_out.valid     := leafAccepted
   io.leaf_out.bits.base_addr := nodeCtxPipe.triStart
   io.leaf_out.bits.count     := nodeCtxPipe.triCount
@@ -139,6 +152,8 @@ class BvhPE(val c: BvhPeConfig) extends Module {
 
   // ── 完成脉冲 ────────────────────────────────────────────────────────────────
   val donePulse = active && nodeCtxValid && (nextOutstanding === 0.S)
+  io.no_leaf_done := donePulse && !sawValidLeaf && !leafAccepted
+  io.done_meta := startMetaReg
   when(donePulse) {
     active := false.B
   }
@@ -146,4 +161,13 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   io.busy        := active
   io.done        := donePulse
   io.stack_level := bvhStack.io.level
+
+  // ── 透射光线寄存器 ───────────────────────────────────────────────────────────
+  val rayPassthroughReg = Reg(new Ray(c.cfg))
+
+  when(io.start && !active) {
+    rayPassthroughReg := io.ray_in
+  }
+
+  io.ray_passthrough := rayPassthroughReg
 }

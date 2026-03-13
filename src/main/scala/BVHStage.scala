@@ -5,33 +5,38 @@ import raytrace_utils._
 
 class BVHStage(val c: BvhPeConfig) extends Module {
   val io = IO(new Bundle {
-    val start = Input(Bool())
-    val rootNode = Input(UInt(c.addrWidth.W))
-    val ray_in = Input(new Ray(c.cfg))
-    val hit_update_valid = Input(Bool())
-    val hit_update_t = Input(UInt(c.cfg.totalWidth.W))
+    val start_in = Flipped(Decoupled(new BvhStartReq(c.cfg, c.addrWidth)))
+    val hit_update = Flipped(Valid(new TraceHitUpdate(c.cfg, c.addrWidth)))
     val leaf_out = Decoupled(new TriBatch(c.addrWidth))
-    val start_ready = Output(Bool())
+    val no_leaf_done = Output(Bool())
+    val done_meta = Output(new RayMeta(c.addrWidth))
     val busy = Output(Bool())
     val done = Output(Bool())
     val stack_level = Output(UInt(log2Ceil(c.stackDepth + 1).W))
+    val ray_passthrough = Output(new Ray(c.cfg))
+    val first_leaf_pulse = Output(Bool())
   })
 
   val pe = Module(new BvhPE(c))
   val mem = Module(new BVHMenDPI(addrWidth = c.addrWidth, nodeBytes = 40))
 
   // Connect PE IO
-  pe.io.start := io.start
-  pe.io.rootNode := io.rootNode
-  pe.io.ray_in := io.ray_in
-  pe.io.hit_update_valid := io.hit_update_valid
-  pe.io.hit_update_t := io.hit_update_t
+  pe.io.start := io.start_in.fire
+  pe.io.rootNode := io.start_in.bits.rootNode
+  pe.io.ray_in := io.start_in.bits.ray
+  pe.io.start_meta := io.start_in.bits.meta
+  io.start_in.ready := pe.io.start_ready
+  pe.io.hit_update_valid := false.B
+  pe.io.hit_update_t := io.hit_update.bits.hitT
 
   io.leaf_out <> pe.io.leaf_out
-  io.start_ready := pe.io.start_ready
+  io.no_leaf_done := pe.io.no_leaf_done
+  io.done_meta := pe.io.done_meta
   io.busy := pe.io.busy
   io.done := pe.io.done
   io.stack_level := pe.io.stack_level
+  io.ray_passthrough := pe.io.ray_passthrough
+  io.first_leaf_pulse := pe.io.first_leaf_pulse
 
   // Connect PE node_req to memory
   mem.io.clk := clock

@@ -28,45 +28,54 @@ class SimTop extends Module {
   val bvhStage = Module(new BVHStage(bvhC))
   val traceStage = Module(new TraceStage())
 
-  val inputReady = bvhStage.io.start_ready && traceStage.io.start_ready && commitQueue.io.allocReady
+  val inputReady = bvhStage.io.start_in.ready && commitQueue.io.alloc.ready
   val inputFire = io.ray_valid && inputReady
 
-  commitQueue.io.allocValid := inputFire
+  commitQueue.io.alloc.valid := inputFire
+  commitQueue.io.alloc.bits := seqCounter
 
-  bvhStage.io.start := inputFire
-  bvhStage.io.rootNode := 0.U // root node index, can be parameterized
-  bvhStage.io.ray_in := io.ray_in
-  bvhStage.io.hit_update_valid := traceStage.io.out_best_hit
-  bvhStage.io.hit_update_t := traceStage.io.best_t
+  bvhStage.io.start_in.valid := inputFire
+  bvhStage.io.start_in.bits.ray := io.ray_in
+  bvhStage.io.start_in.bits.meta := rayMeta
+  bvhStage.io.start_in.bits.rootNode := 0.U // root node index, can be parameterized
+  bvhStage.io.hit_update := traceStage.io.hit_update
 
-  // TraceStage: connect leaf_out from BVHStage
-
-  traceStage.io.ray_in := io.ray_in
-  traceStage.io.ray_meta := rayMeta
-  traceStage.io.ray_valid := inputFire
-  traceStage.io.tri_batch_in := bvhStage.io.leaf_out.bits
-  traceStage.io.tri_batch_valid := bvhStage.io.leaf_out.valid
+  traceStage.io.issue_in.valid := bvhStage.io.first_leaf_pulse
+  traceStage.io.issue_in.bits.ray := bvhStage.io.ray_passthrough
+  traceStage.io.issue_in.bits.meta := bvhStage.io.done_meta
   traceStage.io.end_exec := bvhStage.io.done
 
-  bvhStage.io.leaf_out.ready := traceStage.io.output_ready
+  bvhStage.io.leaf_out <> traceStage.io.tri_batch_in
 
   io.out_ready := inputReady
 
   // RenderStage: connect hit info from TraceStage
   val renderStage = Module(new RenderStage(c.cfg))
-  renderStage.io.in_result := traceStage.io.out_result
-  renderStage.io.in_valid := traceStage.io.out_valid
+  renderStage.io.in <> traceStage.io.result_out
 
-  commitQueue.io.writebackValid := renderStage.io.out_valid
-  commitQueue.io.writeback := renderStage.io.out_result
+  commitQueue.io.writeback <> renderStage.io.out
+
+  val missQueue = Module(new Queue(new RenderResult(c.cfg, c.addrWidth), entries = 8))
+  val missResult = Wire(new RenderResult(c.cfg, c.addrWidth))
+  missResult.meta  := bvhStage.io.done_meta
+  missResult.hit   := false.B
+  missResult.hitId := 0.U
+  missResult.rgb.x := 0.U
+  missResult.rgb.y := 0.U
+  missResult.rgb.z := 0.U
+  missQueue.io.enq.valid := bvhStage.io.no_leaf_done
+  missQueue.io.enq.bits  := missResult
+  assert(!(bvhStage.io.no_leaf_done && !missQueue.io.enq.ready), "Miss Queue Overflow!")
+  commitQueue.io.writeback2 <> missQueue.io.deq
 
   when(inputFire) {
     seqCounter := seqCounter + 1.U
   }
 
-  io.out_rgb := commitQueue.io.outResult.rgb
-  io.out_valid := commitQueue.io.outValid
-  io.out_id := commitQueue.io.outResult.hitId
+  commitQueue.io.out.ready := true.B
+  io.out_rgb := commitQueue.io.out.bits.rgb
+  io.out_valid := commitQueue.io.out.valid
+  io.out_id := commitQueue.io.out.bits.hitId
 }
 
 object SimTopGen extends App {

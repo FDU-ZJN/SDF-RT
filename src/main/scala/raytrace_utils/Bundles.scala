@@ -66,3 +66,20 @@ class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends 
   val triStart = UInt(addrWidth.W)
   val triCount = UInt(16.W)
 }
+
+class BvhStartReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val rootNode = UInt(addrWidth.W)
+}
+
+class RayIssue(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+}
+
+class TraceHitUpdate(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
+}
