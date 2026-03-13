@@ -5,7 +5,7 @@ import raytrace_utils._
 
 class BVHStage(val c: BvhPeConfig) extends Module {
   val io = IO(new Bundle {
-    val start_in = Flipped(Decoupled(new BvhStartReq(c.cfg, c.addrWidth)))
+    val start_in = Flipped(Decoupled(new BvhStartReq(c.cfg)))
     val hit_update = Flipped(Valid(new TraceHitUpdate(c.cfg, c.addrWidth)))
     val leaf_out = Decoupled(new TriBatch(c.addrWidth))
     val no_leaf_done = Output(Bool())

@@ -67,10 +67,10 @@ class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends 
   val triCount = UInt(16.W)
 }
 
-class BvhStartReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+class BvhStartReq(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val rootNode = UInt(addrWidth.W)
+  val meta = new RayMeta(GlobalConfig.slotBits)
+  val rootNode = UInt(cfg.addrWidth.W)
 }
 
 class RayIssue(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {

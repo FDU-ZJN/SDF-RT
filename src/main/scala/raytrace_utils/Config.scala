@@ -1,7 +1,11 @@
 package raytrace_utils
 
 import chisel3._
-
+import chisel3.util.log2Ceil
+object GlobalConfig {
+  val commitQueueDepth = 16
+  val slotBits  = log2Ceil(commitQueueDepth)
+}
 case class FloatConfig(
                         expWidth: Int,
                         precision: Int,

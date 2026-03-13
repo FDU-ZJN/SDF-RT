@@ -2,12 +2,12 @@ package sdf_rt
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
-
-class CommitQueue(cfg: FloatConfig, depth: Int = 8) extends Module {
+import raytrace_utils.GlobalConfig._
+class CommitQueue(cfg: FloatConfig) extends Module {
+  val depth = commitQueueDepth
   require(depth > 1, "CommitQueue depth must be greater than 1")
   require(isPow2(depth), "CommitQueue depth must be a power of 2")  // FIX: 确保指针回绕正确
 
-  private val slotBits  = log2Ceil(depth)
   private val countBits = log2Ceil(depth + 1)
 
   val io = IO(new Bundle {

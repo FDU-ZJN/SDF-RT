@@ -16,7 +16,7 @@ class SimTop extends Module {
   })
 
   val seqCounter = RegInit(0.U(c.addrWidth.W))
-  val commitQueue = Module(new CommitQueue(c.cfg, depth = 8))
+  val commitQueue = Module(new CommitQueue(c.cfg))
 
   val rayMeta = Wire(new RayMeta(c.addrWidth))
   rayMeta.slotId := commitQueue.io.allocSlot
