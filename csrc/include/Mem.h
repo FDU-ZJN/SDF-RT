@@ -36,10 +36,11 @@ void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,
     std::vector<std::array<float,3>>& normals);
-
+void load_sdf_npz(const std::string& npz_path);
 extern std::vector<Triangle> triangles;
 extern std::vector<std::array<float,3>> normals;
-
+extern std::vector<float> global_sdf_flat;
+extern std::vector<float> local_sdf_flat;
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data);
 extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data);
 

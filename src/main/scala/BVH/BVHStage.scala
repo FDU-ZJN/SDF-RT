@@ -1,4 +1,5 @@
-package sdf_rt
+package BVH
+
 import chisel3._
 import chisel3.util._
 import raytrace_utils._

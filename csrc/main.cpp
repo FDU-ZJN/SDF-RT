@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iomanip>
 #include <stdexcept>
+#include <limits>
 
 #include "verilated.h"
 #include "VSimTop.h"
@@ -24,10 +25,11 @@ using std::vector;
 vluint64_t main_time = 0;
 
 namespace {
-constexpr int kWidth = 400;
-constexpr int kHeight = 400;
+constexpr int kWidth = 40;
+constexpr int kHeight = 40;
 constexpr int kTriCount = 10000;
 constexpr int kMaxWaitCycles = 10000;
+constexpr uint32_t kFpInf = 0x7F800000u;
 
 struct RayWorkItem {
     int px = 0;
@@ -59,11 +61,11 @@ void tick(VSimTop* dut, VerilatedVcdC* tfp) {
     dut->clock = 0;
     dut->eval();
     main_time++;
-    // tfp->dump(main_time);
+    tfp->dump(main_time);
     dut->clock = 1;
     dut->eval();
     main_time++;
-    // tfp->dump(main_time);
+    tfp->dump(main_time);
 }
 
 array<float, 3> makeRayDir(int x, int y) {
@@ -74,6 +76,37 @@ array<float, 3> makeRayDir(int x, int y) {
     float rd_z = -1.8f;
     float len = std::sqrt(rd_x * rd_x + rd_y * rd_y + rd_z * rd_z);
     return {rd_x / len, rd_y / len, rd_z / len};
+}
+
+// Compute mesh bounds from loaded triangles and apply the same 1.1 scale used by software preprocessing.
+array<float, 6> computeScaledBoundsFromTriangles(const vector<Triangle>& tris) {
+    float minX = std::numeric_limits<float>::infinity();
+    float minY = std::numeric_limits<float>::infinity();
+    float minZ = std::numeric_limits<float>::infinity();
+    float maxX = -std::numeric_limits<float>::infinity();
+    float maxY = -std::numeric_limits<float>::infinity();
+    float maxZ = -std::numeric_limits<float>::infinity();
+
+    auto update = [&](const std::array<float, 3>& p) {
+        minX = std::min(minX, p[0]);
+        minY = std::min(minY, p[1]);
+        minZ = std::min(minZ, p[2]);
+        maxX = std::max(maxX, p[0]);
+        maxY = std::max(maxY, p[1]);
+        maxZ = std::max(maxZ, p[2]);
+    };
+
+    for (const auto& tri : tris) {
+        update(tri.v0);
+        update(tri.v1);
+        update(tri.v2);
+    }
+
+    // Match Python-side logic: bounds_min, bounds_max = mesh.bounds * 1.1
+    return {
+        minX * 1.1f, minY * 1.1f, minZ * 1.1f,
+        maxX * 1.1f, maxY * 1.1f, maxZ * 1.1f
+    };
 }
 
 void writePPM(const string& path, const vector<uint8_t>& img, int width, int height) {
@@ -89,15 +122,34 @@ void writePPM(const string& path, const vector<uint8_t>& img, int width, int hei
 int main(int argc, char** argv) {
     cout << "SimTop 400x400 rendering..." << endl;
     Verilated::commandArgs(argc, argv);
+
+    const char* objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
+    const char* sdfPath = "/home/fate/code/SDF-RT/csrc/bunny_sdf_cache_hw.npz";
+
     printf("Loading model...\n");
-    loadModelFromObj("/home/fate/code/SDF-RT/csrc/bunny_10k.obj", triangles, normals);
+    loadModelFromObj(objPath, triangles, normals);
     if (triangles.empty()) {
         std::cerr << "No triangles loaded." << endl;
         return 1;
     }
-    
-    // Build BVH for CPU reference
-    globalBVH.build(triangles, normals);
+
+    const auto bounds = computeScaledBoundsFromTriangles(triangles);
+    const float gridMinX = bounds[0];
+    const float gridMinY = bounds[1];
+    const float gridMinZ = bounds[2];
+    const float gridMaxX = bounds[3];
+    const float gridMaxY = bounds[4];
+    const float gridMaxZ = bounds[5];
+    std::cout << "Setup grid bounds (scaled 1.1): min=("
+              << gridMinX << ", " << gridMinY << ", " << gridMinZ
+              << "), max=(" << gridMaxX << ", " << gridMaxY << ", " << gridMaxZ << ")" << std::endl;
+
+    printf("Loading SDF cache...\n");
+    load_sdf_npz(sdfPath);
+    if (global_sdf_flat.empty()) {
+        std::cerr << "SDF cache is empty." << endl;
+        return 2;
+    }
 
     Verilated::traceEverOn(true);
     auto* dut = new VSimTop;
@@ -105,15 +157,24 @@ int main(int argc, char** argv) {
     dut->trace(tfp, 99);
     tfp->open("raytrace.vcd");
 
+    // Reset + defaults
     dut->clock = 0;
     dut->reset = 1;
-    dut->io_ray_valid = 0;
-    dut->io_ray_in_origin_x = floatToU32(0.0f);
-    dut->io_ray_in_origin_y = floatToU32(0.4f);
-    dut->io_ray_in_origin_z = floatToU32(2.8f);
-    dut->io_ray_in_dir_x = floatToU32(0.0f);
-    dut->io_ray_in_dir_y = floatToU32(0.0f);
-    dut->io_ray_in_dir_z = floatToU32(0.0f);
+    dut->io_setup_valid = 0;
+    dut->io_setup_origin_x = floatToU32(0.0f);
+    dut->io_setup_origin_y = floatToU32(0.4f);
+    dut->io_setup_origin_z = floatToU32(2.8f);
+    // BBox setup for SDF grid range.
+    dut->io_setup_grid_min_x = floatToU32(gridMinX);
+    dut->io_setup_grid_min_y = floatToU32(gridMinY);
+    dut->io_setup_grid_min_z = floatToU32(gridMinZ);
+    dut->io_setup_grid_max_x = floatToU32(gridMaxX);
+    dut->io_setup_grid_max_y = floatToU32(gridMaxY);
+    dut->io_setup_grid_max_z = floatToU32(gridMaxZ);
+    dut->io_rd_valid = 0;
+    dut->io_rd_in_x = floatToU32(0.0f);
+    dut->io_rd_in_y = floatToU32(0.0f);
+    dut->io_rd_in_z = floatToU32(0.0f);
 
     for (int i = 0; i < 4; ++i) {
         tick(dut, tfp);
@@ -123,33 +184,39 @@ int main(int argc, char** argv) {
         tick(dut, tfp);
     }
 
-    const array<float, 3> light_dir = {0.577f, 0.577f, 0.577f};
-    const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
-    vector<RayWorkItem> workItems;
-    workItems.reserve(totalPixels);
+    // One-cycle setup preload.
+    dut->io_setup_valid = 1;
+    tick(dut, tfp);
+    dut->io_setup_valid = 0;
 
+    // Wait setup_finish.
+    int setupWait = 0;
+    while (!dut->io_setup_finish) {
+        tick(dut, tfp);
+        if (++setupWait > kMaxWaitCycles) {
+            std::cerr << "Timeout waiting for io_setup_finish." << endl;
+            tfp->close();
+            delete tfp;
+            delete dut;
+            return 3;
+        }
+    }
+    std::cout << "Setup finished after " << setupWait << " cycles." << std::endl;
+
+    const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
+    std::vector<RayWorkItem> workItems;
+    workItems.reserve(totalPixels);
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
             RayWorkItem item;
             item.px = px;
             item.py = py;
             item.dir = makeRayDir(px, py);
-
-            float rayOrig[3] = {0.0f, 0.4f, 2.8f};
-            float rayDir[3] = {item.dir[0], item.dir[1], item.dir[2]};
-            BVHHit cpuHit = globalBVH.query(rayOrig, rayDir);
-
-            item.expectedTriId = cpuHit.triId;
-            item.expectedRgb = (cpuHit.triId >= 0)
-                ? globalBVH.render(cpuHit.triId, light_dir)
-                : array<uint8_t, 3>{0, 0, 0};
             workItems.push_back(item);
         }
     }
 
-    vector<uint8_t> image(static_cast<size_t>(kWidth) * kHeight * 3, 0);
-    size_t hitCount = 0;
-    size_t mismatchCount = 0;
+    std::vector<uint8_t> image(totalPixels * 3, 0);
     size_t issued = 0;
     size_t retired = 0;
     int stallCycles = 0;
@@ -158,15 +225,12 @@ int main(int argc, char** argv) {
         const bool canIssue = (issued < totalPixels) && dut->io_out_ready;
         if (canIssue) {
             const RayWorkItem& item = workItems[issued];
-            dut->io_ray_in_origin_x = floatToU32(0.0f);
-            dut->io_ray_in_origin_y = floatToU32(0.4f);
-            dut->io_ray_in_origin_z = floatToU32(2.8f);
-            dut->io_ray_in_dir_x = floatToU32(item.dir[0]);
-            dut->io_ray_in_dir_y = floatToU32(item.dir[1]);
-            dut->io_ray_in_dir_z = floatToU32(item.dir[2]);
-            dut->io_ray_valid = 1;
+            dut->io_rd_in_x = floatToU32(item.dir[0]);
+            dut->io_rd_in_y = floatToU32(item.dir[1]);
+            dut->io_rd_in_z = floatToU32(item.dir[2]);
+            dut->io_rd_valid = 1;
         } else {
-            dut->io_ray_valid = 0;
+            dut->io_rd_valid = 0;
         }
 
         tick(dut, tfp);
@@ -179,31 +243,13 @@ int main(int argc, char** argv) {
 
         if (dut->io_out_valid) {
             const RayWorkItem& item = workItems[retired];
-
             const uint8_t r = colorToByte(dut->io_out_rgb_x);
             const uint8_t g = colorToByte(dut->io_out_rgb_y);
             const uint8_t b = colorToByte(dut->io_out_rgb_z);
-
             const size_t idx = (static_cast<size_t>(item.py) * kWidth + item.px) * 3;
             image[idx + 0] = r;
             image[idx + 1] = g;
             image[idx + 2] = b;
-
-            bool mismatch = false;
-            if (item.expectedTriId >= 0) 
-            {
-                ++hitCount;
-            if (static_cast<int>(dut->io_out_id) != item.expectedTriId) {
-                    mismatch = true;
-                    std::printf("ID mismatch at pixel (%d,%d): CPU triId=%d, HW triId=%d\n",
-                                item.px, item.py, item.expectedTriId, dut->io_out_id);
-                }
-            }
-            
-
-            if (mismatch) {
-                ++mismatchCount;
-            }
 
             ++retired;
             madeProgress = true;
@@ -216,19 +262,18 @@ int main(int argc, char** argv) {
 
         if (madeProgress) {
             stallCycles = 0;
-        } else {
-            ++stallCycles;
-        }
-
-        if (stallCycles >= kMaxWaitCycles) {
-            std::cerr << "Timeout: no issue/retire progress for " << stallCycles
+        } else if (++stallCycles >= kMaxWaitCycles) {
+            std::cerr << "\nTimeout: no issue/retire progress for " << stallCycles
                       << " cycles (issued=" << issued << ", retired=" << retired << ")" << endl;
+            tfp->close();
             delete tfp;
             delete dut;
-            return 3;
+            return 4;
         }
     }
-    printf("\nTotal hits: %zu, Mismatches: %zu,Average time per pixel: %.2f cycles\n", hitCount, mismatchCount, static_cast<double>(main_time/2) / (kWidth * kHeight));
+
+    std::printf("\nDone. Average cycles/pixel: %.2f\n",
+                static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 
     tfp->close();

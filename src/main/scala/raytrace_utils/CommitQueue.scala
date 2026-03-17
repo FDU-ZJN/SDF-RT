@@ -1,7 +1,7 @@
-package sdf_rt
+package raytrace_utils
+
 import chisel3._
 import chisel3.util._
-import raytrace_utils._
 import raytrace_utils.GlobalConfig._
 class CommitQueue(cfg: FloatConfig) extends Module {
   val depth = commitQueueDepth

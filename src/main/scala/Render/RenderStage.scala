@@ -1,8 +1,8 @@
-package sdf_rt
+package Render
+
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
-import raytrace_utils.fudian._
 
 class RenderStage(cfg: FloatConfig) extends Module {
   val io = IO(new Bundle {

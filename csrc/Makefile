@@ -8,7 +8,8 @@ WAVE_FILE = $(CSRC_DIR)/raytrace.vcd
 TOP_MODULE = SimTop
 # 捕获 build 目录下所有 .sv 文件，任何变化都会触发重编译
 VERILOG_SRC = $(wildcard $(BUILD_DIR)/*.sv)
-
+VCD2WLF = /opt/intelFPGA/20.1/modelsim_ase/bin/vcd2wlf
+WLF_FILE = $(CSRC_DIR)/raytrace.wlf
 # 自动搜集 C++ 源文件
 # 包含 main.cpp 以及 src 子目录下的所有 cpp
 # 使用“=”递归展开，每次执行 make 时都会重新计算文件列表，
@@ -26,10 +27,11 @@ INC_FLAGS = -I$(CSRC_DIR)/include \
 # Verilator 编译选项
 # --CFLAGS 会被传递给底层的 g++
 V_OPTS = --cc --trace --exe --build -j $(shell nproc) \
-         --top-module $(TOP_MODULE) \
-         --Mdir $(OBJ_DIR) \
-         --CFLAGS "$(INC_FLAGS) -g -Og -std=c++17" \
-         -I$(CSRC_DIR)/include
+		 --top-module $(TOP_MODULE) \
+		 --Mdir $(OBJ_DIR) \
+		 --CFLAGS "$(INC_FLAGS) -g -Og -std=c++17" \
+		 --LDFLAGS "-lcnpy" \
+		 -I$(CSRC_DIR)/include
 
 # 目标程序路径
 TARGET = $(BUILD_DIR)/test_runner
@@ -46,6 +48,7 @@ $(TARGET): $(VERILOG_SRC) $(CPPS)
 run: $(TARGET)
 	@echo "开始运行仿真..."
 	$(TARGET)
+	$(VCD2WLF) $(WAVE_FILE) $(WLF_FILE);
 wave:
 	@if [ -f $(WAVE_FILE) ]; then \
 		echo "正在启动 GTKWave 查看波形..."; \

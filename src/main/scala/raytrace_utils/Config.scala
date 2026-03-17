@@ -3,7 +3,7 @@ package raytrace_utils
 import chisel3._
 import chisel3.util.log2Ceil
 object GlobalConfig {
-  val commitQueueDepth = 16
+  val commitQueueDepth = 8
   val slotBits  = log2Ceil(commitQueueDepth)
 }
 case class FloatConfig(
@@ -42,4 +42,19 @@ case class BvhPeConfig(
                         reqQueueDepth: Int = 16,
                         leafQueueDepth: Int = 16,
                         cfg: FloatConfig = FloatConfig.FP32
+                      )
+
+case class SdfPeConfig(
+                        addrWidth: Int = 32,
+                        cfg: FloatConfig = FloatConfig.FP32,
+                        GlobalResX: Int = 16,
+                        GlobalResY: Int = 16,
+                        GlobalResZ: Int = 16,
+                        LocalResX: Int = 16,
+                        LocalResY: Int = 16,
+                        LocalResZ: Int = 16,
+                        maxSteps: Int = 30,
+                        thresholdHex: String = "3D23D70A", // 0.04f
+                        minStepHex: String = "3A83126F",   // 0.001f
+                        hitAdvanceHex: String = "358637BD" // 1e-6f
                       )

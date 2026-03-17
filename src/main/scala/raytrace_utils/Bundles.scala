@@ -21,7 +21,6 @@ class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 
 class RayMeta(addrWidth: Int = 32, pixelWidth: Int = 16) extends Bundle {
   val slotId = UInt(addrWidth.W)
-  val seqId = UInt(addrWidth.W)
   val pixelX = UInt(pixelWidth.W)
   val pixelY = UInt(pixelWidth.W)
 }
@@ -82,4 +81,35 @@ class TraceHitUpdate(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) e
   val hit = Bool()
   val hitId = UInt(addrWidth.W)
   val hitT = UInt(cfg.totalWidth.W)
+}
+
+class SdfRayReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val tNear = UInt(cfg.totalWidth.W)
+  val tFar = UInt(cfg.totalWidth.W)
+  val iter = UInt(16.W)
+}
+
+class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val hit = Bool()
+  val hitT = UInt(cfg.totalWidth.W)
+  val steps = UInt(16.W)
+  val iter = UInt(16.W)
+}
+
+class SdfMemReq(addrWidth: Int = 32) extends Bundle {
+  val globalIdx = UInt(addrWidth.W)
+  val localIdx = UInt(addrWidth.W)
+}
+
+class SdfInitReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val rd = new Vec3(cfg)
+  val meta = new RayMeta(addrWidth)
+}
+
+class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
+  val meta = new RayMeta(addrWidth)
 }

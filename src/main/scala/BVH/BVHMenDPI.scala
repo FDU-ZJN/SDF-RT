@@ -1,11 +1,10 @@
-package sdf_rt
+package BVH
+
 import chisel3._
 import chisel3.util._
-import raytrace_utils._
 
-class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInline {
-  val bytesPerNormal = 3 * 4 // 3 floats * 4 bytes
-  val totalBits = bytesPerNormal * 8
+class BVHMenDPI(val addrWidth: Int = 32, val nodeBytes: Int = 32) extends BlackBox with HasBlackBoxInline {
+  val totalBits = nodeBytes * 8
 
   val io = IO(new Bundle {
     val clk = Input(Clock())
@@ -19,9 +18,9 @@ class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInl
 
   val svCode =
     s"""
-       |import "DPI-C" function void normal_mem_read(input int addr, output byte data[]);
+       |import "DPI-C" function void bvh_mem_read(input int addr, output byte data[]);
        |
-       |module NormalMemDPI (
+       |module BVHMenDPI (
        |    input clk,
        |    input reset,
        |    input [${addrWidth - 1}:0] addr,
@@ -30,14 +29,14 @@ class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInl
        |    output reg valid,
        |    output reg [${addrWidth - 1}:0] addr_q
        |);
-       |    byte raw_buffer[${bytesPerNormal}];
+       |    byte raw_buffer[${nodeBytes}];
        |
        |    always @(posedge clk) begin
        |        if (reset) begin
        |            valid  <= 1'b0;
        |            addr_q <= '0;
        |        end else if (en) begin
-       |            normal_mem_read(addr, raw_buffer);
+       |            bvh_mem_read(addr, raw_buffer);
        |            valid  <= 1'b1;
        |            addr_q <= addr;
        |        end else begin
@@ -47,7 +46,7 @@ class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInl
        |
        |    genvar i;
        |    generate
-       |        for (i = 0; i < ${bytesPerNormal}; i = i + 1) begin
+       |        for (i = 0; i < ${nodeBytes}; i = i + 1) begin
        |            assign data[i*8 +: 8] = raw_buffer[i];
        |        end
        |    endgenerate
@@ -55,5 +54,5 @@ class NormalMemDPI(val addrWidth: Int = 16) extends BlackBox with HasBlackBoxInl
        |endmodule
   """.stripMargin
 
-  setInline("NormalMemDPI.sv", svCode)
+  setInline("BVHMenDPI.sv", svCode)
 }

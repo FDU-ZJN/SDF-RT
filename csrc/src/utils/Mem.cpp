@@ -9,9 +9,93 @@
 #include <iostream>
 #include <cstring>
 #include <BVH.h>
+// NPZ loader
+#include <cnpy.h>
+#include <vector>
+#include <unordered_map>
+#include <cassert>
 
 // Define epsilon for intersection tests
 constexpr float EPSILON = 1e-6f;
+
+// SDF storage (flat)
+std::vector<float> global_sdf_flat;
+size_t global_sdf_shape[3] = {0,0,0}; // I,J,K
+
+std::vector<float> local_sdf_flat;
+size_t local_sdf_shape[4] = {0,0,0,0}; // C,LI,LJ,LK
+
+std::vector<int> local_sdf_keys_flat; // [cell*3]
+size_t num_cells = 0;
+std::unordered_map<uint64_t, int> cell_index_map_flat; // hash(i,j,k) -> cell idx
+
+inline uint64_t hash_cell(int i, int j, int k) {
+    return (uint64_t(i) << 40) | (uint64_t(j) << 20) | uint64_t(k);
+}
+
+// SDF loader
+void load_sdf_npz(const std::string& npz_path) {
+    cnpy::npz_t npz = cnpy::npz_load(npz_path);
+
+    // global_sdf
+    cnpy::NpyArray global_arr = npz["global_sdf"];
+    assert(global_arr.shape.size() == 3);
+    global_sdf_shape[0] = global_arr.shape[0];
+    global_sdf_shape[1] = global_arr.shape[1];
+    global_sdf_shape[2] = global_arr.shape[2];
+    size_t total_g = global_arr.shape[0]*global_arr.shape[1]*global_arr.shape[2];
+    global_sdf_flat.resize(total_g);
+    float* gdata = global_arr.data<float>();
+    std::memcpy(global_sdf_flat.data(), gdata, total_g*sizeof(float));
+
+    // local_keys
+    cnpy::NpyArray keys_arr = npz["local_keys"];
+    num_cells = keys_arr.shape[0];
+    local_sdf_keys_flat.resize(num_cells*3);
+    int* keys_data = keys_arr.data<int>();
+    std::memcpy(local_sdf_keys_flat.data(), keys_data, num_cells*3*sizeof(int));
+    for(size_t c=0; c<num_cells; ++c) {
+        int i = local_sdf_keys_flat[c*3+0];
+        int j = local_sdf_keys_flat[c*3+1];
+        int k = local_sdf_keys_flat[c*3+2];
+        cell_index_map_flat[hash_cell(i,j,k)] = c;
+    }
+
+    // local_values
+    cnpy::NpyArray values_arr = npz["local_values"];
+    assert(values_arr.shape.size() == 4);
+    local_sdf_shape[0] = values_arr.shape[0];
+    local_sdf_shape[1] = values_arr.shape[1];
+    local_sdf_shape[2] = values_arr.shape[2];
+    local_sdf_shape[3] = values_arr.shape[3];
+    size_t total_l = values_arr.shape[0]*values_arr.shape[1]*values_arr.shape[2]*values_arr.shape[3];
+    local_sdf_flat.resize(total_l);
+    float* ldata = values_arr.data<float>();
+    std::memcpy(local_sdf_flat.data(), ldata, total_l*sizeof(float));
+
+    printf("Loaded SDF cache from %s | global_sdf shape: (%zu, %zu, %zu) local_sdf shape: (%zu, %zu, %zu, %zu) num_cells: %zu\n",
+           npz_path.c_str(),
+           global_sdf_shape[0], global_sdf_shape[1], global_sdf_shape[2],
+           local_sdf_shape[0], local_sdf_shape[1], local_sdf_shape[2], local_sdf_shape[3],
+           num_cells);
+}
+
+// SDF query
+float get_global_sdf(int i, int j, int k) {
+    size_t I = global_sdf_shape[0], J = global_sdf_shape[1], K = global_sdf_shape[2];
+    if(i<0 || j<0 || k<0 || i>=I || j>=J || k>=K) return 0.0f;
+    return global_sdf_flat[i*J*K + j*K + k];
+}
+float get_local_sdf(int cell_idx, int li, int lj, int lk) {
+    size_t C = local_sdf_shape[0], LI = local_sdf_shape[1], LJ = local_sdf_shape[2], LK = local_sdf_shape[3];
+    if(cell_idx<0 || cell_idx>=C || li<0 || lj<0 || lk<0 || li>=LI || lj>=LJ || lk>=LK) return 0.0f;
+    return local_sdf_flat[cell_idx*LI*LJ*LK + li*LJ*LK + lj*LK + lk];
+}
+int get_cell_index(int i, int j, int k) {
+    auto it = cell_index_map_flat.find(hash_cell(i,j,k));
+    if(it == cell_index_map_flat.end()) return -1;
+    return it->second;
+}
 
 std::vector<Triangle> triangles;
 std::vector<std::array<float,3>> normals;
@@ -34,6 +118,48 @@ inline void writeU32LE(uint8_t* dst, uint32_t value) {
     dst[3] = static_cast<uint8_t>((value >> 24) & 0xFFu);
 }
 } // namespace
+
+extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx) {
+    const size_t gx = global_sdf_shape[0];
+    const size_t gy = global_sdf_shape[1];
+    const size_t gz = global_sdf_shape[2];
+    if (gx == 0 || gy == 0 || gz == 0) {
+        return static_cast<int>(floatToRawU32(0.0f));
+    }
+
+    const size_t global_total = gx * gy * gz;
+    if (static_cast<size_t>(global_idx) >= global_total) {
+        return static_cast<int>(floatToRawU32(0.0f));
+    }
+
+    const int gi = static_cast<int>(global_idx % gx);
+    const int gj = static_cast<int>((global_idx / gx) % gy);
+    const int gk = static_cast<int>(global_idx / (gx * gy));
+
+    float value = get_global_sdf(gi, gj, gk);
+
+    const int cell_idx = get_cell_index(gi, gj, gk);
+    if (cell_idx >= 0) {
+        const size_t li_res = local_sdf_shape[1];
+        const size_t lj_res = local_sdf_shape[2];
+        const size_t lk_res = local_sdf_shape[3];
+        const size_t local_total = li_res * lj_res * lk_res;
+
+        if (li_res > 0 && lj_res > 0 && lk_res > 0 && static_cast<size_t>(local_idx) < local_total) {
+            const int li = static_cast<int>(local_idx % li_res);
+            const int lj = static_cast<int>((local_idx / li_res) % lj_res);
+            const int lk = static_cast<int>(local_idx / (li_res * lj_res));
+            value = get_local_sdf(cell_idx, li, lj, lk);
+        }
+    }
+    printf("[DPI-C] SDF Mem Read - GlobalIdx: %u (gi=%d,gj=%d,gk=%d) LocalIdx: %u (li=%d,lj=%d,lk=%d) Value: %f\n",
+            global_idx, gi, gj, gk,
+            local_idx, static_cast<int>(local_idx % local_sdf_shape[1]),
+            static_cast<int>((local_idx / local_sdf_shape[1]) % local_sdf_shape[2]),
+            static_cast<int>(local_idx / (local_sdf_shape[1] * local_sdf_shape[2])),
+            value);
+    return static_cast<int>(floatToRawU32(value));
+}
 
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
     if (data == nullptr) {

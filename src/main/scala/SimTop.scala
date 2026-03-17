@@ -1,83 +1,79 @@
-package sdf_rt
-import raytrace_utils._
+import SDF.{InitStage, SdfStage}
 import chisel3._
-import chisel3.util._
+import raytrace_utils._
 
 class SimTop extends Module {
-  val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4, addrWidth = 32)
-  val bvhC = BvhPeConfig(addrWidth = 32, stackDepth = 64, reqQueueDepth = 16, leafQueueDepth = 16, cfg = FloatConfig.FP32)
+  val c = TriPeConfig()
   val io = IO(new Bundle {
-    val ray_in = Input(new Ray(c.cfg))
-    val ray_valid = Input(Bool())
+    val setup_valid = Input(Bool())
+    val setup_origin = Input(new Vec3(c.cfg))
+    val setup_grid_min = Input(new Vec3(c.cfg))
+    val setup_grid_max = Input(new Vec3(c.cfg))
+    val setup_finish = Output(Bool())
+    val rd_in = Input(new Vec3(c.cfg))
+    val rd_valid = Input(Bool())
     val out_ready = Output(Bool())
     val out_rgb = Output(new Vec3(c.cfg))
     val out_valid = Output(Bool())
-    val out_id = Output(UInt(c.addrWidth.W))
   })
 
-  val seqCounter = RegInit(0.U(c.addrWidth.W))
+  val initStage = Module(new InitStage(c.cfg, c.addrWidth))
+  val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
-  val rayMeta = Wire(new RayMeta(c.addrWidth))
-  rayMeta.slotId := commitQueue.io.allocSlot
-  rayMeta.seqId := seqCounter
-  rayMeta.pixelX := 0.U
-  rayMeta.pixelY := 0.U
+  sdfStage.io.setup_valid := io.setup_valid
+  sdfStage.io.setup_origin := io.setup_origin
+  sdfStage.io.setup_grid_min := io.setup_grid_min
+  sdfStage.io.setup_grid_max := io.setup_grid_max
+  io.setup_finish := sdfStage.io.setup_finish
 
-  // BVHStage: ray input, root node, hit update
-  val bvhStage = Module(new BVHStage(bvhC))
-  val traceStage = Module(new TraceStage())
+  initStage.io.setup_origin := io.setup_origin
+  initStage.io.setup_grid_min := io.setup_grid_min
+  initStage.io.setup_grid_max := io.setup_grid_max
 
-  val inputReady = bvhStage.io.start_in.ready && commitQueue.io.alloc.ready
-  val inputFire = io.ray_valid && inputReady
+  val inputReady = initStage.io.in.ready && commitQueue.io.alloc.ready
+  val inputFire = io.rd_valid && inputReady
+
+  initStage.io.in.valid := io.rd_valid && commitQueue.io.alloc.ready
+  initStage.io.in.bits.rd := io.rd_in
+  initStage.io.in.bits.meta.slotId := commitQueue.io.allocSlot
+  initStage.io.in.bits.meta.pixelX := 0.U
+  initStage.io.in.bits.meta.pixelY := 0.U
 
   commitQueue.io.alloc.valid := inputFire
-  commitQueue.io.alloc.bits := seqCounter
+  commitQueue.io.alloc.bits := 0.U
 
-  bvhStage.io.start_in.valid := inputFire
-  bvhStage.io.start_in.bits.ray := io.ray_in
-  bvhStage.io.start_in.bits.meta := rayMeta
-  bvhStage.io.start_in.bits.rootNode := 0.U // root node index, can be parameterized
-  bvhStage.io.hit_update := traceStage.io.hit_update
+  sdfStage.io.issue_in.valid := initStage.io.to_sdf.valid
+  sdfStage.io.issue_in.bits := initStage.io.to_sdf.bits
+  initStage.io.to_sdf.ready := sdfStage.io.issue_in.ready
 
-  traceStage.io.issue_in.valid := bvhStage.io.first_leaf_pulse
-  traceStage.io.issue_in.bits.ray := bvhStage.io.ray_passthrough
-  traceStage.io.issue_in.bits.meta := bvhStage.io.done_meta
-  traceStage.io.end_exec := bvhStage.io.done
+  val zeroFp = 0.U(c.cfg.totalWidth.W)
 
-  bvhStage.io.leaf_out <> traceStage.io.tri_batch_in
+  val wb = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb.meta := sdfStage.io.out_meta
+  wb.hit := sdfStage.io.out_rgb.x =/= zeroFp
+  wb.hitId := 0.U
+  wb.rgb := sdfStage.io.out_rgb
+  commitQueue.io.writeback.valid := sdfStage.io.out_valid
+  commitQueue.io.writeback.bits := wb
 
-  io.out_ready := inputReady
-
-  // RenderStage: connect hit info from TraceStage
-  val renderStage = Module(new RenderStage(c.cfg))
-  renderStage.io.in <> traceStage.io.result_out
-
-  commitQueue.io.writeback <> renderStage.io.out
-
-  val missQueue = Module(new Queue(new RenderResult(c.cfg, c.addrWidth), entries = 8))
-  val missResult = Wire(new RenderResult(c.cfg, c.addrWidth))
-  missResult.meta  := bvhStage.io.done_meta
-  missResult.hit   := false.B
-  missResult.hitId := 0.U
-  missResult.rgb.x := 0.U
-  missResult.rgb.y := 0.U
-  missResult.rgb.z := 0.U
-  missQueue.io.enq.valid := bvhStage.io.no_leaf_done
-  missQueue.io.enq.bits  := missResult
-  assert(!(bvhStage.io.no_leaf_done && !missQueue.io.enq.ready), "Miss Queue Overflow!")
-  commitQueue.io.writeback2 <> missQueue.io.deq
-
-  when(inputFire) {
-    seqCounter := seqCounter + 1.U
-  }
+  val wb2 = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb2.meta := initStage.io.to_bypass.bits.meta
+  wb2.hit := false.B
+  wb2.hitId := 0.U
+  wb2.rgb.x := zeroFp
+  wb2.rgb.y := zeroFp
+  wb2.rgb.z := zeroFp
+  commitQueue.io.writeback2.valid := initStage.io.to_bypass.valid
+  commitQueue.io.writeback2.bits := wb2
+  initStage.io.to_bypass.ready := commitQueue.io.writeback2.ready
 
   commitQueue.io.out.ready := true.B
+
+  io.out_ready := inputReady
   io.out_rgb := commitQueue.io.out.bits.rgb
   io.out_valid := commitQueue.io.out.valid
-  io.out_id := commitQueue.io.out.bits.hitId
 }
-
 object SimTopGen extends App {
   emitVerilog(new SimTop(), Array("--target-dir", "build"))
 }

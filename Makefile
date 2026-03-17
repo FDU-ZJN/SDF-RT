@@ -23,6 +23,8 @@ $(TARGET): $(VERILOG_SOURCE) $(TEST_SOURCE)
 		--top-module $(VERILATOR_MODULE) \
 		--Mdir $(VERILATOR_TOP_DIR) \
 		$(TEST_SOURCE) $(VERILOG_SOURCE)\
+		-CFLAGS "" \
+		-LDFLAGS "-lcnpy" \
 		-o ../test_runner 
 	@touch $(TARGET)
 
