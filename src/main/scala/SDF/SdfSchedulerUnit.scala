@@ -26,8 +26,6 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   val newReq = Wire(new SdfRayReq(cfg, addrWidth))
   newReq.ray := io.issue_in.bits.ray
   newReq.meta := io.issue_in.bits.meta
-  newReq.tNear := 0.U
-  newReq.tFar := 0.U
   newReq.iter := 0.U
 
   val inArb = Module(new RRArbiter(new SdfRayReq(cfg, addrWidth), 2))
@@ -50,8 +48,6 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   retryQ.io.enq.valid := needRetry
   retryQ.io.enq.bits.ray := io.pe_out.bits.ray
   retryQ.io.enq.bits.meta := io.pe_out.bits.meta
-  retryQ.io.enq.bits.tNear := 0.U
-  retryQ.io.enq.bits.tFar := 0.U
   retryQ.io.enq.bits.iter := io.pe_out.bits.iter
   when(needRetry) {
     assert(retryQ.io.enq.ready, "SdfStage retryQ overflow")

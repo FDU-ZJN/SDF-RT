@@ -1,283 +1,330 @@
-#include <iostream>
-#include <fstream>
-#include <vector>
 #include <array>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
-#include <stdexcept>
+#include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-#include "verilated.h"
 #include "VSimTop.h"
+#include "verilated.h"
 #include "verilated_vcd_c.h"
-#include <Mem.h>
+
 #include <BVH.h>
+#include <Mem.h>
 
 using std::array;
 using std::cout;
 using std::endl;
-using std::ofstream;
-using std::string;
 using std::vector;
 
 vluint64_t main_time = 0;
 
 namespace {
-constexpr int kWidth = 40;
-constexpr int kHeight = 40;
-constexpr int kTriCount = 10000;
-constexpr int kMaxWaitCycles = 10000;
-constexpr uint32_t kFpInf = 0x7F800000u;
+constexpr int kMaxWaitCycles = 2048;
+constexpr int kGlobalRes = 16;
+constexpr int kLocalRes = 16;
+constexpr int kFullRes = kGlobalRes * kLocalRes;
+constexpr int kMaxSteps = 30;
+constexpr float kThreshold = 0.04f;
+constexpr float kMinStep = 0.001f;
 
-struct RayWorkItem {
-    int px = 0;
-    int py = 0;
-    array<float, 3> dir = {0.0f, 0.0f, 0.0f};
-    int expectedTriId = -1;
-    array<uint8_t, 3> expectedRgb = {0, 0, 0};
+struct StepResult {
+  array<float, 3> nextOrigin = {0.0f, 0.0f, 0.0f};
+  array<float, 3> dir = {0.0f, 0.0f, 0.0f};
+  bool hit = false;
+  float hitT = 0.0f;
+  uint16_t iter = 0;
+  uint16_t steps = 0;
+  bool inBounds = false;
+  unsigned globalIdx = 0;
+  unsigned localIdx = 0;
+  float sample = 0.0f;
 };
 
 inline uint32_t floatToU32(float v) {
-    uint32_t u = 0;
-    std::memcpy(&u, &v, sizeof(u));
-    return u;
+  uint32_t u = 0;
+  std::memcpy(&u, &v, sizeof(u));
+  return u;
 }
+
 inline float u32ToFloat(uint32_t u) {
-    float f = 0.0f;
-    std::memcpy(&f, &u, sizeof(f));
-    return f;
-}
-inline uint8_t colorToByte(uint32_t raw_bits) {
-    float v = u32ToFloat(raw_bits);
-    // 截断，防止溢出或无效值
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
-    // 映射到 0-255
-    return static_cast<uint8_t>(v * 255.999f);
-}
-void tick(VSimTop* dut, VerilatedVcdC* tfp) {
-    dut->clock = 0;
-    dut->eval();
-    main_time++;
-    tfp->dump(main_time);
-    dut->clock = 1;
-    dut->eval();
-    main_time++;
-    tfp->dump(main_time);
+  float f = 0.0f;
+  std::memcpy(&f, &u, sizeof(f));
+  return f;
 }
 
-array<float, 3> makeRayDir(int x, int y) {
-    float u = (2.0f * static_cast<float>(x) - kWidth) / static_cast<float>(kHeight);
-    float v = -(2.0f * static_cast<float>(y) - kHeight) / static_cast<float>(kHeight);
-    float rd_x = u;
-    float rd_y = v;
-    float rd_z = -1.8f;
-    float len = std::sqrt(rd_x * rd_x + rd_y * rd_y + rd_z * rd_z);
-    return {rd_x / len, rd_y / len, rd_z / len};
+inline bool almostEqual(float a, float b, float eps = 1e-6f) {
+  return std::fabs(a - b) <= eps;
 }
 
-// Compute mesh bounds from loaded triangles and apply the same 1.1 scale used by software preprocessing.
-array<float, 6> computeScaledBoundsFromTriangles(const vector<Triangle>& tris) {
-    float minX = std::numeric_limits<float>::infinity();
-    float minY = std::numeric_limits<float>::infinity();
-    float minZ = std::numeric_limits<float>::infinity();
-    float maxX = -std::numeric_limits<float>::infinity();
-    float maxY = -std::numeric_limits<float>::infinity();
-    float maxZ = -std::numeric_limits<float>::infinity();
-
-    auto update = [&](const std::array<float, 3>& p) {
-        minX = std::min(minX, p[0]);
-        minY = std::min(minY, p[1]);
-        minZ = std::min(minZ, p[2]);
-        maxX = std::max(maxX, p[0]);
-        maxY = std::max(maxY, p[1]);
-        maxZ = std::max(maxZ, p[2]);
-    };
-
-    for (const auto& tri : tris) {
-        update(tri.v0);
-        update(tri.v1);
-        update(tri.v2);
-    }
-
-    // Match Python-side logic: bounds_min, bounds_max = mesh.bounds * 1.1
-    return {
-        minX * 1.1f, minY * 1.1f, minZ * 1.1f,
-        maxX * 1.1f, maxY * 1.1f, maxZ * 1.1f
-    };
+void tick(VSimTop *dut, VerilatedVcdC *tfp) {
+  dut->clock = 0;
+  dut->eval();
+  ++main_time;
+  tfp->dump(main_time);
+  dut->clock = 1;
+  dut->eval();
+  ++main_time;
+  tfp->dump(main_time);
 }
 
-void writePPM(const string& path, const vector<uint8_t>& img, int width, int height) {
-    ofstream ofs(path, std::ios::binary);
-    if (!ofs.is_open()) {
-        throw std::runtime_error("failed to open output image file: " + path);
-    }
-    ofs << "P6\n" << width << " " << height << "\n255\n";
-    ofs.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+array<float, 6> computeScaledBoundsFromTriangles(const vector<Triangle> &tris) {
+  float minX = std::numeric_limits<float>::infinity();
+  float minY = std::numeric_limits<float>::infinity();
+  float minZ = std::numeric_limits<float>::infinity();
+  float maxX = -std::numeric_limits<float>::infinity();
+  float maxY = -std::numeric_limits<float>::infinity();
+  float maxZ = -std::numeric_limits<float>::infinity();
+
+  auto update = [&](const std::array<float, 3> &p) {
+    minX = std::min(minX, p[0]);
+    minY = std::min(minY, p[1]);
+    minZ = std::min(minZ, p[2]);
+    maxX = std::max(maxX, p[0]);
+    maxY = std::max(maxY, p[1]);
+    maxZ = std::max(maxZ, p[2]);
+  };
+
+  for (const auto &tri : tris) {
+    update(tri.v0);
+    update(tri.v1);
+    update(tri.v2);
+  }
+
+  return {minX * 1.1f, minY * 1.1f, minZ * 1.1f, maxX * 1.1f, maxY * 1.1f, maxZ * 1.1f};
+}
+
+extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx);
+
+StepResult softwareSingleStep(const array<float, 3> &ro,
+                              const array<float, 3> &rd,
+                              uint16_t iter,
+                              const array<float, 3> &gridMin,
+                              const array<float, 3> &invVoxel) {
+  StepResult r;
+  r.dir = rd;
+
+  const float currX = ro[0];
+  const float currY = ro[1];
+  const float currZ = ro[2];
+
+  const float idxXf = (currX - gridMin[0]) * invVoxel[0];
+  const float idxYf = (currY - gridMin[1]) * invVoxel[1];
+  const float idxZf = (currZ - gridMin[2]) * invVoxel[2];
+
+  const int xIdx = static_cast<int>(idxXf);
+  const int yIdx = static_cast<int>(idxYf);
+  const int zIdx = static_cast<int>(idxZf);
+
+  const bool inBounds = (xIdx >= 0 && yIdx >= 0 && zIdx >= 0 && xIdx < kFullRes && yIdx < kFullRes && zIdx < kFullRes);
+  r.inBounds = inBounds;
+
+  float sample = 0.0f;
+  if (inBounds) {
+    const int xGlobal = xIdx / kLocalRes;
+    const int yGlobal = yIdx / kLocalRes;
+    const int zGlobal = zIdx / kLocalRes;
+    const int xLocal = xIdx % kLocalRes;
+    const int yLocal = yIdx % kLocalRes;
+    const int zLocal = zIdx % kLocalRes;
+
+    const unsigned globalIdx = static_cast<unsigned>(xGlobal + yGlobal * kGlobalRes + zGlobal * kGlobalRes * kGlobalRes);
+    const unsigned localIdx = static_cast<unsigned>(xLocal + yLocal * kLocalRes + zLocal * kLocalRes * kLocalRes);
+    r.globalIdx = globalIdx;
+    r.localIdx = localIdx;
+
+    sample = u32ToFloat(static_cast<uint32_t>(sdf_mem_read(globalIdx, localIdx)));
+  }
+  r.sample = sample;
+
+  const bool hit = inBounds && (std::fabs(sample) <= kThreshold);
+  const float stepSel = (sample >= kMinStep) ? sample : kMinStep;
+
+  r.hit = hit;
+  r.hitT = 0.0f;
+
+  const uint16_t iterNext = static_cast<uint16_t>(iter + 1);
+  const uint16_t outIter = inBounds ? iterNext : static_cast<uint16_t>(kMaxSteps);
+  r.iter = outIter;
+  r.steps = outIter;
+
+  if (!inBounds || hit) {
+    r.nextOrigin = {currX, currY, currZ};
+  } else {
+    r.nextOrigin = {ro[0] + rd[0] * stepSel, ro[1] + rd[1] * stepSel, ro[2] + rd[2] * stepSel};
+  }
+
+  return r;
+}
+
+void printVec3(const char *name, const array<float, 3> &v) {
+  cout << name << " = (" << std::setprecision(9) << v[0] << ", " << v[1] << ", " << v[2] << ")" << endl;
 }
 } // namespace
 
-int main(int argc, char** argv) {
-    cout << "SimTop 400x400 rendering..." << endl;
-    Verilated::commandArgs(argc, argv);
+int main(int argc, char **argv) {
+  Verilated::commandArgs(argc, argv);
+  Verilated::traceEverOn(true);
 
-    const char* objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
-    const char* sdfPath = "/home/fate/code/SDF-RT/csrc/bunny_sdf_cache_hw.npz";
+  const char *objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
+  const char *sdfPath = "/home/fate/code/SDF-RT/csrc/bunny_sdf_cache_hw.npz";
 
-    printf("Loading model...\n");
-    loadModelFromObj(objPath, triangles, normals);
-    if (triangles.empty()) {
-        std::cerr << "No triangles loaded." << endl;
-        return 1;
+  cout << "Loading model..." << endl;
+  loadModelFromObj(objPath, triangles, normals);
+  if (triangles.empty()) {
+    std::cerr << "No triangles loaded." << endl;
+    return 1;
+  }
+
+  const auto bounds = computeScaledBoundsFromTriangles(triangles);
+  const array<float, 3> gridMin = {bounds[0], bounds[1], bounds[2]};
+  const array<float, 3> gridMax = {bounds[3], bounds[4], bounds[5]};
+  const array<float, 3> invVoxel = {
+      static_cast<float>(kFullRes) / (gridMax[0] - gridMin[0]),
+      static_cast<float>(kFullRes) / (gridMax[1] - gridMin[1]),
+      static_cast<float>(kFullRes) / (gridMax[2] - gridMin[2])};
+
+  cout << "Loading SDF cache..." << endl;
+  load_sdf_npz(sdfPath);
+  if (global_sdf_flat.empty()) {
+    std::cerr << "SDF cache is empty." << endl;
+    return 2;
+  }
+
+  auto *dut = new VSimTop;
+  auto *tfp = new VerilatedVcdC;
+  dut->trace(tfp, 99);
+  tfp->open("raytrace.vcd");
+
+  // Default IO
+  dut->clock = 0;
+  dut->reset = 1;
+  dut->io_grid_min_x = floatToU32(gridMin[0]);
+  dut->io_grid_min_y = floatToU32(gridMin[1]);
+  dut->io_grid_min_z = floatToU32(gridMin[2]);
+  dut->io_inv_voxel_x = floatToU32(invVoxel[0]);
+  dut->io_inv_voxel_y = floatToU32(invVoxel[1]);
+  dut->io_inv_voxel_z = floatToU32(invVoxel[2]);
+
+  dut->io_in_valid = 0;
+  dut->io_in_bits_ray_origin_x = 0;
+  dut->io_in_bits_ray_origin_y = 0;
+  dut->io_in_bits_ray_origin_z = 0;
+  dut->io_in_bits_ray_dir_x = 0;
+  dut->io_in_bits_ray_dir_y = 0;
+  dut->io_in_bits_ray_dir_z = 0;
+  dut->io_in_bits_meta_slotId = 0;
+  dut->io_in_bits_meta_pixelX = 0;
+  dut->io_in_bits_meta_pixelY = 0;
+  dut->io_in_bits_iter = 0;
+  dut->io_out_ready = 1;
+
+  for (int i = 0; i < 4; ++i) tick(dut, tfp);
+  dut->reset = 0;
+  for (int i = 0; i < 4; ++i) tick(dut, tfp);
+
+  const array<float, 3> rayOrigin = {0.0f, 0.4f, 2.8f};
+  const array<float, 3> rayDir = {0.0f, 0.0f, -1.0f};
+  const uint16_t iter = 0;
+
+  const StepResult sw = softwareSingleStep(rayOrigin, rayDir, iter, gridMin, invVoxel);
+
+  bool issued = false;
+  int waitCycles = 0;
+  while (!issued) {
+    if (dut->io_in_ready) {
+      dut->io_in_bits_ray_origin_x = floatToU32(rayOrigin[0]);
+      dut->io_in_bits_ray_origin_y = floatToU32(rayOrigin[1]);
+      dut->io_in_bits_ray_origin_z = floatToU32(rayOrigin[2]);
+      dut->io_in_bits_ray_dir_x = floatToU32(rayDir[0]);
+      dut->io_in_bits_ray_dir_y = floatToU32(rayDir[1]);
+      dut->io_in_bits_ray_dir_z = floatToU32(rayDir[2]);
+      dut->io_in_bits_meta_slotId = 0;
+      dut->io_in_bits_meta_pixelX = 0;
+      dut->io_in_bits_meta_pixelY = 0;
+      dut->io_in_bits_iter = iter;
+      dut->io_in_valid = 1;
+      tick(dut, tfp);
+      dut->io_in_valid = 0;
+      issued = true;
+    } else {
+      tick(dut, tfp);
     }
-
-    const auto bounds = computeScaledBoundsFromTriangles(triangles);
-    const float gridMinX = bounds[0];
-    const float gridMinY = bounds[1];
-    const float gridMinZ = bounds[2];
-    const float gridMaxX = bounds[3];
-    const float gridMaxY = bounds[4];
-    const float gridMaxZ = bounds[5];
-    std::cout << "Setup grid bounds (scaled 1.1): min=("
-              << gridMinX << ", " << gridMinY << ", " << gridMinZ
-              << "), max=(" << gridMaxX << ", " << gridMaxY << ", " << gridMaxZ << ")" << std::endl;
-
-    printf("Loading SDF cache...\n");
-    load_sdf_npz(sdfPath);
-    if (global_sdf_flat.empty()) {
-        std::cerr << "SDF cache is empty." << endl;
-        return 2;
+    if (++waitCycles > kMaxWaitCycles) {
+      std::cerr << "Timeout waiting io_in_ready." << endl;
+      tfp->close();
+      delete tfp;
+      delete dut;
+      return 3;
     }
+  }
 
-    Verilated::traceEverOn(true);
-    auto* dut = new VSimTop;
-    auto* tfp = new VerilatedVcdC;
-    dut->trace(tfp, 99);
-    tfp->open("raytrace.vcd");
-
-    // Reset + defaults
-    dut->clock = 0;
-    dut->reset = 1;
-    dut->io_setup_valid = 0;
-    dut->io_setup_origin_x = floatToU32(0.0f);
-    dut->io_setup_origin_y = floatToU32(0.4f);
-    dut->io_setup_origin_z = floatToU32(2.8f);
-    // BBox setup for SDF grid range.
-    dut->io_setup_grid_min_x = floatToU32(gridMinX);
-    dut->io_setup_grid_min_y = floatToU32(gridMinY);
-    dut->io_setup_grid_min_z = floatToU32(gridMinZ);
-    dut->io_setup_grid_max_x = floatToU32(gridMaxX);
-    dut->io_setup_grid_max_y = floatToU32(gridMaxY);
-    dut->io_setup_grid_max_z = floatToU32(gridMaxZ);
-    dut->io_rd_valid = 0;
-    dut->io_rd_in_x = floatToU32(0.0f);
-    dut->io_rd_in_y = floatToU32(0.0f);
-    dut->io_rd_in_z = floatToU32(0.0f);
-
-    for (int i = 0; i < 4; ++i) {
-        tick(dut, tfp);
-    }
-    dut->reset = 0;
-    for (int i = 0; i < 4; ++i) {
-        tick(dut, tfp);
-    }
-
-    // One-cycle setup preload.
-    dut->io_setup_valid = 1;
+  waitCycles = 0;
+  while (!dut->io_out_valid) {
     tick(dut, tfp);
-    dut->io_setup_valid = 0;
-
-    // Wait setup_finish.
-    int setupWait = 0;
-    while (!dut->io_setup_finish) {
-        tick(dut, tfp);
-        if (++setupWait > kMaxWaitCycles) {
-            std::cerr << "Timeout waiting for io_setup_finish." << endl;
-            tfp->close();
-            delete tfp;
-            delete dut;
-            return 3;
-        }
+    if (++waitCycles > kMaxWaitCycles) {
+      std::cerr << "Timeout waiting io_out_valid." << endl;
+      tfp->close();
+      delete tfp;
+      delete dut;
+      return 4;
     }
-    std::cout << "Setup finished after " << setupWait << " cycles." << std::endl;
+  }
 
-    const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
-    std::vector<RayWorkItem> workItems;
-    workItems.reserve(totalPixels);
-    for (int py = 0; py < kHeight; ++py) {
-        for (int px = 0; px < kWidth; ++px) {
-            RayWorkItem item;
-            item.px = px;
-            item.py = py;
-            item.dir = makeRayDir(px, py);
-            workItems.push_back(item);
-        }
-    }
+  const array<float, 3> hwOrigin = {
+      u32ToFloat(dut->io_out_bits_ray_origin_x),
+      u32ToFloat(dut->io_out_bits_ray_origin_y),
+      u32ToFloat(dut->io_out_bits_ray_origin_z)};
+  const array<float, 3> hwDir = {
+      u32ToFloat(dut->io_out_bits_ray_dir_x),
+      u32ToFloat(dut->io_out_bits_ray_dir_y),
+      u32ToFloat(dut->io_out_bits_ray_dir_z)};
+  const bool hwHit = dut->io_out_bits_hit;
+  const float hwHitT = u32ToFloat(dut->io_out_bits_hitT);
+  const uint16_t hwIter = static_cast<uint16_t>(dut->io_out_bits_iter);
+  const uint16_t hwSteps = static_cast<uint16_t>(dut->io_out_bits_steps);
 
-    std::vector<uint8_t> image(totalPixels * 3, 0);
-    size_t issued = 0;
-    size_t retired = 0;
-    int stallCycles = 0;
+  cout << "\n=== Software One-Step ===" << endl;
+  printVec3("sw.nextOrigin", sw.nextOrigin);
+  printVec3("sw.dir", sw.dir);
+  cout << "sw.hit=" << sw.hit << " sw.hitT=" << sw.hitT
+       << " sw.iter=" << sw.iter << " sw.steps=" << sw.steps
+       << " sw.inBounds=" << sw.inBounds
+       << " sw.globalIdx=" << sw.globalIdx << " sw.localIdx=" << sw.localIdx
+       << " sw.sample=" << sw.sample << endl;
 
-    while (retired < totalPixels) {
-        const bool canIssue = (issued < totalPixels) && dut->io_out_ready;
-        if (canIssue) {
-            const RayWorkItem& item = workItems[issued];
-            dut->io_rd_in_x = floatToU32(item.dir[0]);
-            dut->io_rd_in_y = floatToU32(item.dir[1]);
-            dut->io_rd_in_z = floatToU32(item.dir[2]);
-            dut->io_rd_valid = 1;
-        } else {
-            dut->io_rd_valid = 0;
-        }
+  cout << "\n=== Hardware One-Step ===" << endl;
+  printVec3("hw.nextOrigin", hwOrigin);
+  printVec3("hw.dir", hwDir);
+  cout << "hw.hit=" << hwHit << " hw.hitT=" << hwHitT
+       << " hw.iter=" << hwIter << " hw.steps=" << hwSteps << endl;
 
-        tick(dut, tfp);
+  bool pass = true;
+  pass &= almostEqual(hwOrigin[0], sw.nextOrigin[0]);
+  pass &= almostEqual(hwOrigin[1], sw.nextOrigin[1]);
+  pass &= almostEqual(hwOrigin[2], sw.nextOrigin[2]);
+  pass &= almostEqual(hwDir[0], sw.dir[0]);
+  pass &= almostEqual(hwDir[1], sw.dir[1]);
+  pass &= almostEqual(hwDir[2], sw.dir[2]);
+  pass &= (hwHit == sw.hit);
+  pass &= almostEqual(hwHitT, sw.hitT);
+  pass &= (hwIter == sw.iter);
+  pass &= (hwSteps == sw.steps);
 
-        bool madeProgress = false;
-        if (canIssue) {
-            ++issued;
-            madeProgress = true;
-        }
+  cout << "\n=== Diff Result ===" << endl;
+  if (pass) {
+    cout << "PASS: HW and SW single-step results match." << endl;
+  } else {
+    cout << "FAIL: HW and SW single-step results differ." << endl;
+  }
 
-        if (dut->io_out_valid) {
-            const RayWorkItem& item = workItems[retired];
-            const uint8_t r = colorToByte(dut->io_out_rgb_x);
-            const uint8_t g = colorToByte(dut->io_out_rgb_y);
-            const uint8_t b = colorToByte(dut->io_out_rgb_z);
-            const size_t idx = (static_cast<size_t>(item.py) * kWidth + item.px) * 3;
-            image[idx + 0] = r;
-            image[idx + 1] = g;
-            image[idx + 2] = b;
+  tfp->close();
+  delete tfp;
+  delete dut;
 
-            ++retired;
-            madeProgress = true;
-            std::fflush(stdout);
-            std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
-                        100.0 * static_cast<double>(retired) / static_cast<double>(totalPixels),
-                        issued,
-                        retired);
-        }
-
-        if (madeProgress) {
-            stallCycles = 0;
-        } else if (++stallCycles >= kMaxWaitCycles) {
-            std::cerr << "\nTimeout: no issue/retire progress for " << stallCycles
-                      << " cycles (issued=" << issued << ", retired=" << retired << ")" << endl;
-            tfp->close();
-            delete tfp;
-            delete dut;
-            return 4;
-        }
-    }
-
-    std::printf("\nDone. Average cycles/pixel: %.2f\n",
-                static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
-    writePPM("render_400x400.ppm", image, kWidth, kHeight);
-
-    tfp->close();
-    delete tfp;
-    delete dut;
-    return 0;
+  return pass ? 0 : 5;
 }

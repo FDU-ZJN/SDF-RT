@@ -86,8 +86,6 @@ class TraceHitUpdate(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) e
 class SdfRayReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
-  val tNear = UInt(cfg.totalWidth.W)
-  val tFar = UInt(cfg.totalWidth.W)
   val iter = UInt(16.W)
 }
 

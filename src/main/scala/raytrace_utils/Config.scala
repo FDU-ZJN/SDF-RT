@@ -45,16 +45,20 @@ case class BvhPeConfig(
                       )
 
 case class SdfPeConfig(
-                        addrWidth: Int = 32,
-                        cfg: FloatConfig = FloatConfig.FP32,
-                        GlobalResX: Int = 16,
-                        GlobalResY: Int = 16,
-                        GlobalResZ: Int = 16,
-                        LocalResX: Int = 16,
-                        LocalResY: Int = 16,
-                        LocalResZ: Int = 16,
-                        maxSteps: Int = 30,
-                        thresholdHex: String = "3D23D70A", // 0.04f
-                        minStepHex: String = "3A83126F",   // 0.001f
-                        hitAdvanceHex: String = "358637BD" // 1e-6f
-                      )
+  addrWidth: Int = 32,
+  cfg: FloatConfig = FloatConfig.FP32,
+  GlobalResX: Int = 16,
+  GlobalResY: Int = 16,
+  GlobalResZ: Int = 16,
+  LocalResX: Int = 16,
+  LocalResY: Int = 16,
+  LocalResZ: Int = 16,
+  maxSteps: Int = 30,
+  threshold: Float = 0.04f,
+  minStep: Float = 0.001f,
+  hitAdvance: Float = 1e-6f
+) {
+  val thresholdBits  = java.lang.Float.floatToRawIntBits(threshold)
+  val minStepBits    = java.lang.Float.floatToRawIntBits(minStep)
+  val hitAdvanceBits = java.lang.Float.floatToRawIntBits(hitAdvance)
+}
