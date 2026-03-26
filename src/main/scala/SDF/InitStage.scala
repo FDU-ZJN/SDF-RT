@@ -1,12 +1,11 @@
 package SDF
 
-import BVH.RayAABBIntersection
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 
-class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
+class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) extends Module {
   val io = IO(new Bundle {
     val setup_origin = Input(new Vec3(cfg))
     val setup_grid_min = Input(new Vec3(cfg))
@@ -21,7 +20,9 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
   val rm = RNE
   val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency
+  val entryLatency = cfg.faddLatency
   val pointLatency = cfg.fmulLatency + cfg.faddLatency
+  val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)
 
   val rayWire = Wire(new Ray(cfg))
   rayWire.origin := io.setup_origin
@@ -45,40 +46,56 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
   val slotAtAabb = ShiftRegister(io.in.bits.meta.slotId, aabbLatency)
 
+  val tEntry = Module(new FADD(cfg))
+  tEntry.io.a := aabb.io.tNear
+  tEntry.io.b := entryAdvanceBits
+  tEntry.io.rm := rm
+
+  val rdXAtEntry = ShiftRegister(rdXAtAabb, entryLatency)
+  val rdYAtEntry = ShiftRegister(rdYAtAabb, entryLatency)
+  val rdZAtEntry = ShiftRegister(rdZAtAabb, entryLatency)
+
+  val roXAtEntry = ShiftRegister(roXAtAabb, entryLatency)
+  val roYAtEntry = ShiftRegister(roYAtAabb, entryLatency)
+  val roZAtEntry = ShiftRegister(roZAtAabb, entryLatency)
+
+  val slotAtEntry = ShiftRegister(slotAtAabb, entryLatency)
+
   val mulX = Module(new FMUL(cfg))
   val mulY = Module(new FMUL(cfg))
   val mulZ = Module(new FMUL(cfg))
 
-  mulX.io.a := rdXAtAabb
-  mulX.io.b := aabb.io.tNear
+  mulX.io.a := rdXAtEntry
+  mulX.io.b := tEntry.io.res
   mulX.io.rm := rm
-  mulY.io.a := rdYAtAabb
-  mulY.io.b := aabb.io.tNear
+  mulY.io.a := rdYAtEntry
+  mulY.io.b := tEntry.io.res
   mulY.io.rm := rm
-  mulZ.io.a := rdZAtAabb
-  mulZ.io.b := aabb.io.tNear
+  mulZ.io.a := rdZAtEntry
+  mulZ.io.b := tEntry.io.res
   mulZ.io.rm := rm
 
   val addX = Module(new FADD(cfg))
   val addY = Module(new FADD(cfg))
   val addZ = Module(new FADD(cfg))
 
-  addX.io.a := roXAtAabb
+  addX.io.a := roXAtEntry
   addX.io.b := mulX.io.result
   addX.io.rm := rm
-  addY.io.a := roYAtAabb
+  addY.io.a := roYAtEntry
   addY.io.b := mulY.io.result
   addY.io.rm := rm
-  addZ.io.a := roZAtAabb
+  addZ.io.a := roZAtEntry
   addZ.io.b := mulZ.io.result
   addZ.io.rm := rm
 
-  val outValid = ShiftRegister(aabb.io.out_valid, pointLatency)
-  val outHit = ShiftRegister(aabb.io.hit, pointLatency)
-  val outSlot = ShiftRegister(slotAtAabb, pointLatency)
-  val outRdX = ShiftRegister(rdXAtAabb, pointLatency)
-  val outRdY = ShiftRegister(rdYAtAabb, pointLatency)
-  val outRdZ = ShiftRegister(rdZAtAabb, pointLatency)
+  val outAlignLatency = entryLatency + pointLatency
+  val outValid = ShiftRegister(aabb.io.out_valid, outAlignLatency)
+  val outHit = ShiftRegister(aabb.io.hit, outAlignLatency)
+  val outSlot = ShiftRegister(slotAtEntry, pointLatency)
+  val outRdX = ShiftRegister(rdXAtEntry, pointLatency)
+  val outRdY = ShiftRegister(rdYAtEntry, pointLatency)
+  val outRdZ = ShiftRegister(rdZAtEntry, pointLatency)
 
   io.to_sdf.valid := outValid && outHit
   io.to_sdf.bits.ray.origin.x := addX.io.res

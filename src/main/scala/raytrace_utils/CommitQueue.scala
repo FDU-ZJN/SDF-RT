@@ -15,6 +15,7 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     val allocSlot = Output(UInt(slotBits.W))          // FIX: 宽度改为 slotBits，不是 addrWidth
     val writeback  = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val writeback2 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
+    val writeback3 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val out        = Decoupled(new RenderResult(cfg, cfg.addrWidth))
   })
 
@@ -42,20 +43,28 @@ class CommitQueue(cfg: FloatConfig) extends Module {
 
   // ---- writeback 侧：截断到槽位索引 ----
   val wbIdx     = io.writeback.bits.meta.slotId(slotBits - 1, 0)
-  val directIdx = io.writeback2.bits.meta.slotId(slotBits - 1, 0)
+  val wb2Idx    = io.writeback2.bits.meta.slotId(slotBits - 1, 0)
+  val wb3Idx    = io.writeback3.bits.meta.slotId(slotBits - 1, 0)
 
   io.writeback.ready  := true.B
   io.writeback2.ready := true.B
+  io.writeback3.ready := true.B
 
-  val doDirect = io.writeback2.fire
-  val doWb     = io.writeback.fire &&
-    !(doDirect && (directIdx === wbIdx))   // 同周期同槽位：writeback2 优先
+  val doWb2 = io.writeback2.fire
+  val doWb3 = io.writeback3.fire && !(doWb2 && (wb2Idx === wb3Idx))
+  val doWb1 = io.writeback.fire &&
+    !(doWb2 && (wb2Idx === wbIdx)) &&
+    !(doWb3 && (wb3Idx === wbIdx))
 
-  when(doDirect) {
-    entries(directIdx) := io.writeback2.bits
-    done(directIdx)    := true.B
+  when(doWb2) {
+    entries(wb2Idx) := io.writeback2.bits
+    done(wb2Idx)    := true.B
   }
-  when(doWb) {
+  when(doWb3) {
+    entries(wb3Idx) := io.writeback3.bits
+    done(wb3Idx)    := true.B
+  }
+  when(doWb1) {
     entries(wbIdx) := io.writeback.bits
     done(wbIdx)    := true.B
   }

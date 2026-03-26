@@ -34,9 +34,26 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val globalPlaneU = (c.GlobalResX * c.GlobalResY).U((2 * c.addrWidth).W)
 
   val localResXU = c.LocalResX.U(c.addrWidth.W)
-  val localResYU = c.LocalResY.U(c.addrWidth.W)
-  val localResZU = c.LocalResZ.U(c.addrWidth.W)
   val localPlaneU = (c.LocalResX * c.LocalResY).U((2 * c.addrWidth).W)
+
+  require((c.GlobalResX & (c.GlobalResX - 1)) == 0, s"GlobalResX must be power-of-two, got ${c.GlobalResX}")
+  require((c.GlobalResY & (c.GlobalResY - 1)) == 0, s"GlobalResY must be power-of-two, got ${c.GlobalResY}")
+  // Local grid resolution is expected to be power-of-two for shift/mask mapping.
+  require((c.LocalResX & (c.LocalResX - 1)) == 0, s"LocalResX must be power-of-two, got ${c.LocalResX}")
+  require((c.LocalResY & (c.LocalResY - 1)) == 0, s"LocalResY must be power-of-two, got ${c.LocalResY}")
+  require((c.LocalResZ & (c.LocalResZ - 1)) == 0, s"LocalResZ must be power-of-two, got ${c.LocalResZ}")
+
+  val globalShiftX = log2Ceil(c.GlobalResX)
+  val globalShiftY = log2Ceil(c.GlobalResY)
+  val globalPlaneShift = globalShiftX + globalShiftY
+
+  val localShiftX = log2Ceil(c.LocalResX)
+  val localShiftY = log2Ceil(c.LocalResY)
+  val localShiftZ = log2Ceil(c.LocalResZ)
+  val localPlaneShift = localShiftX + localShiftY
+  val localMaskX = (c.LocalResX - 1).U(c.addrWidth.W)
+  val localMaskY = (c.LocalResY - 1).U(c.addrWidth.W)
+  val localMaskZ = (c.LocalResZ - 1).U(c.addrWidth.W)
 
   // Address path is FADD -> FMUL -> FPToInt (FPToInt is combinational here).
   val addrLatency = c.cfg.faddLatency + c.cfg.fmulLatency
@@ -106,22 +123,36 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val yNeg = fpToIntY.io.result(63)
   val zNeg = fpToIntZ.io.result(63)
 
-  val xIdx = fpToIntX.io.result(c.addrWidth - 1, 0)
-  val yIdx = fpToIntY.io.result(c.addrWidth - 1, 0)
-  val zIdx = fpToIntZ.io.result(c.addrWidth - 1, 0)
+  val xIdx = fpToIntX.io.result(c.addrWidth - 1, 0).asUInt
+  val yIdx = fpToIntY.io.result(c.addrWidth - 1, 0).asUInt
+  val zIdx = fpToIntZ.io.result(c.addrWidth - 1, 0).asUInt
 
   val addrInBounds = !xNeg && !yNeg && !zNeg &&
     (xIdx < fullResXU) && (yIdx < fullResYU) && (zIdx < fullResZU)
 
-  val xGlobal = xIdx / localResXU
-  val yGlobal = yIdx / localResYU
-  val zGlobal = zIdx / localResZU
-  val xLocal = xIdx % localResXU
-  val yLocal = yIdx % localResYU
-  val zLocal = zIdx % localResZU
+  val xGlobal = xIdx >> localShiftX
+  val yGlobal = yIdx >> localShiftY
+  val zGlobal = zIdx >> localShiftZ
+  val xLocal = xIdx & localMaskX
+  val yLocal = yIdx & localMaskY
+  val zLocal = zIdx & localMaskZ
 
-  val globalLinearWide = xGlobal + yGlobal * globalResXU + zGlobal * globalPlaneU
-  val localLinearWide = xLocal + yLocal * localResXU + zLocal * localPlaneU
+  val xGlobalWide = Wire(UInt((2 * c.addrWidth).W))
+  val yGlobalScaled = Wire(UInt((2 * c.addrWidth).W))
+  val zGlobalScaled = Wire(UInt((2 * c.addrWidth).W))
+  val xLocalWide = Wire(UInt((2 * c.addrWidth).W))
+  val yLocalScaled = Wire(UInt((2 * c.addrWidth).W))
+  val zLocalScaled = Wire(UInt((2 * c.addrWidth).W))
+
+  xGlobalWide := xGlobal
+  yGlobalScaled := Cat(yGlobal, 0.U(globalShiftX.W)).asUInt
+  zGlobalScaled := Cat(zGlobal, 0.U(globalPlaneShift.W)).asUInt
+  xLocalWide := xLocal
+  yLocalScaled := Cat(yLocal, 0.U(localShiftX.W)).asUInt
+  zLocalScaled := Cat(zLocal, 0.U(localPlaneShift.W)).asUInt
+
+  val globalLinearWide = xGlobalWide + yGlobalScaled + zGlobalScaled
+  val localLinearWide = xLocalWide + yLocalScaled + zLocalScaled
   val globalLinear = globalLinearWide(c.addrWidth - 1, 0)
   val localLinear = localLinearWide(c.addrWidth - 1, 0)
 
@@ -196,7 +227,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val cValid = pipeBool(bValid, hitStepLatency)
   val cInBounds = pipeBool(bInBounds, hitStepLatency)
   val cHit = pipeBool(bInBounds && cmpHit.io.le, hitStepLatency)
-  val cHitT = pipeUInt(fpZero, hitStepLatency)
   val cIter = pipeUInt(bIter + 1.U, hitStepLatency)
 
   val cRayOX = pipeUInt(bRayOX, hitStepLatency)
@@ -248,7 +278,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outValid = pipeBool(cValid, marchLatency)
   val outInBounds = pipeBool(cInBounds, marchLatency)
   val outHit = pipeBool(cHit, marchLatency)
-  val outHitT = pipeUInt(cHitT, marchLatency)
   val outIterRaw = pipeUInt(cIter, marchLatency)
   // If the marched point has gone out of grid, force terminal iteration count to stop retries.
   val outIter = Mux(outInBounds, outIterRaw, maxStepsU)
@@ -270,8 +299,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   io.out.bits.meta.pixelX := outPixelX
   io.out.bits.meta.pixelY := outPixelY
   io.out.bits.hit := outHit
-  io.out.bits.hitT := outHitT
-  io.out.bits.steps := outIter
   io.out.bits.iter := outIter
 
   io.out.bits.ray.origin.x := Mux(!outInBounds || outHit, outCurrX, addNx.io.res)

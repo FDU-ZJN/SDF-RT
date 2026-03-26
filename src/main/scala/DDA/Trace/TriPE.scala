@@ -1,4 +1,4 @@
-package Trace
+package DDA.Trace
 
 import chisel3._
 import chisel3.util._
@@ -8,24 +8,24 @@ import raytrace_utils.fudian._
 class TriPE(val c: TriPeConfig) extends Module {
 
   val io = IO(new Bundle {
-    val ray_in       = Input(new Ray(c.cfg))
-    val ray_meta     = Input(new RayMeta(c.addrWidth))
-    val ray_valid    = Input(Bool())
+    val ray_in = Input(new Ray(c.cfg))
+    val ray_meta = Input(new RayMeta(c.addrWidth))
+    val ray_valid = Input(Bool())
 
-    val tri_batch_in    = Input(new TriBatch(c.addrWidth))
+    val tri_batch_in = Input(new TriBatch(c.addrWidth))
     val tri_batch_valid = Input(Bool())
-    val end_exec        = Input(Bool())
+    val end_exec = Input(Bool())
 
-    val mem_req  = Decoupled(UInt(c.addrWidth.W))
+    val mem_req = Decoupled(UInt(c.addrWidth.W))
     val mem_resp = Flipped(Decoupled(new TriangleBlock(c)))
 
     val start_ready = Output(Bool())
     val output_ready = Output(Bool())
     val out_best_hit = Output(Bool())
-    val hit_id       = Output(UInt(c.addrWidth.W))
-    val t_best       = Output(UInt(c.cfg.totalWidth.W))
-    val out_meta     = Output(new RayMeta(c.addrWidth))
-    val out_done     = Output(Bool())
+    val hit_id = Output(UInt(c.addrWidth.W))
+    val t_best = Output(UInt(c.cfg.totalWidth.W))
+    val out_meta = Output(new RayMeta(c.addrWidth))
+    val out_done = Output(Bool())
   })
 
   // ============================================================
@@ -33,13 +33,13 @@ class TriPE(val c: TriPeConfig) extends Module {
   // ============================================================
 
   val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), 8))
-  batch_queue.io.enq.bits  := io.tri_batch_in
+  batch_queue.io.enq.bits := io.tri_batch_in
   batch_queue.io.enq.valid := io.tri_batch_valid
 
   val current_batch = Reg(new TriBatch(c.addrWidth))
   val ray_meta_reg = Reg(new RayMeta(c.addrWidth))
-  val block_offset  = RegInit(0.U(16.W))
-  val batch_active  = RegInit(false.B)
+  val block_offset = RegInit(0.U(16.W))
+  val batch_active = RegInit(false.B)
   val no_more_batches = RegInit(false.B)
 
   val s_IDLE :: s_BUSY :: s_FINISHING :: Nil = Enum(3)
@@ -59,14 +59,14 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   when(batch_queue.io.deq.fire) {
     current_batch := batch_queue.io.deq.bits
-    block_offset  := 0.U
-    batch_active  := true.B
+    block_offset := 0.U
+    batch_active := true.B
   }
 
   val shiftAmt = log2Up(c.numPEs)
 
   io.mem_req.valid := batch_active
-  io.mem_req.bits  := current_batch.base_addr + (block_offset << shiftAmt)
+  io.mem_req.bits := current_batch.base_addr + (block_offset << shiftAmt)
 
   when(io.mem_req.fire) {
     block_offset := block_offset + 1.U
@@ -85,16 +85,16 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
 
-  val pe_best_t   = RegInit(VecInit(Seq.fill(c.numPEs)(
+  val pe_best_t = RegInit(VecInit(Seq.fill(c.numPEs)(
     0x7F7FFFFF.U(c.cfg.totalWidth.W)
   )))
-  val pe_best_id  = Reg(Vec(c.numPEs, UInt(c.addrWidth.W)))
-  val pe_has_hit  = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
+  val pe_best_id = Reg(Vec(c.numPEs, UInt(c.addrWidth.W)))
+  val pe_has_hit = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
 
   // 新 ray 清空历史 best
   when(state === s_IDLE && io.ray_valid) {
-    for(i <- 0 until c.numPEs) {
-      pe_best_t(i)  := 0x7F7FFFFF.U
+    for (i <- 0 until c.numPEs) {
+      pe_best_t(i) := 0x7F7FFFFF.U
       pe_best_id(i) := 0.U
       pe_has_hit(i) := false.B
     }
@@ -120,7 +120,7 @@ class TriPE(val c: TriPeConfig) extends Module {
 
     when(pes(i).io.out_valid && pes(i).io.hit) {
       when(fcmp.io.lt || !pe_has_hit(i)) {
-        pe_best_t(i)  := pes(i).io.t
+        pe_best_t(i) := pes(i).io.t
         pe_best_id(i) := pes(i).io.id
         pe_has_hit(i) := true.B
       }
@@ -190,9 +190,9 @@ class TriPE(val c: TriPeConfig) extends Module {
   io.output_ready := batch_queue.io.enq.ready
 
   io.out_best_hit := global_has_hit
-  io.hit_id       := global_best_id
-  io.t_best       := global_best_t
-  io.out_meta     := ray_meta_reg
+  io.hit_id := global_best_id
+  io.t_best := global_best_t
+  io.out_meta := ray_meta_reg
   val done_pulse =
     (RegNext(state) === s_FINISHING &&
       state === s_IDLE)

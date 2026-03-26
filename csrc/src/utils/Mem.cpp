@@ -152,12 +152,12 @@ extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx) {
             value = get_local_sdf(cell_idx, li, lj, lk);
         }
     }
-    printf("[DPI-C] SDF Mem Read - GlobalIdx: %u (gi=%d,gj=%d,gk=%d) LocalIdx: %u (li=%d,lj=%d,lk=%d) Value: %f\n",
-            global_idx, gi, gj, gk,
-            local_idx, static_cast<int>(local_idx % local_sdf_shape[1]),
-            static_cast<int>((local_idx / local_sdf_shape[1]) % local_sdf_shape[2]),
-            static_cast<int>(local_idx / (local_sdf_shape[1] * local_sdf_shape[2])),
-            value);
+    // printf("[DPI-C] SDF Mem Read - GlobalIdx: %u (gi=%d,gj=%d,gk=%d) LocalIdx: %u (li=%d,lj=%d,lk=%d) Value: %f\n",
+    //         global_idx, gi, gj, gk,
+    //         local_idx, static_cast<int>(local_idx % local_sdf_shape[1]),
+    //         static_cast<int>((local_idx / local_sdf_shape[1]) % local_sdf_shape[2]),
+    //         static_cast<int>(local_idx / (local_sdf_shape[1] * local_sdf_shape[2])),
+    //         value);
     return static_cast<int>(floatToRawU32(value));
 }
 

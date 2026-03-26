@@ -1,8 +1,11 @@
+import DDA.DDA
+import Render.RenderStage
 import SDF.{InitStage, SdfStage}
 import chisel3._
+import chisel3.util._
 import raytrace_utils._
 
-class LegacySDFTop extends Module {
+class SimTop extends Module {
   val c = TriPeConfig()
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
@@ -19,6 +22,8 @@ class LegacySDFTop extends Module {
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth))
+  val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
   sdfStage.io.setup_valid := io.setup_valid
@@ -47,15 +52,28 @@ class LegacySDFTop extends Module {
   sdfStage.io.issue_in.bits := initStage.io.to_sdf.bits
   initStage.io.to_sdf.ready := sdfStage.io.issue_in.ready
 
+  val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), 16))
+  sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
+  sdfHitQ.io.enq.bits.ray := sdfStage.io.out_ray
+  sdfHitQ.io.enq.bits.meta := sdfStage.io.out_meta
+  when(sdfHitQ.io.enq.valid) {
+    assert(sdfHitQ.io.enq.ready, "SimTop sdfHitQ overflow")
+  }
+
+  ddaStage.io.in <> sdfHitQ.io.deq
+
+  renderStage.io.in.valid := ddaStage.io.out.valid
+  renderStage.io.in.bits.meta := ddaStage.io.out.bits.meta
+  renderStage.io.in.bits.hit := ddaStage.io.out.bits.hit
+  renderStage.io.in.bits.hitId := ddaStage.io.out.bits.hitId
+  renderStage.io.in.bits.hitT := ddaStage.io.out.bits.hitT
+  ddaStage.io.out.ready := renderStage.io.in.ready
+
   val zeroFp = 0.U(c.cfg.totalWidth.W)
 
-  val wb = Wire(new RenderResult(c.cfg, c.addrWidth))
-  wb.meta := sdfStage.io.out_meta
-  wb.hit := sdfStage.io.out_rgb.x =/= zeroFp
-  wb.hitId := 0.U
-  wb.rgb := sdfStage.io.out_rgb
-  commitQueue.io.writeback.valid := sdfStage.io.out_valid
-  commitQueue.io.writeback.bits := wb
+  commitQueue.io.writeback.valid := renderStage.io.out.valid
+  commitQueue.io.writeback.bits := renderStage.io.out.bits
+  renderStage.io.out.ready := commitQueue.io.writeback.ready
 
   val wb2 = Wire(new RenderResult(c.cfg, c.addrWidth))
   wb2.meta := initStage.io.to_bypass.bits.meta
@@ -68,12 +86,23 @@ class LegacySDFTop extends Module {
   commitQueue.io.writeback2.bits := wb2
   initStage.io.to_bypass.ready := commitQueue.io.writeback2.ready
 
+  val wb3 = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb3.meta := sdfStage.io.out_meta
+  wb3.hit := false.B
+  wb3.hitId := 0.U
+  wb3.rgb.x := zeroFp
+  wb3.rgb.y := zeroFp
+  wb3.rgb.z := zeroFp
+  commitQueue.io.writeback3.valid := sdfStage.io.out_valid && !sdfStage.io.out_hit
+  commitQueue.io.writeback3.bits := wb3
+
   commitQueue.io.out.ready := true.B
 
   io.out_ready := inputReady
   io.out_rgb := commitQueue.io.out.bits.rgb
   io.out_valid := commitQueue.io.out.valid
 }
-object LegacySDFTopGen extends App {
-  emitVerilog(new LegacySDFTop(), Array("--target-dir", "build"))
+
+object SimTopGen extends App {
+  emitVerilog(new SimTop(), Array("--target-dir", "build"))
 }

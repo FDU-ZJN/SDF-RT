@@ -1,6 +1,6 @@
 import BVH.BVHStage
+import DDA.Trace.TraceStage
 import Render.RenderStage
-import Trace.TraceStage
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
@@ -67,10 +67,11 @@ class BVHTop extends Module {
   assert(!(bvhStage.io.no_leaf_done && !missQueue.io.enq.ready), "Miss Queue Overflow!")
   commitQueue.io.writeback2 <> missQueue.io.deq
 
+  commitQueue.io.writeback3.valid := false.B
+  commitQueue.io.writeback3.bits := 0.U.asTypeOf(new RenderResult(c.cfg, c.addrWidth))
+
   commitQueue.io.out.ready := true.B
   io.out_rgb := commitQueue.io.out.bits.rgb
   io.out_valid := commitQueue.io.out.valid
   io.out_id := commitQueue.io.out.bits.hitId
 }
-
-

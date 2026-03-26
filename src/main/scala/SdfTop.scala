@@ -3,7 +3,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
-class SimTop extends Module {
+class SdfTop extends Module {
   val c = SdfPeConfig()
   val io = IO(new Bundle {
     val grid_min = Input(new Vec3(c.cfg))
@@ -33,6 +33,3 @@ class SimTop extends Module {
   sdfPe.io.sdf_mem_resp.bits := sdfMem.io.data
 }
 
-object SimTopGen extends App {
-  emitVerilog(new SimTop(), Array("--target-dir", "build"))
-}

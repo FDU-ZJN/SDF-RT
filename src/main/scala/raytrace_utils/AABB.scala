@@ -1,8 +1,7 @@
-package BVH
+package raytrace_utils
 
 import chisel3._
 import chisel3.util._
-import raytrace_utils._
 import raytrace_utils.fudian._
 
 class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {

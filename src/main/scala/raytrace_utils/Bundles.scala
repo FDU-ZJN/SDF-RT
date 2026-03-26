@@ -93,8 +93,6 @@ class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
-  val hitT = UInt(cfg.totalWidth.W)
-  val steps = UInt(16.W)
   val iter = UInt(16.W)
 }
 
@@ -110,4 +108,43 @@ class SdfInitReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
 
 class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
   val meta = new RayMeta(addrWidth)
+}
+
+class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+}
+
+class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {
+  val triStart = UInt(addrWidth.W)
+  val triCount = UInt(16.W)
+}
+
+class DdaTraversalResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val meta = new RayMeta(addrWidth)
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
+}
+
+class DdaTraceCmd(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val tri = new TriBatch(addrWidth)
+  val subX = SInt((addrWidth + 1).W)
+  val subY = SInt((addrWidth + 1).W)
+  val subZ = SInt((addrWidth + 1).W)
+  val iter = UInt(16.W)
+}
+
+class DdaTraceRsp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
+  val subX = SInt((addrWidth + 1).W)
+  val subY = SInt((addrWidth + 1).W)
+  val subZ = SInt((addrWidth + 1).W)
+  val iter = UInt(16.W)
 }
