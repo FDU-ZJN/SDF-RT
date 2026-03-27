@@ -19,16 +19,16 @@ class RenderStage(cfg: FloatConfig) extends Module {
 
   val zeroNormal = 0.U.asTypeOf(new Vec3(cfg))
 
-  val launchId = RegNext(io.in.bits.hitId)
-  val launchMeta = RegNext(io.in.bits.meta)
+//  val launchId = RegNext(io.in.bits.hitId)
+//  val launchMeta = RegNext(io.in.bits.meta)
   val launchHit = RegNext(io.in.bits.hit)
 
   mem.io.addr := io.in.bits.hitId
   mem.io.en := true.B
 
-  pe.io.in_meta := launchMeta
-  pe.io.hit_id := launchId
-  pe.io.in_hit := launchHit
+  pe.io.in_meta := io.in.bits.meta
+  pe.io.hit_id := io.in.bits.hitId
+  pe.io.in_hit := io.in.bits.hit
 
   // B. 处理内存返回的数据并送回 PE
   // NormalMemDPI 返回的是 96 位原始数据，我们需要将其解包为 Vec3 浮点向量

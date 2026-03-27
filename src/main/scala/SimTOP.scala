@@ -17,14 +17,19 @@ class SimTop extends Module {
     val rd_valid = Input(Bool())
     val out_ready = Output(Bool())
     val out_rgb = Output(new Vec3(c.cfg))
+    val out_id = Output(UInt(c.addrWidth.W))
     val out_valid = Output(Bool())
   })
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
-  val ddaStage = Module(new DDA(c.cfg, c.addrWidth))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = 16, subRes = 16, maxTraversalSteps = 64))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
+
+  // Init->SDF decouple queue; depth is sized to absorb InitStage fixed-latency burst safely.
+  val initToSdfDepth = 32
+  val initToSdfQ = Module(new Queue(new RayIssue(c.cfg, c.addrWidth), initToSdfDepth))
 
   sdfStage.io.setup_valid := io.setup_valid
   sdfStage.io.setup_origin := io.setup_origin
@@ -36,10 +41,31 @@ class SimTop extends Module {
   initStage.io.setup_grid_min := io.setup_grid_min
   initStage.io.setup_grid_max := io.setup_grid_max
 
-  val inputReady = initStage.io.in.ready && commitQueue.io.alloc.ready
-  val inputFire = io.rd_valid && inputReady
+  // Conservative admission control for InitStage input:
+  // assume all in-flight rays may become SDF-hit and need Init->SDF queue space.
+  val initOutLatency = 4 + (3 * c.cfg.faddLatency) + (2 * c.cfg.fmulLatency) + c.cfg.fdivLatency
+  val inflightW = log2Ceil(initToSdfDepth + initOutLatency + 4)
+  val initInflight = RegInit(0.U(inflightW.W))
 
-  initStage.io.in.valid := io.rd_valid && commitQueue.io.alloc.ready
+  val initSdfOutFire = initStage.io.to_sdf.fire
+  val initBypassOutFire = initStage.io.to_bypass.fire
+  val initOutFireAny = initSdfOutFire || initBypassOutFire
+
+  val sdfQCountExt = Wire(UInt(inflightW.W))
+  sdfQCountExt := initToSdfQ.io.count
+  val sdfQFree = initToSdfDepth.U(inflightW.W) - sdfQCountExt
+
+  val canReserveSdfQ = sdfQFree > initInflight
+  val conservativeInitReady = initStage.io.in.ready && commitQueue.io.alloc.ready && initStage.io.to_bypass.ready && canReserveSdfQ
+  val inputFire = io.rd_valid && conservativeInitReady
+
+  when(inputFire && !initOutFireAny) {
+    initInflight := initInflight + 1.U
+  }.elsewhen(!inputFire && initOutFireAny) {
+    initInflight := initInflight - 1.U
+  }
+
+  initStage.io.in.valid := io.rd_valid && conservativeInitReady
   initStage.io.in.bits.rd := io.rd_in
   initStage.io.in.bits.meta.slotId := commitQueue.io.allocSlot
   initStage.io.in.bits.meta.pixelX := 0.U
@@ -48,9 +74,11 @@ class SimTop extends Module {
   commitQueue.io.alloc.valid := inputFire
   commitQueue.io.alloc.bits := 0.U
 
-  sdfStage.io.issue_in.valid := initStage.io.to_sdf.valid
-  sdfStage.io.issue_in.bits := initStage.io.to_sdf.bits
-  initStage.io.to_sdf.ready := sdfStage.io.issue_in.ready
+  initToSdfQ.io.enq <> initStage.io.to_sdf
+  sdfStage.io.issue_in <> initToSdfQ.io.deq
+
+  ddaStage.io.grid_min := sdfStage.io.grid_min
+  ddaStage.io.inv_voxel := sdfStage.io.inv_voxel
 
   val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), 16))
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
@@ -98,8 +126,9 @@ class SimTop extends Module {
 
   commitQueue.io.out.ready := true.B
 
-  io.out_ready := inputReady
+  io.out_ready := conservativeInitReady
   io.out_rgb := commitQueue.io.out.bits.rgb
+  io.out_id := commitQueue.io.out.bits.hitId
   io.out_valid := commitQueue.io.out.valid
 }
 

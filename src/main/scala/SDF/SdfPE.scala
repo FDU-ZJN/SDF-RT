@@ -15,7 +15,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     val grid_min = Input(new Vec3(c.cfg))
     val inv_voxel = Input(new Vec3(c.cfg))
 
+    // Miss-only output (continue/terminal miss path)
     val out = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
+    // Hit output (terminal hit path)
+    val out_hit = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
   })
 
   val rmRne = RNE
@@ -30,11 +33,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val fullResYU = (c.GlobalResY * c.LocalResY).U(c.addrWidth.W)
   val fullResZU = (c.GlobalResZ * c.LocalResZ).U(c.addrWidth.W)
 
-  val globalResXU = c.GlobalResX.U(c.addrWidth.W)
-  val globalPlaneU = (c.GlobalResX * c.GlobalResY).U((2 * c.addrWidth).W)
-
-  val localResXU = c.LocalResX.U(c.addrWidth.W)
-  val localPlaneU = (c.LocalResX * c.LocalResY).U((2 * c.addrWidth).W)
 
   require((c.GlobalResX & (c.GlobalResX - 1)) == 0, s"GlobalResX must be power-of-two, got ${c.GlobalResX}")
   require((c.GlobalResY & (c.GlobalResY - 1)) == 0, s"GlobalResY must be power-of-two, got ${c.GlobalResY}")
@@ -223,10 +221,11 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   cmpStep.io.signaling := false.B
 
   val selectedStep = Mux(cmpStep.io.le, bSample, minStep)
+  val bHit = bInBounds && cmpHit.io.lt
 
-  val cValid = pipeBool(bValid, hitStepLatency)
-  val cInBounds = pipeBool(bInBounds, hitStepLatency)
-  val cHit = pipeBool(bInBounds && cmpHit.io.le, hitStepLatency)
+  // Hit is emitted immediately at B-stage; only miss path enters march pipeline.
+  val cValid = pipeBool(bValid && !bHit, hitStepLatency)
+  val cInBounds = pipeBool(bInBounds && !bHit, hitStepLatency)
   val cIter = pipeUInt(bIter + 1.U, hitStepLatency)
 
   val cRayOX = pipeUInt(bRayOX, hitStepLatency)
@@ -277,7 +276,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   val outValid = pipeBool(cValid, marchLatency)
   val outInBounds = pipeBool(cInBounds, marchLatency)
-  val outHit = pipeBool(cHit, marchLatency)
   val outIterRaw = pipeUInt(cIter, marchLatency)
   // If the marched point has gone out of grid, force terminal iteration count to stop retries.
   val outIter = Mux(outInBounds, outIterRaw, maxStepsU)
@@ -294,21 +292,42 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outPixelX = pipeUInt(cPixelX, marchLatency)
   val outPixelY = pipeUInt(cPixelY, marchLatency)
 
+  val outOriginX = Mux(!outInBounds, outCurrX, addNx.io.res)
+  val outOriginY = Mux(!outInBounds, outCurrY, addNy.io.res)
+  val outOriginZ = Mux(!outInBounds, outCurrZ, addNz.io.res)
+
   io.out.valid := outValid
   io.out.bits.meta.slotId := outSlotId
   io.out.bits.meta.pixelX := outPixelX
   io.out.bits.meta.pixelY := outPixelY
-  io.out.bits.hit := outHit
+  io.out.bits.hit := false.B
   io.out.bits.iter := outIter
 
-  io.out.bits.ray.origin.x := Mux(!outInBounds || outHit, outCurrX, addNx.io.res)
-  io.out.bits.ray.origin.y := Mux(!outInBounds || outHit, outCurrY, addNy.io.res)
-  io.out.bits.ray.origin.z := Mux(!outInBounds || outHit, outCurrZ, addNz.io.res)
+  io.out.bits.ray.origin.x := outOriginX
+  io.out.bits.ray.origin.y := outOriginY
+  io.out.bits.ray.origin.z := outOriginZ
   io.out.bits.ray.dir.x := outRayDX
   io.out.bits.ray.dir.y := outRayDY
   io.out.bits.ray.dir.z := outRayDZ
 
+  io.out_hit.valid := bValid && bHit
+  io.out_hit.bits.meta.slotId := bSlotId
+  io.out_hit.bits.meta.pixelX := bPixelX
+  io.out_hit.bits.meta.pixelY := bPixelY
+  io.out_hit.bits.hit := true.B
+  io.out_hit.bits.iter := bIter + 1.U
+
+  io.out_hit.bits.ray.origin.x := bRayOX
+  io.out_hit.bits.ray.origin.y := bRayOY
+  io.out_hit.bits.ray.origin.z := bRayOZ
+  io.out_hit.bits.ray.dir.x := bRayDX
+  io.out_hit.bits.ray.dir.y := bRayDY
+  io.out_hit.bits.ray.dir.z := bRayDZ
+
   when(io.out.valid) {
     assert(io.out.ready, "SdfPE expects io.out.ready to stay high in pipeline mode")
+  }
+  when(io.out_hit.valid) {
+    assert(io.out_hit.ready, "SdfPE expects io.out_hit.ready to stay high in pipeline mode")
   }
 }

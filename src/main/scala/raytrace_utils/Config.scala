@@ -54,8 +54,8 @@ case class SdfPeConfig(
   LocalResY: Int = 16,
   LocalResZ: Int = 16,
   maxSteps: Int = 30,
-  threshold: Float = 0.04f,
-  minStep: Float = 0.001f,
+  threshold: Float = 0.08f,
+  minStep: Float = 0.000f,
   hitAdvance: Float = 1e-6f
 ) {
   val thresholdBits  = java.lang.Float.floatToRawIntBits(threshold)

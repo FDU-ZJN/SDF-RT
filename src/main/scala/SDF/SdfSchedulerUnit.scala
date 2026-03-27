@@ -9,7 +9,8 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val issue_in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
 
     val pe_in = Decoupled(new SdfRayReq(cfg, addrWidth))
-    val pe_out = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
+    val pe_out_miss = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
+    val pe_out_hit = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
 
     val out_rgb = Output(new Vec3(cfg))
     val out_meta = Output(new RayMeta(addrWidth))
@@ -39,27 +40,55 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   inArb.io.in(1).bits := newReq
   io.issue_in.ready := inArb.io.in(1).ready
 
-  workQ.io.enq <> inArb.io.out
+  val arbReq = inArb.io.out.bits
+  val arbIsDeferredTerminalMiss = inArb.io.out.valid && (arbReq.iter >= maxSteps.U)
+
+  workQ.io.enq.valid := inArb.io.out.valid && !arbIsDeferredTerminalMiss
+  workQ.io.enq.bits := arbReq
   io.pe_in <> workQ.io.deq
 
-  io.pe_out.ready := true.B
+  io.pe_out_miss.ready := true.B
+  io.pe_out_hit.ready := true.B
 
-  val needRetry = io.pe_out.valid && !io.pe_out.bits.hit && (io.pe_out.bits.iter < maxSteps.U)
-  val terminalOut = io.pe_out.valid && !needRetry
+  val missNeedRetry = io.pe_out_miss.valid && (io.pe_out_miss.bits.iter < maxSteps.U)
+  val missTerminal = io.pe_out_miss.valid && !missNeedRetry
+  val hitTerminal = io.pe_out_hit.valid
 
-  retryQ.io.enq.valid := needRetry
-  retryQ.io.enq.bits.ray := io.pe_out.bits.ray
-  retryQ.io.enq.bits.meta := io.pe_out.bits.meta
-  retryQ.io.enq.bits.iter := io.pe_out.bits.iter
-  when(needRetry) {
+  // If a terminal miss and a hit arrive together, defer the miss by one extra scheduler cycle.
+  val missTerminalConflict = missTerminal && hitTerminal
+  val missTerminalDirect = missTerminal && !hitTerminal
+
+  val retryFromMiss = missNeedRetry
+  val retryFromConflictMiss = missTerminalConflict
+  val retryPush = retryFromMiss || retryFromConflictMiss
+
+  retryQ.io.enq.valid := retryPush
+  retryQ.io.enq.bits.ray := io.pe_out_miss.bits.ray
+  retryQ.io.enq.bits.meta := io.pe_out_miss.bits.meta
+  // Mark conflict-deferred terminal miss so it bypasses PE next time and commits directly.
+  retryQ.io.enq.bits.iter := Mux(retryFromConflictMiss, maxSteps.U, io.pe_out_miss.bits.iter)
+  when(retryPush) {
     assert(retryQ.io.enq.ready, "SdfStage retryQ overflow")
   }
 
-  finalQ.io.enq.valid := terminalOut
-  finalQ.io.enq.bits := io.pe_out.bits
-  when(terminalOut) {
+  val deferredResp = Wire(new SdfRayResp(cfg, addrWidth))
+  deferredResp.ray := arbReq.ray
+  deferredResp.meta := arbReq.meta
+  deferredResp.hit := false.B
+  deferredResp.iter := arbReq.iter
+
+  val selHit = hitTerminal
+  val selMiss = !selHit && missTerminalDirect
+  val selDeferred = !selHit && !selMiss && arbIsDeferredTerminalMiss
+
+  finalQ.io.enq.valid := selHit || selMiss || selDeferred
+  finalQ.io.enq.bits := Mux(selHit, io.pe_out_hit.bits, Mux(selMiss, io.pe_out_miss.bits, deferredResp))
+  when(finalQ.io.enq.valid) {
     assert(finalQ.io.enq.ready, "SdfStage finalQ overflow")
   }
+
+  val consumeDeferred = selDeferred && finalQ.io.enq.ready
+  inArb.io.out.ready := Mux(arbIsDeferredTerminalMiss, consumeDeferred, workQ.io.enq.ready)
 
   finalQ.io.deq.ready := true.B
   io.out_valid := finalQ.io.deq.valid

@@ -13,6 +13,8 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val setup_grid_min = Input(new Vec3(cfg))
     val setup_grid_max = Input(new Vec3(cfg))
     val setup_finish = Output(Bool())
+    val grid_min = Output(new Vec3(cfg))
+    val inv_voxel = Output(new Vec3(cfg))
 
     val issue_in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
 
@@ -33,11 +35,14 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   setupUnit.io.setup_grid_min := io.setup_grid_min
   setupUnit.io.setup_grid_max := io.setup_grid_max
   io.setup_finish := setupUnit.io.setup_finish
+  io.grid_min := setupUnit.io.gridMin
+  io.inv_voxel := setupUnit.io.invVoxel
 
   scheduler.io.issue_in <> io.issue_in
 
   sdfPE.io.in <> scheduler.io.pe_in
-  scheduler.io.pe_out <> sdfPE.io.out
+  scheduler.io.pe_out_miss <> sdfPE.io.out
+  scheduler.io.pe_out_hit <> sdfPE.io.out_hit
 
   sdfPE.io.grid_min := setupUnit.io.gridMin
   sdfPE.io.inv_voxel := setupUnit.io.invVoxel

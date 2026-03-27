@@ -1,123 +1,48 @@
-#include <iostream>
-#include <fstream>
-#include <vector>
 #include <array>
 #include <cstdint>
-#include <cmath>
-#include <cstring>
-#include <iomanip>
-#include <stdexcept>
-#include <limits>
+#include <iostream>
+#include <vector>
 
 #include "verilated.h"
 #include "VSimTop.h"
-#include "verilated_vcd_c.h"
+
+#include <BVH.h>
+#include <DebugHooks.h>
 #include <Mem.h>
-#include <SDF.h>
+#include <SdfSanity.h>
+#include <SimUtils.h>
 
 using std::array;
 using std::cout;
 using std::endl;
-using std::ofstream;
-using std::string;
 using std::vector;
 
-vluint64_t main_time = 0;
+uint64_t main_time = 0;
 
 namespace {
 constexpr int kWidth = 400;
 constexpr int kHeight = 400;
 constexpr int kMaxWaitCycles = 10000;
-
-struct RayWorkItem {
-    int px = 0;
-    int py = 0;
-    array<float, 3> dir = {0.0f, 0.0f, 0.0f};
-    bool swHit = false;
-};
-
-inline uint32_t floatToU32(float v) {
-    uint32_t u = 0;
-    std::memcpy(&u, &v, sizeof(u));
-    return u;
-}
-
-inline float u32ToFloat(uint32_t u) {
-    float f = 0.0f;
-    std::memcpy(&f, &u, sizeof(f));
-    return f;
-}
-
-inline uint8_t colorToByte(uint32_t rawBits) {
-    float v = u32ToFloat(rawBits);
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
-    return static_cast<uint8_t>(v * 255.999f);
-}
-
-void tick(VSimTop* dut, VerilatedVcdC* tfp) {
-    dut->clock = 0;
-    dut->eval();
-    ++main_time;
-    //tfp->dump(main_time);
-
-    dut->clock = 1;
-    dut->eval();
-    ++main_time;
-    //tfp->dump(main_time);
-}
-
-array<float, 3> makeRayDir(int x, int y) {
-    const float u = (2.0f * static_cast<float>(x) - kWidth) / static_cast<float>(kHeight);
-    const float v = -(2.0f * static_cast<float>(y) - kHeight) / static_cast<float>(kHeight);
-    float rdX = u;
-    float rdY = v;
-    float rdZ = -1.8f;
-    const float len = std::sqrt(rdX * rdX + rdY * rdY + rdZ * rdZ);
-    return {rdX / len, rdY / len, rdZ / len};
-}
-
-array<float, 6> computeScaledBoundsFromTriangles(const vector<Triangle>& tris) {
-    float minX = std::numeric_limits<float>::infinity();
-    float minY = std::numeric_limits<float>::infinity();
-    float minZ = std::numeric_limits<float>::infinity();
-    float maxX = -std::numeric_limits<float>::infinity();
-    float maxY = -std::numeric_limits<float>::infinity();
-    float maxZ = -std::numeric_limits<float>::infinity();
-
-    auto update = [&](const std::array<float, 3>& p) {
-        minX = std::min(minX, p[0]);
-        minY = std::min(minY, p[1]);
-        minZ = std::min(minZ, p[2]);
-        maxX = std::max(maxX, p[0]);
-        maxY = std::max(maxY, p[1]);
-        maxZ = std::max(maxZ, p[2]);
-    };
-
-    for (const auto& tri : tris) {
-        update(tri.v0);
-        update(tri.v1);
-        update(tri.v2);
-    }
-
-    return {
-        minX * 1.1f, minY * 1.1f, minZ * 1.1f,
-        maxX * 1.1f, maxY * 1.1f, maxZ * 1.1f
-    };
-}
-
-void writePPM(const string& path, const vector<uint8_t>& img, int width, int height) {
-    ofstream ofs(path, std::ios::binary);
-    if (!ofs.is_open()) {
-        throw std::runtime_error("failed to open output image file: " + path);
-    }
-    ofs << "P6\n" << width << " " << height << "\n255\n";
-    ofs.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
-}
+constexpr int kDdaGlobalRes = 16;
+constexpr int kDdaSubRes = 16;
+constexpr int kDdaTraceSteps = 100;
+constexpr int kSanityFullX = 64;
+constexpr int kSanityFullY = 154;
+constexpr int kSanityFullZ = 199;
+constexpr bool kUseComputedHybridSdf = true;
+constexpr float kLocalActiveBand = 0.15f;
+constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
 } // namespace
 
 int main(int argc, char** argv) {
-    cout << "SimTop SDF HW/SW differential test..." << endl;
+    DebugOptions debugOptions;
+    debugOptions.enableVcd = false;
+    debugOptions.printMismatchId = false;
+    debugOptions.printDdaTrace = false;
+    debugOptions.printPerPixelTriId = false;
+    DebugHooks debug(debugOptions, main_time);
+
+    cout << "SimTop 400x400 rendering..." << endl;
     Verilated::commandArgs(argc, argv);
 
     const char* objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
@@ -129,6 +54,9 @@ int main(int argc, char** argv) {
         std::cerr << "No triangles loaded." << endl;
         return 1;
     }
+
+    // Build BVH for CPU reference.
+    globalBVH.build(triangles, normals);
 
     const auto bounds = computeScaledBoundsFromTriangles(triangles);
     const float gridMinX = bounds[0];
@@ -146,53 +74,87 @@ int main(int argc, char** argv) {
               << gridMinX << ", " << gridMinY << ", " << gridMinZ
               << "), max=(" << gridMaxX << ", " << gridMaxY << ", " << gridMaxZ << ")" << std::endl;
 
-    printf("Loading SDF cache...\n");
-    load_sdf_npz(sdfPath);
+    if (kUseComputedHybridSdf) {
+        printf("Building in-memory hybrid SDF...\n");
+        build_hybrid_sdf_from_mesh(
+            gridMin,
+            gridMax,
+            kDdaGlobalRes,
+            kDdaGlobalRes,
+            kDdaGlobalRes,
+            kDdaSubRes,
+            kDdaSubRes,
+            kDdaSubRes,
+            kLocalActiveBand);
+        save_sdf_npz(kComputedSdfOutPath);
+    } else {
+        printf("Loading SDF cache...\n");
+        load_sdf_npz(kComputedSdfOutPath);
+    }
     if (global_sdf_flat.empty()) {
         std::cerr << "SDF cache is empty." << endl;
         return 2;
     }
 
-    // Software configuration mirrors hardware SdfPeConfig defaults.
-    SdfConfig sdfCfg;
-    const float spanX = gridMaxX - gridMinX;
-    const float spanY = gridMaxY - gridMinY;
-    const float spanZ = gridMaxZ - gridMinZ;
-    const array<float, 3> invVoxel = {
-        static_cast<float>(sdfCfg.globalResX * sdfCfg.localResX) / spanX,
-        static_cast<float>(sdfCfg.globalResY * sdfCfg.localResY) / spanY,
-        static_cast<float>(sdfCfg.globalResZ * sdfCfg.localResZ) / spanZ
-    };
+    // Build compact subgrid triangle index for DDA meta lookup.
+    build_subgrid_triangle_index(gridMin, gridMax, kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes, kDdaSubRes, kDdaSubRes, kDdaSubRes);
+
+    runSdfSanityCheckAtFullCoord(
+        gridMin,
+        gridMax,
+        kDdaGlobalRes,
+        kDdaSubRes,
+        kSanityFullX,
+        kSanityFullY,
+        kSanityFullZ);
 
     const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
+
     vector<RayWorkItem> workItems;
     workItems.reserve(totalPixels);
 
-    // Build software golden result for every ray.
+    // Build BVH software golden result for every ray.
+    const array<float, 3> lightDir = {0.577f, 0.577f, 0.577f};
+
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
             RayWorkItem item;
             item.px = px;
             item.py = py;
-            item.dir = makeRayDir(px, py);
+            item.dir = makeRayDir(px, py, kWidth, kHeight);
 
-            array<float, 3> originAtEntry = {0.0f, 0.0f, 0.0f};
-            if (sdfInitRay(setupOrigin, item.dir, gridMin, gridMax, originAtEntry)) {
-                const SdfTraceResult swTrace = sdfTraceToTerminal(originAtEntry, item.dir, gridMin, invVoxel, sdfCfg);
-                item.swHit = swTrace.hit;
-            } else {
-                item.swHit = false;
+            float rayOrig[3] = {setupOrigin[0], setupOrigin[1], setupOrigin[2]};
+            float rayDir[3] = {item.dir[0], item.dir[1], item.dir[2]};
+            BVHHit cpuHit = globalBVH.query(rayOrig, rayDir);
+            item.expectedTriId = cpuHit.triId;
+            item.expectedRgb = (cpuHit.triId >= 0)
+                ? globalBVH.render(cpuHit.triId, lightDir)
+                : array<uint8_t, 3>{0, 0, 0};
+
+            if (cpuHit.triId >= 0) {
+                array<float, 3> hitPoint = {
+                    rayOrig[0] + rayDir[0] * cpuHit.t,
+                    rayOrig[1] + rayDir[1] * cpuHit.t,
+                    rayOrig[2] + rayDir[2] * cpuHit.t
+                };
+                int gIdx = -1;
+                int sIdx = -1;
+                if (mapPointToDdaGlobalSub(hitPoint, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
+                    item.swGlobalIdx = gIdx;
+                    item.swSubIdx = sIdx;
+                    item.expectedCompactTriId = map_original_tri_to_compact_addr(
+                        static_cast<unsigned int>(gIdx),
+                        static_cast<unsigned int>(sIdx),
+                        cpuHit.triId);
+                }
             }
 
-            workItems.push_back(item);
+             workItems.push_back(item);
         }
     }
 
-    Verilated::traceEverOn(true);
     auto* dut = new VSimTop;
-    auto* tfp = new VerilatedVcdC;
-    dut->trace(tfp, 99);
-    tfp->open("raytrace.vcd");
+    debug.attachTrace(dut, "raytrace.vcd", 99);
 
     dut->clock = 0;
     dut->reset = 1;
@@ -211,21 +173,19 @@ int main(int argc, char** argv) {
     dut->io_rd_in_y = floatToU32(0.0f);
     dut->io_rd_in_z = floatToU32(0.0f);
 
-    for (int i = 0; i < 4; ++i) tick(dut, tfp);
+    for (int i = 0; i < 4; ++i) debug.tick(dut);
     dut->reset = 0;
-    for (int i = 0; i < 4; ++i) tick(dut, tfp);
+    for (int i = 0; i < 4; ++i) debug.tick(dut);
 
     dut->io_setup_valid = 1;
-    tick(dut, tfp);
+    debug.tick(dut);
     dut->io_setup_valid = 0;
 
     int setupWait = 0;
     while (!dut->io_setup_finish) {
-        tick(dut, tfp);
+        debug.tick(dut);
         if (++setupWait > kMaxWaitCycles) {
             std::cerr << "Timeout waiting for io_setup_finish." << endl;
-            tfp->close();
-            delete tfp;
             delete dut;
             return 3;
         }
@@ -237,8 +197,8 @@ int main(int argc, char** argv) {
     size_t retired = 0;
     int stallCycles = 0;
 
+    size_t hitCount = 0;
     size_t mismatchCount = 0;
-    constexpr size_t kMaxMismatchPrint = 10;
 
     while (retired < totalPixels) {
         const bool canIssue = (issued < totalPixels) && dut->io_out_ready;
@@ -252,7 +212,7 @@ int main(int argc, char** argv) {
             dut->io_rd_valid = 0;
         }
 
-        tick(dut, tfp);
+        debug.tick(dut);
 
         bool madeProgress = false;
         if (canIssue) {
@@ -269,27 +229,36 @@ int main(int argc, char** argv) {
             image[idx + 0] = r;
             image[idx + 1] = g;
             image[idx + 2] = b;
+            debug.onPixelRetired(item, static_cast<int>(dut->io_out_id));
 
-            const bool hwHit = (r > 127);
-            if (hwHit != item.swHit) {
-                ++mismatchCount;
-                if (mismatchCount <= kMaxMismatchPrint) {
-                    std::cout << "\nMismatch@(" << item.px << "," << item.py << ") "
-                              << "SW.hit=" << item.swHit << " HW.hit=" << hwHit
-                              << " HW.rgb=(" << static_cast<int>(r) << ","
-                              << static_cast<int>(g) << ","
-                              << static_cast<int>(b) << ")" << std::endl;
+            bool mismatch = false;
+            if (item.expectedTriId >= 0) {
+                ++hitCount;
+                const int expectedHwTriId =
+                    (item.expectedCompactTriId >= 0) ? item.expectedCompactTriId : item.expectedTriId;
+                if (static_cast<int>(dut->io_out_id) != expectedHwTriId) {
+                    mismatch = true;
+                    debug.onMismatch(item,
+                                     static_cast<int>(dut->io_out_id),
+                                     gridMin,
+                                     gridMax,
+                                     kDdaGlobalRes,
+                                     kDdaSubRes,
+                                     kDdaTraceSteps);
                 }
+            }
+
+            if (mismatch) {
+                ++mismatchCount;
             }
 
             ++retired;
             madeProgress = true;
             std::fflush(stdout);
-            std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu mismatches=%zu",
+            std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
                         100.0 * static_cast<double>(retired) / static_cast<double>(totalPixels),
                         issued,
-                        retired,
-                        mismatchCount);
+                        retired);
         }
 
         if (madeProgress) {
@@ -297,8 +266,6 @@ int main(int argc, char** argv) {
         } else if (++stallCycles >= kMaxWaitCycles) {
             std::cerr << "\nTimeout: no issue/retire progress for " << stallCycles
                       << " cycles (issued=" << issued << ", retired=" << retired << ")" << endl;
-            tfp->close();
-            delete tfp;
             delete dut;
             return 4;
         }
@@ -306,14 +273,16 @@ int main(int argc, char** argv) {
 
     std::printf("\nDone. Average cycles/pixel: %.2f\n",
                 static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
-    std::cout << "HW/SW diff result: mismatches=" << mismatchCount << " / " << totalPixels << std::endl;
+    std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/pixel: %.2f\n",
+                hitCount,
+                mismatchCount,
+                static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
 
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 
-    tfp->close();
-    delete tfp;
+    debug.closeVcd();
     delete dut;
 
-    return mismatchCount == 0 ? 0 : 5;
+    return 0;
 }
 

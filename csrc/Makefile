@@ -30,7 +30,7 @@ V_OPTS = --cc --trace --exe --build -j $(shell nproc) \
 		 --top-module $(TOP_MODULE) \
 		 --Mdir $(OBJ_DIR) \
 		 --CFLAGS "$(INC_FLAGS) -g -Og -std=c++17" \
-		 --LDFLAGS "-lcnpy" \
+		 --LDFLAGS "-lcnpy -lz" \
 		 -I$(CSRC_DIR)/include
 
 # 目标程序路径
@@ -48,6 +48,7 @@ $(TARGET): $(VERILOG_SRC) $(CPPS)
 run: $(TARGET)
 	@echo "开始运行仿真..."
 	$(TARGET)
+	@echo "tarting VCD to WLF conversion..."
 	$(VCD2WLF) $(WAVE_FILE) $(WLF_FILE);
 wave:
 	@if [ -f $(WAVE_FILE) ]; then \

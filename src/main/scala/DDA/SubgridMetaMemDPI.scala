@@ -8,7 +8,7 @@ class SubgridMetaMemDPI(addrWidth: Int = 32) extends BlackBox with HasBlackBoxIn
     val clk = Input(Clock())
     val reset = Input(Reset())
     val globalIdx = Input(UInt(addrWidth.W))
-    val localIdx = Input(UInt(addrWidth.W))
+    val subIdx = Input(UInt(addrWidth.W))
     val en = Input(Bool())
     val triStart = Output(UInt(addrWidth.W))
     val triCount = Output(UInt(16.W))
@@ -24,7 +24,7 @@ class SubgridMetaMemDPI(addrWidth: Int = 32) extends BlackBox with HasBlackBoxIn
        |  input clk,
        |  input reset,
        |  input  [${addrWidth - 1}:0] globalIdx,
-       |  input  [${addrWidth - 1}:0] localIdx,
+       |  input  [${addrWidth - 1}:0] subIdx,
        |  input en,
        |  output reg [${addrWidth - 1}:0] triStart,
        |  output reg [15:0] triCount,
@@ -39,8 +39,8 @@ class SubgridMetaMemDPI(addrWidth: Int = 32) extends BlackBox with HasBlackBoxIn
        |      triCount <= '0;
        |      valid <= 1'b0;
        |    end else if (en) begin
-       |      dpi_start = subgrid_tri_start_read(globalIdx, localIdx);
-       |      dpi_count = subgrid_tri_count_read(globalIdx, localIdx);
+       |      dpi_start = subgrid_tri_start_read(globalIdx, subIdx);
+       |      dpi_count = subgrid_tri_count_read(globalIdx, subIdx);
        |      triStart <= dpi_start[${addrWidth - 1}:0];
        |      triCount <= dpi_count[15:0];
        |      valid <= 1'b1;
@@ -53,4 +53,3 @@ class SubgridMetaMemDPI(addrWidth: Int = 32) extends BlackBox with HasBlackBoxIn
 
   setInline("SubgridMetaMemDPI.sv", svCode)
 }
-
