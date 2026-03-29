@@ -84,6 +84,7 @@ class SimTop extends Module {
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
   sdfHitQ.io.enq.bits.ray := sdfStage.io.out_ray
   sdfHitQ.io.enq.bits.meta := sdfStage.io.out_meta
+  sdfHitQ.io.enq.bits.reverseTraversal := sdfStage.io.out_reverseTraversal
   when(sdfHitQ.io.enq.valid) {
     assert(sdfHitQ.io.enq.ready, "SimTop sdfHitQ overflow")
   }

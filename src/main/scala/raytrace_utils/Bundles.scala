@@ -94,6 +94,7 @@ class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
   val iter = UInt(16.W)
+  val reverseTraversal = Bool()
 }
 
 class SdfMemReq(addrWidth: Int = 32) extends Bundle {
@@ -113,6 +114,7 @@ class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
 class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
+  val reverseTraversal = Bool()
 }
 
 class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {

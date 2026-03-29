@@ -203,17 +203,20 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   }
 
   val bSample = Mux(bInBounds, io.sdf_mem_resp.bits, fpZero)
+  val bSampleNeg = bSample(c.cfg.totalWidth - 1)
 
   // --------------------
   // Stage C: one-step march update
   // --------------------
-  val sampleAbs = Wire(UInt(c.cfg.totalWidth.W))
-  sampleAbs := Cat(0.U(1.W), bSample(c.cfg.totalWidth - 2, 0))
-
   val cmpHit = Module(new FCMP(c.cfg))
-  cmpHit.io.a := sampleAbs
+  cmpHit.io.a := bSample
   cmpHit.io.b := hitThreshold
   cmpHit.io.signaling := false.B
+
+  val cmpPositive = Module(new FCMP(c.cfg))
+  cmpPositive.io.a := fpZero
+  cmpPositive.io.b := bSample
+  cmpPositive.io.signaling := false.B
 
   val cmpStep = Module(new FCMP(c.cfg))
   cmpStep.io.a := minStep
@@ -221,7 +224,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   cmpStep.io.signaling := false.B
 
   val selectedStep = Mux(cmpStep.io.le, bSample, minStep)
-  val bHit = bInBounds && cmpHit.io.lt
+  val bHit = bInBounds && cmpPositive.io.lt && cmpHit.io.lt
 
   // Hit is emitted immediately at B-stage; only miss path enters march pipeline.
   val cValid = pipeBool(bValid && !bHit, hitStepLatency)
@@ -302,6 +305,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   io.out.bits.meta.pixelY := outPixelY
   io.out.bits.hit := false.B
   io.out.bits.iter := outIter
+  io.out.bits.reverseTraversal := false.B
 
   io.out.bits.ray.origin.x := outOriginX
   io.out.bits.ray.origin.y := outOriginY
@@ -316,6 +320,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   io.out_hit.bits.meta.pixelY := bPixelY
   io.out_hit.bits.hit := true.B
   io.out_hit.bits.iter := bIter + 1.U
+  io.out_hit.bits.reverseTraversal := bSampleNeg
 
   io.out_hit.bits.ray.origin.x := bRayOX
   io.out_hit.bits.ray.origin.y := bRayOY

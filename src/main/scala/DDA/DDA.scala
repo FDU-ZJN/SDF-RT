@@ -65,6 +65,7 @@ class DDA(
   val rayReg = Reg(new Ray(cfg))
   val metaReg = Reg(new RayMeta(addrWidth))
   val resultReg = Reg(new DdaTraversalResult(cfg, addrWidth))
+  val reverseTraversalReg = RegInit(false.B)
 
   val subX = RegInit(0.S((addrWidth + 1).W))
   val subY = RegInit(0.S((addrWidth + 1).W))
@@ -106,6 +107,9 @@ class DDA(
   val rdNegX = rayReg.dir.x(cfg.totalWidth - 1)
   val rdNegY = rayReg.dir.y(cfg.totalWidth - 1)
   val rdNegZ = rayReg.dir.z(cfg.totalWidth - 1)
+  val stepNegX = rdNegX ^ reverseTraversalReg
+  val stepNegY = rdNegY ^ reverseTraversalReg
+  val stepNegZ = rdNegZ ^ reverseTraversalReg
 
   val rdAbsX = fpAbs(rayReg.dir.x)
   val rdAbsY = fpAbs(rayReg.dir.y)
@@ -204,9 +208,9 @@ class DDA(
   val fracXAligned = align(fracSubX.io.res, cfg.faddLatency)
   val fracYAligned = align(fracSubY.io.res, cfg.faddLatency)
   val fracZAligned = align(fracSubZ.io.res, cfg.faddLatency)
-  val distX = Mux(rdNegX, fracXAligned, oneMinusFracX.io.res)
-  val distY = Mux(rdNegY, fracYAligned, oneMinusFracY.io.res)
-  val distZ = Mux(rdNegZ, fracZAligned, oneMinusFracZ.io.res)
+  val distX = Mux(stepNegX, fracXAligned, oneMinusFracX.io.res)
+  val distY = Mux(stepNegY, fracYAligned, oneMinusFracY.io.res)
+  val distZ = Mux(stepNegZ, fracZAligned, oneMinusFracZ.io.res)
 
   val dsdtMulX = Module(new FMUL(cfg))
   val dsdtMulY = Module(new FMUL(cfg))
@@ -337,6 +341,7 @@ class DDA(
       when(io.in.fire) {
         rayReg := io.in.bits.ray
         metaReg := io.in.bits.meta
+        reverseTraversalReg := io.in.bits.reverseTraversal
         iter := 0.U
         mapWait := mapInit+1.U
         state := sMapCoord
@@ -425,13 +430,13 @@ class DDA(
     is(sStepApply) {
       when(stepWait === 0.U) {
         when(stepAxis === 0.U) {
-          subX := subX + Mux(rdNegX, -1.S, 1.S)
+          subX := subX + Mux(stepNegX, -1.S, 1.S)
           tMaxX := addTMaxX.io.res
         }.elsewhen(stepAxis === 1.U) {
-          subY := subY + Mux(rdNegY, -1.S, 1.S)
+          subY := subY + Mux(stepNegY, -1.S, 1.S)
           tMaxY := addTMaxY.io.res
         }.otherwise {
-          subZ := subZ + Mux(rdNegZ, -1.S, 1.S)
+          subZ := subZ + Mux(stepNegZ, -1.S, 1.S)
           tMaxZ := addTMaxZ.io.res
         }
         iter := iter + 1.U

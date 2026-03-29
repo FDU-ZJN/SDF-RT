@@ -15,6 +15,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val out_rgb = Output(new Vec3(cfg))
     val out_meta = Output(new RayMeta(addrWidth))
     val out_hit = Output(Bool())
+    val out_reverseTraversal = Output(Bool())
     val out_ray = Output(new Ray(cfg))
     val out_valid = Output(Bool())
   })
@@ -76,6 +77,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   deferredResp.meta := arbReq.meta
   deferredResp.hit := false.B
   deferredResp.iter := arbReq.iter
+  deferredResp.reverseTraversal := false.B
 
   val selHit = hitTerminal
   val selMiss = !selHit && missTerminalDirect
@@ -94,6 +96,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   io.out_valid := finalQ.io.deq.valid
   io.out_meta := finalQ.io.deq.bits.meta
   io.out_hit := finalQ.io.deq.bits.hit
+  io.out_reverseTraversal := finalQ.io.deq.bits.reverseTraversal
   io.out_ray := finalQ.io.deq.bits.ray
   io.out_rgb.x := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
   io.out_rgb.y := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)

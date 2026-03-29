@@ -21,6 +21,7 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val out_rgb = Output(new Vec3(cfg))
     val out_meta = Output(new RayMeta(addrWidth))
     val out_hit = Output(Bool())
+    val out_reverseTraversal = Output(Bool())
     val out_ray = Output(new Ray(cfg))
     val out_valid = Output(Bool())
   })
@@ -59,6 +60,7 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   io.out_rgb := scheduler.io.out_rgb
   io.out_meta := scheduler.io.out_meta
   io.out_hit := scheduler.io.out_hit
+  io.out_reverseTraversal := scheduler.io.out_reverseTraversal
   io.out_ray := scheduler.io.out_ray
   io.out_valid := scheduler.io.out_valid
 }
