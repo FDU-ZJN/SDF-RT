@@ -224,8 +224,15 @@ void DebugHooks::closeVcd() {
     tfp_ = nullptr;
 }
 
+bool DebugHooks::shouldTracePixel(const RayWorkItem& item) const {
+    if (!options_.singlePixelDebug) {
+        return true;
+    }
+    return item.px == options_.debugPixelX && item.py == options_.debugPixelY;
+}
+
 void DebugHooks::onPixelRetired(const RayWorkItem& item, int hwTriId) const {
-    if (!options_.printPerPixelTriId) {
+    if (!options_.printPerPixelTriId || !shouldTracePixel(item)) {
         return;
     }
     std::printf("Pixel (%d,%d): CPU triId(orig)=%d, CPU triId(compact)=%d, HW triId=%d\n",
@@ -244,15 +251,32 @@ void DebugHooks::onMismatch(
     int globalRes,
     int subRes,
     int ddaTraceSteps) const {
+    if (!shouldTracePixel(item)) {
+        return;
+    }
+
     if (options_.printMismatchId) {
-        std::printf("ID mismatch at pixel (%d,%d): CPU triId(orig)=%d, CPU triId(compact)=%d, HW triId=%d, SW globalIdx=%d, SW subIdx=%d\n",
+        std::printf("ID mismatch at pixel (%d,%d): CPU triId(orig)=%d, CPU triId(compact)=%d, HW triId=%d\n",
                     item.px,
                     item.py,
                     item.expectedTriId,
                     item.expectedCompactTriId,
-                    hwTriId,
-                    item.swGlobalIdx,
-                    item.swSubIdx);
+                    hwTriId);
+
+        std::printf("  rayDir=(%.6f, %.6f, %.6f)\n",
+                    item.dir[0],
+                    item.dir[1],
+                    item.dir[2]);
+
+        if (item.expectedTriId >= 0 && static_cast<size_t>(item.expectedTriId) < triangles.size()) {
+            const Triangle& tri = triangles[static_cast<size_t>(item.expectedTriId)];
+            std::printf("  tri.v0=(%.6f, %.6f, %.6f), tri.v1=(%.6f, %.6f, %.6f), tri.v2=(%.6f, %.6f, %.6f)\n",
+                        tri.v0[0], tri.v0[1], tri.v0[2],
+                        tri.v1[0], tri.v1[1], tri.v1[2],
+                        tri.v2[0], tri.v2[1], tri.v2[2]);
+        } else {
+            std::printf("  triangle vertices unavailable for triId=%d\n", item.expectedTriId);
+        }
     }
 
     if (options_.printDdaTrace) {

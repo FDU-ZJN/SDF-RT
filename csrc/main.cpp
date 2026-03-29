@@ -32,22 +32,51 @@ constexpr int kSanityFullZ = 199;
 constexpr bool kUseComputedHybridSdf = false;
 constexpr float kLocalActiveBand = 0.2f;
 constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
+
+// Debug configuration (edit here directly, no CLI parsing).
+constexpr bool kEnableVcd = false;
+constexpr bool kPrintMismatchId = false;
+constexpr bool kPrintDdaTrace = false;
+constexpr bool kPrintPerPixelTriId = false;
+constexpr bool kSinglePixelDebug = false;
+constexpr int kDebugPixelX = 171;
+constexpr int kDebugPixelY = 214;
+constexpr bool kDebugOnly = false;
 } // namespace
 
 int main(int argc, char** argv) {
     DebugOptions debugOptions;
-    debugOptions.enableVcd = false;
-    debugOptions.printMismatchId = false;
-    debugOptions.printDdaTrace = false;
-    debugOptions.printPerPixelTriId = false;
+    debugOptions.enableVcd = kEnableVcd;
+    debugOptions.printMismatchId = kPrintMismatchId;
+    debugOptions.printDdaTrace = kPrintDdaTrace;
+    debugOptions.printPerPixelTriId = kPrintPerPixelTriId;
+    debugOptions.singlePixelDebug = kSinglePixelDebug;
+    debugOptions.debugPixelX = kDebugPixelX;
+    debugOptions.debugPixelY = kDebugPixelY;
+
+    if (debugOptions.singlePixelDebug) {
+        if (debugOptions.debugPixelX < 0 || debugOptions.debugPixelX >= kWidth ||
+            debugOptions.debugPixelY < 0 || debugOptions.debugPixelY >= kHeight) {
+            std::cerr << "debug pixel out of range: ("
+                      << debugOptions.debugPixelX << ","
+                      << debugOptions.debugPixelY << ")" << std::endl;
+            return 1;
+        }
+        std::cout << "Single-pixel debug enabled at ("
+                  << debugOptions.debugPixelX << ","
+                  << debugOptions.debugPixelY << ")"
+                  << (kDebugOnly ? " [debug-only]" : "") << std::endl;
+    } else if (kDebugOnly) {
+        std::cerr << "kDebugOnly requires kSinglePixelDebug" << std::endl;
+        return 1;
+    }
+
     DebugHooks debug(debugOptions, main_time);
 
     cout << "SimTop 400x400 rendering..." << endl;
     Verilated::commandArgs(argc, argv);
 
     const char* objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
-    const char* sdfPath = "/home/fate/code/SDF-RT/csrc/bunny_sdf_cache_hw.npz";
-
     printf("Loading model...\n");
     loadModelFromObj(objPath, triangles, normals);
     if (triangles.empty()) {
@@ -108,16 +137,19 @@ int main(int argc, char** argv) {
         kSanityFullY,
         kSanityFullZ);
 
-    const size_t totalPixels = static_cast<size_t>(kWidth) * kHeight;
+    const size_t framePixels = static_cast<size_t>(kWidth) * kHeight;
 
     vector<RayWorkItem> workItems;
-    workItems.reserve(totalPixels);
+    workItems.reserve(framePixels);
 
     // Build BVH software golden result for every ray.
     const array<float, 3> lightDir = {0.577f, 0.577f, 0.577f};
 
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
+            if (kDebugOnly && (px != debugOptions.debugPixelX || py != debugOptions.debugPixelY)) {
+                continue;
+            }
             RayWorkItem item;
             item.px = px;
             item.py = py;
@@ -149,8 +181,14 @@ int main(int argc, char** argv) {
                 }
             }
 
-             workItems.push_back(item);
+            workItems.push_back(item);
         }
+    }
+
+    const size_t totalRays = workItems.size();
+    if (totalRays == 0) {
+        std::cerr << "No work items generated." << std::endl;
+        return 2;
     }
 
     auto* dut = new VSimTop;
@@ -192,7 +230,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "Setup finished after " << setupWait << " cycles." << std::endl;
 
-    vector<uint8_t> image(totalPixels * 3, 0);
+    vector<uint8_t> image(framePixels * 3, 0);
     size_t issued = 0;
     size_t retired = 0;
     int stallCycles = 0;
@@ -200,8 +238,8 @@ int main(int argc, char** argv) {
     size_t hitCount = 0;
     size_t mismatchCount = 0;
 
-    while (retired < totalPixels) {
-        const bool canIssue = (issued < totalPixels) && dut->io_out_ready;
+    while (retired < totalRays) {
+        const bool canIssue = (issued < totalRays) && dut->io_out_ready;
         if (canIssue) {
             const RayWorkItem& item = workItems[issued];
             dut->io_rd_in_x = floatToU32(item.dir[0]);
@@ -256,7 +294,7 @@ int main(int argc, char** argv) {
             madeProgress = true;
             std::fflush(stdout);
             std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
-                        100.0 * static_cast<double>(retired) / static_cast<double>(totalPixels),
+                        100.0 * static_cast<double>(retired) / static_cast<double>(totalRays),
                         issued,
                         retired);
         }
@@ -271,12 +309,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("\nDone. Average cycles/pixel: %.2f\n",
-                static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
-    std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/pixel: %.2f\n",
+    std::printf("\nDone. Average cycles/ray: %.2f\n",
+                static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
+    std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/ray: %.2f\n",
                 hitCount,
                 mismatchCount,
-                static_cast<double>(main_time / 2) / static_cast<double>(kWidth * kHeight));
+                static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
 
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 

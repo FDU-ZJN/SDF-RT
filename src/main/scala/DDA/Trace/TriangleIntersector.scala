@@ -157,10 +157,9 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     fcmp_uv.io.b := fp_one
     fcmp_uv.io.signaling := false.B
     val uv_le_one = fcmp_uv.io.le
-  val t_pos = !t_d26(cfg.totalWidth-1)
 
 
-  io.hit := out_valid_final && !det_is_zero_d26 && u_pos && v_pos && uv_le_one && t_pos
+  io.hit := out_valid_final && !det_is_zero_d26 && u_pos && v_pos && uv_le_one
 
 
   io.t := Mux(det_is_zero_d26, 0.U, t_d26)

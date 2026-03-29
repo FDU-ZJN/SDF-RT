@@ -25,6 +25,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val rmRtz = RTZ
 
   val hitThreshold = BigInt(c.thresholdBits & 0xffffffffL).U(c.cfg.totalWidth.W)
+  val hitBackoffDist = BigInt(c.hitBackoffBits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val minStep = BigInt(c.minStepBits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val fpZero = 0.U(c.cfg.totalWidth.W)
   val maxStepsU = c.maxSteps.U(16.W)
@@ -204,29 +205,25 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   val bSample = Mux(bInBounds, io.sdf_mem_resp.bits, fpZero)
   val bSampleNeg = bSample(c.cfg.totalWidth - 1)
+  val bSampleAbs = Cat(0.U(1.W), bSample(c.cfg.totalWidth - 2, 0))
 
   // --------------------
   // Stage C: one-step march update
   // --------------------
   val cmpHit = Module(new FCMP(c.cfg))
-  cmpHit.io.a := bSample
+  cmpHit.io.a := bSampleAbs
   cmpHit.io.b := hitThreshold
   cmpHit.io.signaling := false.B
 
-  val cmpPositive = Module(new FCMP(c.cfg))
-  cmpPositive.io.a := fpZero
-  cmpPositive.io.b := bSample
-  cmpPositive.io.signaling := false.B
-
   val cmpStep = Module(new FCMP(c.cfg))
   cmpStep.io.a := minStep
-  cmpStep.io.b := bSample
+  cmpStep.io.b := bSampleAbs
   cmpStep.io.signaling := false.B
 
-  val selectedStep = Mux(cmpStep.io.le, bSample, minStep)
-  val bHit = bInBounds && cmpPositive.io.lt && cmpHit.io.lt
+  val selectedStep = Mux(cmpStep.io.le, bSampleAbs, minStep)
+  val bHit = bInBounds && cmpHit.io.lt
 
-  // Hit is emitted immediately at B-stage; only miss path enters march pipeline.
+  // Miss-only path keeps original one-step sphere tracing march.
   val cValid = pipeBool(bValid && !bHit, hitStepLatency)
   val cInBounds = pipeBool(bInBounds && !bHit, hitStepLatency)
   val cIter = pipeUInt(bIter + 1.U, hitStepLatency)
@@ -241,13 +238,11 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val cSlotId = pipeUInt(bSlotId, hitStepLatency)
   val cPixelX = pipeUInt(bPixelX, hitStepLatency)
   val cPixelY = pipeUInt(bPixelY, hitStepLatency)
-
   val cStep = pipeUInt(selectedStep, hitStepLatency)
 
   val mulNx = Module(new FMUL(c.cfg))
   val mulNy = Module(new FMUL(c.cfg))
   val mulNz = Module(new FMUL(c.cfg))
-
   mulNx.io.a := cRayDX
   mulNx.io.b := cStep
   mulNx.io.rm := rmRne
@@ -258,7 +253,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   mulNz.io.b := cStep
   mulNz.io.rm := rmRne
 
-  // Align ray origin with FMUL output latency before FADD.
   val cRayOXForAdd = pipeUInt(cRayOX, c.cfg.fmulLatency)
   val cRayOYForAdd = pipeUInt(cRayOY, c.cfg.fmulLatency)
   val cRayOZForAdd = pipeUInt(cRayOZ, c.cfg.fmulLatency)
@@ -266,7 +260,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val addNx = Module(new FADD(c.cfg))
   val addNy = Module(new FADD(c.cfg))
   val addNz = Module(new FADD(c.cfg))
-
   addNx.io.a := cRayOXForAdd
   addNx.io.b := mulNx.io.result
   addNx.io.rm := rmRne
@@ -280,7 +273,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outValid = pipeBool(cValid, marchLatency)
   val outInBounds = pipeBool(cInBounds, marchLatency)
   val outIterRaw = pipeUInt(cIter, marchLatency)
-  // If the marched point has gone out of grid, force terminal iteration count to stop retries.
   val outIter = Mux(outInBounds, outIterRaw, maxStepsU)
 
   val outCurrX = pipeUInt(cRayOX, marchLatency)
@@ -299,6 +291,55 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outOriginY = Mux(!outInBounds, outCurrY, addNy.io.res)
   val outOriginZ = Mux(!outInBounds, outCurrZ, addNz.io.res)
 
+  // Hit backoff uses sdf sign: positive sdf backs off along -ray, negative sdf backs off along +ray.
+  val hitBackoffDirX = Mux(bSampleNeg, bRayDX, neg(bRayDX))
+  val hitBackoffDirY = Mux(bSampleNeg, bRayDY, neg(bRayDY))
+  val hitBackoffDirZ = Mux(bSampleNeg, bRayDZ, neg(bRayDZ))
+
+  val hitMulX = Module(new FMUL(c.cfg))
+  val hitMulY = Module(new FMUL(c.cfg))
+  val hitMulZ = Module(new FMUL(c.cfg))
+  hitMulX.io.a := hitBackoffDirX
+  hitMulX.io.b := hitBackoffDist
+  hitMulX.io.rm := rmRne
+  hitMulY.io.a := hitBackoffDirY
+  hitMulY.io.b := hitBackoffDist
+  hitMulY.io.rm := rmRne
+  hitMulZ.io.a := hitBackoffDirZ
+  hitMulZ.io.b := hitBackoffDist
+  hitMulZ.io.rm := rmRne
+
+  val hitOriginXAligned = pipeUInt(bRayOX, c.cfg.fmulLatency)
+  val hitOriginYAligned = pipeUInt(bRayOY, c.cfg.fmulLatency)
+  val hitOriginZAligned = pipeUInt(bRayOZ, c.cfg.fmulLatency)
+
+  val hitAddX = Module(new FADD(c.cfg))
+  val hitAddY = Module(new FADD(c.cfg))
+  val hitAddZ = Module(new FADD(c.cfg))
+  hitAddX.io.a := hitOriginXAligned
+  hitAddX.io.b := hitMulX.io.result
+  hitAddX.io.rm := rmRne
+  hitAddY.io.a := hitOriginYAligned
+  hitAddY.io.b := hitMulY.io.result
+  hitAddY.io.rm := rmRne
+  hitAddZ.io.a := hitOriginZAligned
+  hitAddZ.io.b := hitMulZ.io.result
+  hitAddZ.io.rm := rmRne
+
+  val hitBackoffLatency = c.cfg.fmulLatency + c.cfg.faddLatency
+  val hitOutValid = pipeBool(bValid && bHit, hitBackoffLatency)
+  val hitOutIter = pipeUInt(bIter + 1.U, hitBackoffLatency)
+  val hitOutSlotId = pipeUInt(bSlotId, hitBackoffLatency)
+  val hitOutPixelX = pipeUInt(bPixelX, hitBackoffLatency)
+  val hitOutPixelY = pipeUInt(bPixelY, hitBackoffLatency)
+  val hitOutRayDX = pipeUInt(bRayDX, hitBackoffLatency)
+  val hitOutRayDY = pipeUInt(bRayDY, hitBackoffLatency)
+  val hitOutRayDZ = pipeUInt(bRayDZ, hitBackoffLatency)
+  val hitOutReverse = pipeBool(bSampleNeg, hitBackoffLatency)
+
+  // --------------------
+  // Stage D: output
+  // --------------------
   io.out.valid := outValid
   io.out.bits.meta.slotId := outSlotId
   io.out.bits.meta.pixelX := outPixelX
@@ -314,20 +355,20 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   io.out.bits.ray.dir.y := outRayDY
   io.out.bits.ray.dir.z := outRayDZ
 
-  io.out_hit.valid := bValid && bHit
-  io.out_hit.bits.meta.slotId := bSlotId
-  io.out_hit.bits.meta.pixelX := bPixelX
-  io.out_hit.bits.meta.pixelY := bPixelY
+  io.out_hit.valid := hitOutValid
+  io.out_hit.bits.meta.slotId := hitOutSlotId
+  io.out_hit.bits.meta.pixelX := hitOutPixelX
+  io.out_hit.bits.meta.pixelY := hitOutPixelY
   io.out_hit.bits.hit := true.B
-  io.out_hit.bits.iter := bIter + 1.U
-  io.out_hit.bits.reverseTraversal := bSampleNeg
+  io.out_hit.bits.iter := hitOutIter
+  io.out_hit.bits.reverseTraversal := hitOutReverse
 
-  io.out_hit.bits.ray.origin.x := bRayOX
-  io.out_hit.bits.ray.origin.y := bRayOY
-  io.out_hit.bits.ray.origin.z := bRayOZ
-  io.out_hit.bits.ray.dir.x := bRayDX
-  io.out_hit.bits.ray.dir.y := bRayDY
-  io.out_hit.bits.ray.dir.z := bRayDZ
+  io.out_hit.bits.ray.origin.x := hitAddX.io.res
+  io.out_hit.bits.ray.origin.y := hitAddY.io.res
+  io.out_hit.bits.ray.origin.z := hitAddZ.io.res
+  io.out_hit.bits.ray.dir.x := hitOutRayDX
+  io.out_hit.bits.ray.dir.y := hitOutRayDY
+  io.out_hit.bits.ray.dir.z := hitOutRayDZ
 
   when(io.out.valid) {
     assert(io.out.ready, "SdfPE expects io.out.ready to stay high in pipeline mode")

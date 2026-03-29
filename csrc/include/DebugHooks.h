@@ -23,6 +23,9 @@ struct DebugOptions {
     bool printMismatchId = true;
     bool printDdaTrace = true;
     bool printPerPixelTriId = false;
+    bool singlePixelDebug = false;
+    int debugPixelX = 0;
+    int debugPixelY = 0;
 };
 
 class DebugHooks {
@@ -45,6 +48,7 @@ public:
         int ddaTraceSteps) const;
 
 private:
+    bool shouldTracePixel(const RayWorkItem& item) const;
     DebugOptions options_;
     uint64_t& simTime_;
     VerilatedVcdC* tfp_ = nullptr;
