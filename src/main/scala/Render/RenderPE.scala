@@ -21,6 +21,9 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val val_0_15 = "h3E19999A".U // 0.15f
   val val_0_0  = "h00000000".U // 0.0f
   val val_1_0  = "h3F800000".U // 1.0f
+  val yellowR = val_1_0
+  val yellowG = val_1_0
+  val yellowB = val_0_0
   val color_coeffs = VecInit("h3F333333".U, "h3F4CCCCD".U, "h3F666666".U) // 0.7, 0.8, 0.9
 
   // --- 阶段 1: 渲染计算 ---
@@ -71,8 +74,8 @@ class RenderPE(cfg: FloatConfig) extends Module {
   io.out_result.meta := meta_sync
   io.out_result.hit := hit_sync
   io.out_result.hitId := id_sync
-  io.out_result.rgb.x := Mux(hit_sync, clampedRGB(0), val_0_0)
-  io.out_result.rgb.y := Mux(hit_sync, clampedRGB(1), val_0_0)
-  io.out_result.rgb.z := Mux(hit_sync, clampedRGB(2), val_0_0)
+  io.out_result.rgb.x := Mux(hit_sync, clampedRGB(0), yellowR)
+  io.out_result.rgb.y := Mux(hit_sync, clampedRGB(1), yellowG)
+  io.out_result.rgb.z := Mux(hit_sync, clampedRGB(2), yellowB)
   io.out_valid := valid_sync
 }

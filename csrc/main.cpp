@@ -29,8 +29,8 @@ constexpr int kDdaTraceSteps = 100;
 constexpr int kSanityFullX = 64;
 constexpr int kSanityFullY = 154;
 constexpr int kSanityFullZ = 199;
-constexpr bool kUseComputedHybridSdf = true;
-constexpr float kLocalActiveBand = 0.15f;
+constexpr bool kUseComputedHybridSdf = false;
+constexpr float kLocalActiveBand = 0.2f;
 constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
 } // namespace
 

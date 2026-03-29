@@ -23,7 +23,7 @@ class SimTop extends Module {
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
-  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = 16, subRes = 16, maxTraversalSteps = 64))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = 16, subRes = 16, maxTraversalSteps = 256))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
@@ -98,6 +98,8 @@ class SimTop extends Module {
   ddaStage.io.out.ready := renderStage.io.in.ready
 
   val zeroFp = 0.U(c.cfg.totalWidth.W)
+  val oneFp = java.lang.Float.floatToRawIntBits(1.0f).U(c.cfg.totalWidth.W)
+  val deepBlueFp = java.lang.Float.floatToRawIntBits(0.5f).U(c.cfg.totalWidth.W)
 
   commitQueue.io.writeback.valid := renderStage.io.out.valid
   commitQueue.io.writeback.bits := renderStage.io.out.bits
@@ -108,7 +110,7 @@ class SimTop extends Module {
   wb2.hit := false.B
   wb2.hitId := 0.U
   wb2.rgb.x := zeroFp
-  wb2.rgb.y := zeroFp
+  wb2.rgb.y := oneFp
   wb2.rgb.z := zeroFp
   commitQueue.io.writeback2.valid := initStage.io.to_bypass.valid
   commitQueue.io.writeback2.bits := wb2
@@ -120,7 +122,7 @@ class SimTop extends Module {
   wb3.hitId := 0.U
   wb3.rgb.x := zeroFp
   wb3.rgb.y := zeroFp
-  wb3.rgb.z := zeroFp
+  wb3.rgb.z := deepBlueFp
   commitQueue.io.writeback3.valid := sdfStage.io.out_valid && !sdfStage.io.out_hit
   commitQueue.io.writeback3.bits := wb3
 
