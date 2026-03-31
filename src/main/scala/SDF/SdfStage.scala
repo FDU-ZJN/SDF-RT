@@ -8,13 +8,8 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   private val peCfg = SdfPeConfig(cfg = cfg, addrWidth = addrWidth)
 
   val io = IO(new Bundle {
-    val setup_valid = Input(Bool())
-    val setup_origin = Input(new Vec3(cfg))
-    val setup_grid_min = Input(new Vec3(cfg))
-    val setup_grid_max = Input(new Vec3(cfg))
-    val setup_finish = Output(Bool())
-    val grid_min = Output(new Vec3(cfg))
-    val inv_voxel = Output(new Vec3(cfg))
+    val grid_min = Input(new Vec3(cfg))
+    val inv_voxel = Input(new Vec3(cfg))
 
     val issue_in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
 
@@ -26,18 +21,9 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val out_valid = Output(Bool())
   })
 
-  val setupUnit = Module(new SdfSetupUnit(cfg, peCfg))
   val scheduler = Module(new SdfSchedulerUnit(cfg, addrWidth, peCfg.maxSteps))
   val sdfPE = Module(new SdfPE(peCfg))
   val sdfMem = Module(new SdfMemDPI(addrWidth, cfg.totalWidth))
-
-  setupUnit.io.setup_valid := io.setup_valid
-  setupUnit.io.setup_origin := io.setup_origin
-  setupUnit.io.setup_grid_min := io.setup_grid_min
-  setupUnit.io.setup_grid_max := io.setup_grid_max
-  io.setup_finish := setupUnit.io.setup_finish
-  io.grid_min := setupUnit.io.gridMin
-  io.inv_voxel := setupUnit.io.invVoxel
 
   scheduler.io.issue_in <> io.issue_in
 
@@ -45,8 +31,8 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   scheduler.io.pe_out_miss <> sdfPE.io.out
   scheduler.io.pe_out_hit <> sdfPE.io.out_hit
 
-  sdfPE.io.grid_min := setupUnit.io.gridMin
-  sdfPE.io.inv_voxel := setupUnit.io.invVoxel
+  sdfPE.io.grid_min := io.grid_min
+  sdfPE.io.inv_voxel := io.inv_voxel
 
   sdfMem.io.clk := clock
   sdfMem.io.reset := reset

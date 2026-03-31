@@ -53,14 +53,23 @@ case class SdfPeConfig(
   LocalResX: Int = 16,
   LocalResY: Int = 16,
   LocalResZ: Int = 16,
-  maxSteps: Int = 30,
-  threshold: Float = 0.04f,
+  SubRes: Int = 2,
+  maxSteps: Int = 128,
+  threshold3: Float = 0.04f,
+  threshold2: Float = 0.02f,
+  threshold1: Float = 0.01f,
+  StepScale: Float  =0.8f,
   minStep: Float = 0.000f,
   hitAdvance: Float = 1e-3f,
   hitBackoffN: Int = 1
 ) {
   require(hitBackoffN >= 1, s"hitBackoffN must be >= 1, got $hitBackoffN")
-  val thresholdBits  = java.lang.Float.floatToRawIntBits(threshold)
+  require(StepScale > 0.0f, s"StepScale must be > 0, got $StepScale")
+  val threshold1Bits = java.lang.Float.floatToRawIntBits(threshold1)
+  val threshold2Bits = java.lang.Float.floatToRawIntBits(threshold2)
+  val threshold3Bits = java.lang.Float.floatToRawIntBits(threshold3)
+  val thresholdBits  = threshold1Bits
+  val stepScaleBits  = java.lang.Float.floatToRawIntBits(StepScale)
   val minStepBits    = java.lang.Float.floatToRawIntBits(minStep)
   val hitAdvanceBits = java.lang.Float.floatToRawIntBits(hitAdvance)
   val hitBackoffBits = java.lang.Float.floatToRawIntBits(hitAdvance * hitBackoffN.toFloat)

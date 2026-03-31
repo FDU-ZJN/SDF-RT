@@ -5,7 +5,7 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 
-class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
+class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
     val setup_origin = Input(new Vec3(cfg))
@@ -16,7 +16,9 @@ class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
     val tNear = Output(UInt(cfg.totalWidth.W))
     val tFar = Output(UInt(cfg.totalWidth.W))
     val gridMin = Output(new Vec3(cfg))
+    val gridMax = Output(new Vec3(cfg))
     val invVoxel = Output(new Vec3(cfg))
+    val invSubVoxel = Output(new Vec3(cfg))
     val setup_finish = Output(Bool())
   })
 
@@ -26,7 +28,9 @@ class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val tNearReg = RegInit(0.U(cfg.totalWidth.W))
   val tFarReg = RegInit("h7F800000".U(cfg.totalWidth.W))
   val gridMinReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
+  val gridMaxReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val invVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
+  val invSubVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val setupFinishReg = RegInit(false.B)
 
   // span = gridMax - gridMin
@@ -48,9 +52,18 @@ class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val divY = Module(new FDIV(cfg))
   val divZ = Module(new FDIV(cfg))
 
+  // inv_sub_voxel(axis) = (GlobalRes*SubRes) / span(axis)
+  val subDivX = Module(new FDIV(cfg))
+  val subDivY = Module(new FDIV(cfg))
+  val subDivZ = Module(new FDIV(cfg))
+
   val fullResXfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.LocalResX).toFloat)
   val fullResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.LocalResY).toFloat)
   val fullResZfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResZ * peCfg.LocalResZ).toFloat)
+
+  val fullSubResXfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.SubRes).toFloat)
+  val fullSubResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.SubRes).toFloat)
+  val fullSubResZfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResZ * peCfg.SubRes).toFloat)
 
   val divStart = ShiftRegister(io.setup_valid, cfg.faddLatency)
 
@@ -64,16 +77,32 @@ class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   divY.io.in_valid := divStart
   divZ.io.in_valid := divStart
 
+  subDivX.io.a := BigInt(fullSubResXfp & 0xffffffffL).U(cfg.totalWidth.W)
+  subDivY.io.a := BigInt(fullSubResYfp & 0xffffffffL).U(cfg.totalWidth.W)
+  subDivZ.io.a := BigInt(fullSubResZfp & 0xffffffffL).U(cfg.totalWidth.W)
+  subDivX.io.b := spanXSub.io.res
+  subDivY.io.b := spanYSub.io.res
+  subDivZ.io.b := spanZSub.io.res
+  subDivX.io.in_valid := divStart
+  subDivY.io.in_valid := divStart
+  subDivZ.io.in_valid := divStart
+
   when(io.setup_valid) {
     originReg := io.setup_origin
     gridMinReg := io.setup_grid_min
+    gridMaxReg := io.setup_grid_max
     setupFinishReg := false.B
   }
 
-  when(divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid) {
+  val invVoxelReady = divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid
+  val invSubVoxelReady = subDivX.io.out_valid && subDivY.io.out_valid && subDivZ.io.out_valid
+  when(invVoxelReady && invSubVoxelReady) {
     invVoxelReg.x := divX.io.result
     invVoxelReg.y := divY.io.result
     invVoxelReg.z := divZ.io.result
+    invSubVoxelReg.x := subDivX.io.result
+    invSubVoxelReg.y := subDivY.io.result
+    invSubVoxelReg.z := subDivZ.io.result
     setupFinishReg := true.B
   }
 
@@ -81,6 +110,8 @@ class SdfSetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   io.tNear := tNearReg
   io.tFar := tFarReg
   io.gridMin := gridMinReg
+  io.gridMax := gridMaxReg
   io.invVoxel := invVoxelReg
+  io.invSubVoxel := invSubVoxelReg
   io.setup_finish := setupFinishReg
 }

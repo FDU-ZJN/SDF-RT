@@ -1,12 +1,13 @@
 import DDA.DDA
 import Render.RenderStage
-import SDF.{InitStage, SdfStage}
+import SDF.{InitStage, SetupUnit, SdfStage}
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
 class SimTop extends Module {
   val c = TriPeConfig()
+  private val sdfCfg = SdfPeConfig(cfg = c.cfg, addrWidth = c.addrWidth)
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
     val setup_origin = Input(new Vec3(c.cfg))
@@ -22,8 +23,9 @@ class SimTop extends Module {
   })
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
+  val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
-  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = 16, subRes = 16, maxTraversalSteps = 256))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.GlobalResX, subRes = sdfCfg.SubRes, maxTraversalSteps = 256))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
@@ -31,15 +33,18 @@ class SimTop extends Module {
   val initToSdfDepth = 32
   val initToSdfQ = Module(new Queue(new RayIssue(c.cfg, c.addrWidth), initToSdfDepth))
 
-  sdfStage.io.setup_valid := io.setup_valid
-  sdfStage.io.setup_origin := io.setup_origin
-  sdfStage.io.setup_grid_min := io.setup_grid_min
-  sdfStage.io.setup_grid_max := io.setup_grid_max
-  io.setup_finish := sdfStage.io.setup_finish
+  setupUnit.io.setup_valid := io.setup_valid
+  setupUnit.io.setup_origin := io.setup_origin
+  setupUnit.io.setup_grid_min := io.setup_grid_min
+  setupUnit.io.setup_grid_max := io.setup_grid_max
+  io.setup_finish := setupUnit.io.setup_finish
 
-  initStage.io.setup_origin := io.setup_origin
-  initStage.io.setup_grid_min := io.setup_grid_min
-  initStage.io.setup_grid_max := io.setup_grid_max
+  initStage.io.setup_origin := setupUnit.io.origin
+  initStage.io.setup_grid_min := setupUnit.io.gridMin
+  initStage.io.setup_grid_max := setupUnit.io.gridMax
+
+  sdfStage.io.grid_min := setupUnit.io.gridMin
+  sdfStage.io.inv_voxel := setupUnit.io.invVoxel
 
   // Conservative admission control for InitStage input:
   // assume all in-flight rays may become SDF-hit and need Init->SDF queue space.
@@ -55,8 +60,9 @@ class SimTop extends Module {
   sdfQCountExt := initToSdfQ.io.count
   val sdfQFree = initToSdfDepth.U(inflightW.W) - sdfQCountExt
 
+  val setupReady = setupUnit.io.setup_finish
   val canReserveSdfQ = sdfQFree > initInflight
-  val conservativeInitReady = initStage.io.in.ready && commitQueue.io.alloc.ready && initStage.io.to_bypass.ready && canReserveSdfQ
+  val conservativeInitReady = setupReady && initStage.io.in.ready && commitQueue.io.alloc.ready && initStage.io.to_bypass.ready && canReserveSdfQ
   val inputFire = io.rd_valid && conservativeInitReady
 
   when(inputFire && !initOutFireAny) {
@@ -77,8 +83,8 @@ class SimTop extends Module {
   initToSdfQ.io.enq <> initStage.io.to_sdf
   sdfStage.io.issue_in <> initToSdfQ.io.deq
 
-  ddaStage.io.grid_min := sdfStage.io.grid_min
-  ddaStage.io.inv_voxel := sdfStage.io.inv_voxel
+  ddaStage.io.grid_min := setupUnit.io.gridMin
+  ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
 
   val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), 16))
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit

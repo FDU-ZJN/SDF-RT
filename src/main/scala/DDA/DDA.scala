@@ -20,7 +20,7 @@ class DDA(
     val in = Flipped(Decoupled(new DdaTraversalReq(cfg, addrWidth)))
     // Float -> subgrid mapping parameters, same formula as SdfPE.
     val grid_min = Input(new Vec3(cfg))
-    val inv_voxel = Input(new Vec3(cfg))
+    val inv_sub_voxel = Input(new Vec3(cfg))
     val out = Decoupled(new DdaTraversalResult(cfg, addrWidth))
   })
 
@@ -133,13 +133,13 @@ class DDA(
   val mulIdxY = Module(new FMUL(cfg))
   val mulIdxZ = Module(new FMUL(cfg))
   mulIdxX.io.a := subGx.io.res
-  mulIdxX.io.b := io.inv_voxel.x
+  mulIdxX.io.b := io.inv_sub_voxel.x
   mulIdxX.io.rm := RNE
   mulIdxY.io.a := subGy.io.res
-  mulIdxY.io.b := io.inv_voxel.y
+  mulIdxY.io.b := io.inv_sub_voxel.y
   mulIdxY.io.rm := RNE
   mulIdxZ.io.a := subGz.io.res
-  mulIdxZ.io.b := io.inv_voxel.z
+  mulIdxZ.io.b := io.inv_sub_voxel.z
   mulIdxZ.io.rm := RNE
 
   val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision))
@@ -216,13 +216,13 @@ class DDA(
   val dsdtMulY = Module(new FMUL(cfg))
   val dsdtMulZ = Module(new FMUL(cfg))
   dsdtMulX.io.a := rayReg.dir.x
-  dsdtMulX.io.b := io.inv_voxel.x
+  dsdtMulX.io.b := io.inv_sub_voxel.x
   dsdtMulX.io.rm := RNE
   dsdtMulY.io.a := rayReg.dir.y
-  dsdtMulY.io.b := io.inv_voxel.y
+  dsdtMulY.io.b := io.inv_sub_voxel.y
   dsdtMulY.io.rm := RNE
   dsdtMulZ.io.a := rayReg.dir.z
-  dsdtMulZ.io.b := io.inv_voxel.z
+  dsdtMulZ.io.b := io.inv_sub_voxel.z
   dsdtMulZ.io.rm := RNE
 
   val absDsdtX = fpAbs(dsdtMulX.io.result)
