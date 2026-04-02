@@ -39,6 +39,18 @@ struct SdfTraceResult {
     bool hit = false;
     uint32_t iter = 0;
     std::array<float, 3> finalOrigin = {0.0f, 0.0f, 0.0f};
+    bool reverseTraversal = false;
+    float sample = 0.0f;
+};
+
+struct SdfSoftwareHit {
+    bool sdfHit = false;
+    bool reverseTraversal = false;
+    int compactTriId = -1;
+    int originalTriId = -1;
+    float triT = 0.0f;
+    uint32_t iter = 0;
+    std::array<float, 3> sdfHitOrigin = {0.0f, 0.0f, 0.0f};
 };
 
 bool sdfRayAabbIntersect(
@@ -66,6 +78,16 @@ SdfTraceResult sdfTraceToTerminal(
     const std::array<float, 3>& gridMin,
     const std::array<float, 3>& invVoxel,
     const SdfConfig& cfg);
+
+SdfSoftwareHit sdfSoftwareTraceCompact(
+    const std::array<float, 3>& setupOrigin,
+    const std::array<float, 3>& dir,
+    const std::array<float, 3>& gridMin,
+    const std::array<float, 3>& gridMax,
+    const SdfConfig& sdfCfg,
+    int ddaGlobalRes,
+    int ddaSubRes,
+    int ddaMaxTraversalSteps);
 
 #endif // SDF_H
 

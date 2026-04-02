@@ -25,12 +25,12 @@ class SimTop extends Module {
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
-  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.GlobalResX, subRes = sdfCfg.SubRes, maxTraversalSteps = 256))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
   // Init->SDF decouple queue; depth is sized to absorb InitStage fixed-latency burst safely.
-  val initToSdfDepth = 32
+  val initToSdfDepth = GlobalConfig.simInitToSdfQueueDepth
   val initToSdfQ = Module(new Queue(new RayIssue(c.cfg, c.addrWidth), initToSdfDepth))
 
   setupUnit.io.setup_valid := io.setup_valid
@@ -48,7 +48,7 @@ class SimTop extends Module {
 
   // Conservative admission control for InitStage input:
   // assume all in-flight rays may become SDF-hit and need Init->SDF queue space.
-  val initOutLatency = 4 + (3 * c.cfg.faddLatency) + (2 * c.cfg.fmulLatency) + c.cfg.fdivLatency
+  val initOutLatency = 4 + (3 * c.cfg.faddLatency) + (2 * c.cfg.fmulLatency) + c.cfg.fdivLatency + (4 * c.cfg.fcmpLatency)
   val inflightW = log2Ceil(initToSdfDepth + initOutLatency + 4)
   val initInflight = RegInit(0.U(inflightW.W))
 
@@ -81,12 +81,15 @@ class SimTop extends Module {
   commitQueue.io.alloc.bits := 0.U
 
   initToSdfQ.io.enq <> initStage.io.to_sdf
+  when(initToSdfQ.io.enq.valid) {
+    assert(initToSdfQ.io.enq.ready, "SimTop initToSdfQ overflow")
+  }
   sdfStage.io.issue_in <> initToSdfQ.io.deq
 
   ddaStage.io.grid_min := setupUnit.io.gridMin
   ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
 
-  val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), 16))
+  val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), GlobalConfig.simSdfHitQueueDepth))
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
   sdfHitQ.io.enq.bits.ray := sdfStage.io.out_ray
   sdfHitQ.io.enq.bits.meta := sdfStage.io.out_meta

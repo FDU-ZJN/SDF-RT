@@ -38,7 +38,8 @@ class RenderPE(cfg: FloatConfig) extends Module {
   cmpDot.io.a := dotUnit.io.res
   cmpDot.io.b := val_0_0
   cmpDot.io.signaling:=false.B
-  val diff = Mux(cmpDot.io.lt, val_0_0, dotUnit.io.res)
+  val dotAligned = ShiftRegister(dotUnit.io.res, cfg.fcmpLatency)
+  val diff = Mux(cmpDot.io.lt, val_0_0, dotAligned)
 
   // 3. Add Ambient: (diff + 0.15)
   val fadd = Module(new FADD(cfg))
@@ -60,12 +61,13 @@ class RenderPE(cfg: FloatConfig) extends Module {
     cmpMax.io.a := val_1_0
     cmpMax.io.b := mul.io.result
     cmpMax.io.signaling:= false.B
-    Mux(cmpMax.io.lt, val_1_0, mul.io.result)
+    val mulAligned = ShiftRegister(mul.io.result, cfg.fcmpLatency)
+    Mux(cmpMax.io.lt, val_1_0, mulAligned)
   }
 
   // --- 阶段 3: 流水线同步 ---
-  // 总延迟 = 点积 + 加法 + 乘法 + 比较
-  val totalLatency = cfg.fdotLatency  + cfg.faddLatency + cfg.fmulLatency
+  // 总延迟 = 点积前比较 + 点积 + 加法 + 乘法后比较
+  val totalLatency = cfg.fcmpLatency + cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fcmpLatency
   val hit_sync = ShiftRegister(io.in_hit, totalLatency)
   val valid_sync = ShiftRegister(io.in_valid, totalLatency)
   val id_sync = ShiftRegister(io.hit_id, totalLatency)

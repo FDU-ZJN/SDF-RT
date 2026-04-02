@@ -58,8 +58,8 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val localMaskY = (c.LocalResY - 1).U(c.addrWidth.W)
   val localMaskZ = (c.LocalResZ - 1).U(c.addrWidth.W)
 
-  // Address path is FADD -> FMUL -> FPToInt (FPToInt is combinational here).
-  val addrLatency = c.cfg.faddLatency + c.cfg.fmulLatency
+  // Address path is FADD -> FMUL -> FPToInt.
+  val addrLatency = c.cfg.faddLatency + c.cfg.fmulLatency + c.cfg.fptointLatency
   val marchLatency = (2 * c.cfg.fmulLatency) + c.cfg.faddLatency
   val hitStepLatency = c.cfg.faddLatency
 
@@ -108,9 +108,9 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   mulIdxZ.io.b := io.inv_voxel.z
   mulIdxZ.io.rm := rmRne
 
-  val fpToIntX = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision))
-  val fpToIntY = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision))
-  val fpToIntZ = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision))
+  val fpToIntX = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
+  val fpToIntY = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
+  val fpToIntZ = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
 
   fpToIntX.io.a := mulIdxX.io.result
   fpToIntX.io.rm := rmRtz
@@ -233,24 +233,41 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   cmpStep.io.b := bSampleAbs
   cmpStep.io.signaling := false.B
 
-  val selectedStep = Mux(cmpStep.io.le, bSampleAbs, minStep)
-  val bHit = bInBounds && cmpHit.io.lt
+  val cmpLatency = c.cfg.fcmpLatency
+  val bSampleAbsCmp = pipeUInt(bSampleAbs, cmpLatency)
+  val selectedStep = Mux(cmpStep.io.le, bSampleAbsCmp, minStep)
+
+  val bValidCmp = pipeBool(bValid, cmpLatency)
+  val bInBoundsCmp = pipeBool(bInBounds, cmpLatency)
+  val bHit = bInBoundsCmp && cmpHit.io.lt
+
+  val bIterCmp = pipeUInt(bIter, cmpLatency)
+  val bRayOXCmp = pipeUInt(bRayOX, cmpLatency)
+  val bRayOYCmp = pipeUInt(bRayOY, cmpLatency)
+  val bRayOZCmp = pipeUInt(bRayOZ, cmpLatency)
+  val bRayDXCmp = pipeUInt(bRayDX, cmpLatency)
+  val bRayDYCmp = pipeUInt(bRayDY, cmpLatency)
+  val bRayDZCmp = pipeUInt(bRayDZ, cmpLatency)
+  val bSlotIdCmp = pipeUInt(bSlotId, cmpLatency)
+  val bPixelXCmp = pipeUInt(bPixelX, cmpLatency)
+  val bPixelYCmp = pipeUInt(bPixelY, cmpLatency)
+  val bSampleNegCmp = pipeBool(bSampleNeg, cmpLatency)
 
   // Miss-only path keeps original one-step sphere tracing march.
-  val cValid = pipeBool(bValid && !bHit, hitStepLatency)
-  val cInBounds = pipeBool(bInBounds && !bHit, hitStepLatency)
-  val cIter = pipeUInt(bIter + 1.U, hitStepLatency)
+  val cValid = pipeBool(bValidCmp && !bHit, hitStepLatency)
+  val cInBounds = pipeBool(bInBoundsCmp && !bHit, hitStepLatency)
+  val cIter = pipeUInt(bIterCmp + 1.U, hitStepLatency)
 
-  val cRayOX = pipeUInt(bRayOX, hitStepLatency)
-  val cRayOY = pipeUInt(bRayOY, hitStepLatency)
-  val cRayOZ = pipeUInt(bRayOZ, hitStepLatency)
-  val cRayDX = pipeUInt(bRayDX, hitStepLatency)
-  val cRayDY = pipeUInt(bRayDY, hitStepLatency)
-  val cRayDZ = pipeUInt(bRayDZ, hitStepLatency)
+  val cRayOX = pipeUInt(bRayOXCmp, hitStepLatency)
+  val cRayOY = pipeUInt(bRayOYCmp, hitStepLatency)
+  val cRayOZ = pipeUInt(bRayOZCmp, hitStepLatency)
+  val cRayDX = pipeUInt(bRayDXCmp, hitStepLatency)
+  val cRayDY = pipeUInt(bRayDYCmp, hitStepLatency)
+  val cRayDZ = pipeUInt(bRayDZCmp, hitStepLatency)
 
-  val cSlotId = pipeUInt(bSlotId, hitStepLatency)
-  val cPixelX = pipeUInt(bPixelX, hitStepLatency)
-  val cPixelY = pipeUInt(bPixelY, hitStepLatency)
+  val cSlotId = pipeUInt(bSlotIdCmp, hitStepLatency)
+  val cPixelX = pipeUInt(bPixelXCmp, hitStepLatency)
+  val cPixelY = pipeUInt(bPixelYCmp, hitStepLatency)
   val cStep = pipeUInt(selectedStep, hitStepLatency)
 
   val stepScaleMul = Module(new FMUL(c.cfg))
@@ -309,19 +326,18 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outOriginY = Mux(!outInBounds, outCurrY, addNy.io.res)
   val outOriginZ = Mux(!outInBounds, outCurrZ, addNz.io.res)
 
-  val hitPathLatency = c.cfg.fmulLatency + c.cfg.faddLatency
-  val hitOutValid = pipeBool(bValid && bHit, hitPathLatency)
-  val hitOutIter = pipeUInt(bIter + 1.U, hitPathLatency)
-  val hitOutSlotId = pipeUInt(bSlotId, hitPathLatency)
-  val hitOutPixelX = pipeUInt(bPixelX, hitPathLatency)
-  val hitOutPixelY = pipeUInt(bPixelY, hitPathLatency)
-  val hitOutOriginX = pipeUInt(bRayOX, hitPathLatency)
-  val hitOutOriginY = pipeUInt(bRayOY, hitPathLatency)
-  val hitOutOriginZ = pipeUInt(bRayOZ, hitPathLatency)
-  val hitOutRayDX = pipeUInt(bRayDX, hitPathLatency)
-  val hitOutRayDY = pipeUInt(bRayDY, hitPathLatency)
-  val hitOutRayDZ = pipeUInt(bRayDZ, hitPathLatency)
-  val hitOutReverse = pipeBool(bSampleNeg, hitPathLatency)
+  val hitOutValid = bValidCmp && bHit
+  val hitOutIter = bIterCmp + 1.U
+  val hitOutSlotId = bSlotIdCmp
+  val hitOutPixelX = bPixelXCmp
+  val hitOutPixelY = bPixelYCmp
+  val hitOutOriginX = bRayOXCmp
+  val hitOutOriginY = bRayOYCmp
+  val hitOutOriginZ = bRayOZCmp
+  val hitOutRayDX = bRayDXCmp
+  val hitOutRayDY = bRayDYCmp
+  val hitOutRayDZ = bRayDZCmp
+  val hitOutReverse = bSampleNegCmp
 
   // --------------------
   // Stage D: output

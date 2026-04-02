@@ -7,7 +7,13 @@ import raytrace_utils._
 
 class BVHTop extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4, addrWidth = 32)
-  val bvhC = BvhPeConfig(addrWidth = 32, stackDepth = 64, reqQueueDepth = 16, leafQueueDepth = 16, cfg = FloatConfig.FP32)
+  val bvhC = BvhPeConfig(
+    addrWidth = 32,
+    stackDepth = 64,
+    reqQueueDepth = GlobalConfig.bvhReqQueueDepth,
+    leafQueueDepth = GlobalConfig.bvhLeafQueueDepth,
+    cfg = FloatConfig.FP32
+  )
   val io = IO(new Bundle {
     val ray_in = Input(new Ray(c.cfg))
     val ray_valid = Input(Bool())
@@ -54,7 +60,7 @@ class BVHTop extends Module {
 
   commitQueue.io.writeback <> renderStage.io.out
 
-  val missQueue = Module(new Queue(new RenderResult(c.cfg, c.addrWidth), entries = 8))
+  val missQueue = Module(new Queue(new RenderResult(c.cfg, c.addrWidth), entries = GlobalConfig.bvhMissQueueDepth))
   val missResult = Wire(new RenderResult(c.cfg, c.addrWidth))
   missResult.meta  := bvhStage.io.done_meta
   missResult.hit   := false.B

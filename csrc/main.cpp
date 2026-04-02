@@ -9,6 +9,7 @@
 #include <BVH.h>
 #include <DebugHooks.h>
 #include <Mem.h>
+#include <SDF.h>
 #include <SdfSanity.h>
 #include <SimUtils.h>
 
@@ -23,14 +24,16 @@ namespace {
 constexpr int kWidth = 400;
 constexpr int kHeight = 400;
 constexpr int kMaxWaitCycles = 10000;
-constexpr int kDdaGlobalRes = 16;
-constexpr int kDdaSubRes = 2;
+constexpr int kSDFGlobalRes = 16;
+constexpr int kSDFSubRes = 4;
+constexpr int kDdaGlobalRes = 8;
+constexpr int kDdaSubRes = 1;
 constexpr int kDdaTraceSteps = 100;
 constexpr int kSanityFullX = 64;
-constexpr int kSanityFullY = 154;
-constexpr int kSanityFullZ = 199;
+constexpr int kSanityFullY = 145;
+constexpr int kSanityFullZ = 195;
 constexpr bool kUseComputedHybridSdf = false;
-constexpr float kLocalActiveBand = 0.2f;
+constexpr float kLocalActiveBand = 0.15f;
 constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
 
 // Debug configuration (edit here directly, no CLI parsing).
@@ -108,12 +111,12 @@ int main(int argc, char** argv) {
         build_hybrid_sdf_from_mesh(
             gridMin,
             gridMax,
-            kDdaGlobalRes,
-            kDdaGlobalRes,
-            kDdaGlobalRes,
-            kDdaSubRes,
-            kDdaSubRes,
-            kDdaSubRes,
+            kSDFGlobalRes,
+            kSDFGlobalRes,
+            kSDFGlobalRes,
+            kSDFSubRes,
+            kSDFSubRes,
+            kSDFSubRes,
             kLocalActiveBand);
         save_sdf_npz(kComputedSdfOutPath);
     } else {
@@ -127,6 +130,19 @@ int main(int argc, char** argv) {
 
     // Build compact subgrid triangle index for DDA meta lookup.
     build_subgrid_triangle_index(gridMin, gridMax, kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes, kDdaSubRes, kDdaSubRes, kDdaSubRes);
+
+    const size_t compactTriCount = get_compact_triangle_count();
+    const size_t nonEmptySubgridCount = get_compact_non_empty_subgrid_count();
+    const uint16_t maxTriPerSubgrid = get_compact_max_tri_per_subgrid();
+    const double compactExpand = triangles.empty()
+        ? 0.0
+        : static_cast<double>(compactTriCount) / static_cast<double>(triangles.size());
+    std::printf("Subgrid compact triangles: original=%zu compact=%zu (x%.3f), non_empty_subgrids=%zu, max_tri_per_sub=%u\n",
+                triangles.size(),
+                compactTriCount,
+                compactExpand,
+                nonEmptySubgridCount,
+                static_cast<unsigned>(maxTriPerSubgrid));
 
     runSdfSanityCheckAtFullCoord(
         gridMin,
@@ -142,8 +158,15 @@ int main(int argc, char** argv) {
     vector<RayWorkItem> workItems;
     workItems.reserve(framePixels);
 
-    // Build BVH software golden result for every ray.
+    // Build software SDF oracle result for every ray.
     const array<float, 3> lightDir = {0.577f, 0.577f, 0.577f};
+    SdfConfig sdfCfg;
+    sdfCfg.globalResX = kSDFGlobalRes;
+    sdfCfg.globalResY = kSDFGlobalRes;
+    sdfCfg.globalResZ = kSDFGlobalRes;
+    sdfCfg.localResX = kSDFSubRes;
+    sdfCfg.localResY = kSDFSubRes;
+    sdfCfg.localResZ = kSDFSubRes;
 
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
@@ -155,29 +178,28 @@ int main(int argc, char** argv) {
             item.py = py;
             item.dir = makeRayDir(px, py, kWidth, kHeight);
 
-            float rayOrig[3] = {setupOrigin[0], setupOrigin[1], setupOrigin[2]};
-            float rayDir[3] = {item.dir[0], item.dir[1], item.dir[2]};
-            BVHHit cpuHit = globalBVH.query(rayOrig, rayDir);
-            item.expectedTriId = cpuHit.triId;
-            item.expectedRgb = (cpuHit.triId >= 0)
-                ? globalBVH.render(cpuHit.triId, lightDir)
-                : array<uint8_t, 3>{0, 0, 0};
+            const SdfSoftwareHit swHit = sdfSoftwareTraceCompact(
+                setupOrigin,
+                item.dir,
+                gridMin,
+                gridMax,
+                sdfCfg,
+                kDdaGlobalRes,
+                kDdaSubRes,
+                kDdaTraceSteps);
 
-            if (cpuHit.triId >= 0) {
-                array<float, 3> hitPoint = {
-                    rayOrig[0] + rayDir[0] * cpuHit.t,
-                    rayOrig[1] + rayDir[1] * cpuHit.t,
-                    rayOrig[2] + rayDir[2] * cpuHit.t
-                };
+            item.expectedTriId = swHit.originalTriId;
+            item.expectedCompactTriId = swHit.compactTriId;
+            if (swHit.originalTriId >= 0) {
+                item.expectedRgb = globalBVH.render(swHit.originalTriId, lightDir);
+            }
+
+            if (swHit.sdfHit) {
                 int gIdx = -1;
                 int sIdx = -1;
-                if (mapPointToDdaGlobalSub(hitPoint, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
+                if (mapPointToDdaGlobalSub(swHit.sdfHitOrigin, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
                     item.swGlobalIdx = gIdx;
                     item.swSubIdx = sIdx;
-                    item.expectedCompactTriId = map_original_tri_to_compact_addr(
-                        static_cast<unsigned int>(gIdx),
-                        static_cast<unsigned int>(sIdx),
-                        cpuHit.triId);
                 }
             }
 

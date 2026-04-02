@@ -5,8 +5,7 @@ import chisel3.util._
 import raytrace_utils._
 
 
-class TraceStage() extends Module {
-  val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4, addrWidth = 32)
+class TraceStage(c: TriPeConfig = TriPeConfig()) extends Module {
   val io = IO(new Bundle {
     val issue_in = Flipped(Decoupled(new RayIssue(c.cfg, c.addrWidth)))
     val tri_batch_in = Flipped(Decoupled(new TriBatch(c.addrWidth)))

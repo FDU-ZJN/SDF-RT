@@ -19,7 +19,7 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   val aabb = Module(new RayAABBIntersection(cfg))
 
   val rm = RNE
-  val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency
+  val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = cfg.faddLatency
   val pointLatency = cfg.fmulLatency + cfg.faddLatency
   val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)

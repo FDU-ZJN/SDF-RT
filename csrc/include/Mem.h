@@ -60,12 +60,24 @@ void build_subgrid_triangle_index(
     int subResY,
     int subResZ);
 
+// Compact triangle layout stats after build_subgrid_triangle_index.
+size_t get_compact_triangle_count();
+size_t get_compact_non_empty_subgrid_count();
+uint16_t get_compact_max_tri_per_subgrid();
+
 // Map original triangle index to compact triangle memory address for a given subgrid.
 // Returns -1 if subgrid has no entry or the triangle is not present in that subgrid bucket.
 int map_original_tri_to_compact_addr(
     unsigned int global_idx,
     unsigned int local_idx,
     int original_tri_id);
+
+// Read compact triangle data by compact address.
+// Returns false if address is out of range or compact layout is unavailable.
+bool get_compact_triangle_by_addr(
+    unsigned int compact_addr,
+    Triangle& out_tri,
+    int& out_original_tri_id);
 
 extern std::vector<Triangle> triangles;
 extern std::vector<std::array<float,3>> normals;

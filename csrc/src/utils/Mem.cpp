@@ -358,7 +358,7 @@ void build_hybrid_sdf_from_mesh(
                 const size_t idx = static_cast<size_t>(gx + gy * globalResX + gz * globalResX * globalResY);
                 global_sdf_flat[idx] = sdf;
 
-                if (std::fabs(sdf) <= activeBand) {
+                if (sdf <= activeBand && sdf>=-0.4*activeBand) {
                     activeCells.push_back({gx, gy, gz});
                 }
             }
@@ -458,6 +458,7 @@ std::unordered_map<uint64_t, SubgridTriMeta> subgrid_tri_meta;
 bool subgrid_layout_ready = false;
 uint32_t subgrid_global_cells = 0;
 uint32_t subgrid_sub_cells = 0;
+uint16_t subgrid_max_tri_per_cell = 0;
 
 inline uint64_t make_subgrid_key(uint32_t global_idx, uint32_t local_idx) {
     return (uint64_t(global_idx) << 32) | uint64_t(local_idx);
@@ -728,6 +729,7 @@ void build_subgrid_triangle_index(
     subgrid_layout_ready = false;
     subgrid_global_cells = 0;
     subgrid_sub_cells = 0;
+    subgrid_max_tri_per_cell = 0;
 
     if (triangles.empty() || normals.size() != triangles.size()) {
         std::printf("[Subgrid] skipped: triangle/normal data is empty or mismatched.\n");
@@ -843,6 +845,9 @@ void build_subgrid_triangle_index(
         const uint16_t count = static_cast<uint16_t>(
             std::min<size_t>(span, std::numeric_limits<uint16_t>::max()));
         subgrid_tri_meta[key] = SubgridTriMeta{start, count};
+        if (count > subgrid_max_tri_per_cell) {
+            subgrid_max_tri_per_cell = count;
+        }
 
         i = j;
     }
@@ -851,11 +856,24 @@ void build_subgrid_triangle_index(
     subgrid_sub_cells = static_cast<uint32_t>(subResX * subResY * subResZ);
     subgrid_layout_ready = true;
 
-    std::printf("[Subgrid] built: non_empty=%zu compact_tris=%zu global_cells=%u sub_cells=%u\n",
+    std::printf("[Subgrid] built: non_empty=%zu compact_tris=%zu max_tri_per_sub=%u global_cells=%u sub_cells=%u\n",
                 subgrid_tri_meta.size(),
                 triangles_compact.size(),
+                static_cast<unsigned>(subgrid_max_tri_per_cell),
                 subgrid_global_cells,
                 subgrid_sub_cells);
+}
+
+size_t get_compact_triangle_count() {
+    return triangles_compact.size();
+}
+
+size_t get_compact_non_empty_subgrid_count() {
+    return subgrid_tri_meta.size();
+}
+
+uint16_t get_compact_max_tri_per_subgrid() {
+    return subgrid_max_tri_per_cell;
 }
 
 int map_original_tri_to_compact_addr(
@@ -887,6 +905,21 @@ int map_original_tri_to_compact_addr(
         }
     }
     return -1;
+}
+
+bool get_compact_triangle_by_addr(
+    unsigned int compact_addr,
+    Triangle& out_tri,
+    int& out_original_tri_id) {
+    if (!subgrid_layout_ready) {
+        return false;
+    }
+    if (compact_addr >= triangles_compact.size() || compact_addr >= triangles_compact_src_ids.size()) {
+        return false;
+    }
+    out_tri = triangles_compact[compact_addr];
+    out_original_tri_id = static_cast<int>(triangles_compact_src_ids[compact_addr]);
+    return true;
 }
 
 extern "C" int subgrid_tri_start_read(unsigned int global_idx, unsigned int local_idx) {

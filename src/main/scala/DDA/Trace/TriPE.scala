@@ -32,9 +32,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 1. 任务调度
   // ============================================================
 
-  val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), 8))
+  val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth))
   batch_queue.io.enq.bits := io.tri_batch_in
   batch_queue.io.enq.valid := io.tri_batch_valid
+  when(batch_queue.io.enq.valid) {
+    assert(batch_queue.io.enq.ready, "TriPE batch_queue overflow")
+  }
 
   val current_batch = Reg(new TriBatch(c.addrWidth))
   val ray_meta_reg = Reg(new RayMeta(c.addrWidth))

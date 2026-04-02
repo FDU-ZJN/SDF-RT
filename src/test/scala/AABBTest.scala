@@ -41,7 +41,7 @@ class RayAABBIntersectionPipelineTest extends AnyFlatSpec with ChiselScalatestTe
         (rOrig, rDir, bMin, bMax, expected)
       }
 
-      val latency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency
+      val latency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
       val results = new ListBuffer[(Boolean, Float, Float)]()
 
       println(s"Starting pipeline test with latency: $latency")

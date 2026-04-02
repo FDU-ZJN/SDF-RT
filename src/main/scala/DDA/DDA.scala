@@ -33,30 +33,36 @@ class DDA(
   private val totalSubS = totalSub.S((addrWidth + 1).W)
   private val missT = "h7F7FFFFF".U(cfg.totalWidth.W)
 
-  private val mapLatency = cfg.faddLatency + cfg.fmulLatency
+  private val mapLatency = cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
   private val mapWaitW = math.max(1, log2Ceil(mapLatency + 1))
   private val mapInit = (if (mapLatency > 0) mapLatency - 1 else 0).U(mapWaitW.W)
 
   private val ddaDistLatency = cfg.faddLatency + cfg.faddLatency
-  private val ddaDeltaLatency = cfg.fmulLatency + cfg.fdivLatency
+  private val ddaDeltaLatency = cfg.fmulLatency + cfg.fcmpLatency + cfg.fdivLatency
   private val ddaAlignLatency = math.max(ddaDistLatency, ddaDeltaLatency)
   private val ddaInitLatency = ddaAlignLatency + cfg.fmulLatency
   private val ddaInitWaitW = math.max(1, log2Ceil(ddaInitLatency + 1))
   private val ddaInitWaitInit = (if (ddaInitLatency > 0) ddaInitLatency - 1 else 0).U(ddaInitWaitW.W)
 
-  private val stepAddLatency = cfg.faddLatency
+  private val stepAddLatency = cfg.fcmpLatency + cfg.faddLatency
   private val stepWaitW = math.max(1, log2Ceil(stepAddLatency + 1))
   private val stepWaitInit = (if (stepAddLatency > 0) stepAddLatency - 1 else 0).U(stepWaitW.W)
+  // Capture compare result after FCMP latency has elapsed: elapsed = (fcmp + fadd - 1) - stepWait.
+  private val stepAxisCaptureWait = math.max(0, cfg.faddLatency - 1).U(stepWaitW.W)
 
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
   private val fpEps = java.lang.Float.floatToRawIntBits(1.0e-9f).U(cfg.totalWidth.W)
 
   private def align(x: UInt, n: Int): UInt = if (n > 0) ShiftRegister(x, n) else x
+  // Align a value produced at `pathLatency` to the common `targetLatency` stage.
+  private def alignToTarget(x: UInt, pathLatency: Int, targetLatency: Int): UInt = {
+    align(x, math.max(0, targetLatency - pathLatency))
+  }
 
   def fpAbs(x: UInt): UInt = Cat(0.U(1.W), x(cfg.totalWidth - 2, 0))
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
-  val trace = Module(new TraceStage())
+  val trace = Module(new TraceStage(TriPeConfig(cfg = cfg, addrWidth = addrWidth)))
   val subgridMem = Module(new SubgridMetaMemDPI(addrWidth))
 
   val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sIssueTrace :: sWaitTrace :: sStep :: sStepApply :: sDone :: Nil = Enum(10)
@@ -142,9 +148,9 @@ class DDA(
   mulIdxZ.io.b := io.inv_sub_voxel.z
   mulIdxZ.io.rm := RNE
 
-  val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision))
-  val fpToIntY = Module(new FPToInt(cfg.expWidth, cfg.precision))
-  val fpToIntZ = Module(new FPToInt(cfg.expWidth, cfg.precision))
+  val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
+  val fpToIntY = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
+  val fpToIntZ = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   fpToIntX.io.a := mulIdxX.io.result
   fpToIntX.io.rm := RTZ
   fpToIntX.io.op := "b11".U
@@ -242,9 +248,16 @@ class DDA(
   cmpEpsZ.io.b := fpEps
   cmpEpsZ.io.signaling := false.B
 
-  val denomX = Mux(cmpEpsX.io.le, fpEps, absDsdtX)
-  val denomY = Mux(cmpEpsY.io.le, fpEps, absDsdtY)
-  val denomZ = Mux(cmpEpsZ.io.le, fpEps, absDsdtZ)
+  val absDsdtXAligned = align(absDsdtX, cfg.fcmpLatency)
+  val absDsdtYAligned = align(absDsdtY, cfg.fcmpLatency)
+  val absDsdtZAligned = align(absDsdtZ, cfg.fcmpLatency)
+  val cmpEpsXLe = cmpEpsX.io.le
+  val cmpEpsYLe = cmpEpsY.io.le
+  val cmpEpsZLe = cmpEpsZ.io.le
+
+  val denomX = Mux(cmpEpsXLe, fpEps, absDsdtXAligned)
+  val denomY = Mux(cmpEpsYLe, fpEps, absDsdtYAligned)
+  val denomZ = Mux(cmpEpsZLe, fpEps, absDsdtZAligned)
 
   val deltaDivX = Module(new FDIV(cfg))
   val deltaDivY = Module(new FDIV(cfg))
@@ -259,12 +272,12 @@ class DDA(
   deltaDivZ.io.b := denomZ
   deltaDivZ.io.in_valid := true.B
 
-  val distToMulX = align(distX, math.max(0, ddaDeltaLatency - ddaDistLatency))
-  val distToMulY = align(distY, math.max(0, ddaDeltaLatency - ddaDistLatency))
-  val distToMulZ = align(distZ, math.max(0, ddaDeltaLatency - ddaDistLatency))
-  val deltaToMulX = align(deltaDivX.io.result, math.max(0, ddaDistLatency - ddaDeltaLatency))
-  val deltaToMulY = align(deltaDivY.io.result, math.max(0, ddaDistLatency - ddaDeltaLatency))
-  val deltaToMulZ = align(deltaDivZ.io.result, math.max(0, ddaDistLatency - ddaDeltaLatency))
+  val distToMulX = alignToTarget(distX, ddaDistLatency, ddaAlignLatency)
+  val distToMulY = alignToTarget(distY, ddaDistLatency, ddaAlignLatency)
+  val distToMulZ = alignToTarget(distZ, ddaDistLatency, ddaAlignLatency)
+  val deltaToMulX = alignToTarget(deltaDivX.io.result, ddaDeltaLatency, ddaAlignLatency)
+  val deltaToMulY = alignToTarget(deltaDivY.io.result, ddaDeltaLatency, ddaAlignLatency)
+  val deltaToMulZ = alignToTarget(deltaDivZ.io.result, ddaDeltaLatency, ddaAlignLatency)
 
   val tMaxMulX = Module(new FMUL(cfg))
   val tMaxMulY = Module(new FMUL(cfg))
@@ -279,9 +292,9 @@ class DDA(
   tMaxMulZ.io.b := deltaToMulZ
   tMaxMulZ.io.rm := RNE
 
-  val tDeltaCapX = align(deltaDivX.io.result, math.max(0, ddaInitLatency - ddaDeltaLatency))
-  val tDeltaCapY = align(deltaDivY.io.result, math.max(0, ddaInitLatency - ddaDeltaLatency))
-  val tDeltaCapZ = align(deltaDivZ.io.result, math.max(0, ddaInitLatency - ddaDeltaLatency))
+  val tDeltaCapX = alignToTarget(deltaDivX.io.result, ddaDeltaLatency, ddaInitLatency)
+  val tDeltaCapY = alignToTarget(deltaDivY.io.result, ddaDeltaLatency, ddaInitLatency)
+  val tDeltaCapZ = alignToTarget(deltaDivZ.io.result, ddaDeltaLatency, ddaInitLatency)
 
   val cmpXY = Module(new FCMP(cfg))
   val cmpXZ = Module(new FCMP(cfg))
@@ -422,12 +435,17 @@ class DDA(
     }
 
     is(sStep) {
+      // Seed stepAxis for zero-latency compare configs.
       stepAxis := nextAxis
       stepWait := stepWaitInit
       state := sStepApply
     }
 
     is(sStepApply) {
+      // Re-sample axis once FCMP latency has elapsed for current tMax.
+      when(cfg.fcmpLatency.U =/= 0.U && stepWait === stepAxisCaptureWait) {
+        stepAxis := nextAxis
+      }
       when(stepWait === 0.U) {
         when(stepAxis === 0.U) {
           subX := subX + Mux(stepNegX, -1.S, 1.S)

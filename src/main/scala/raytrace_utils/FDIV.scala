@@ -19,6 +19,16 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val in_valid  = Input(Bool())
   })
 
+  if (cfg.useBlackBox) {
+    val bb = Module(new Fdiv)
+    bb.io.aclk := clock
+    bb.io.s_axis_a_tdata := io.b
+    bb.io.s_axis_a_tvalid := true.B
+
+    io.result := bb.io.m_axis_r_tdata
+    io.out_valid := bb.io.m_axis_r_tvalid
+  } else {
+
   // --- 1. 浮点结构解析 ---
   val sign_a = io.a(totalWidth - 1)
   val exp_a  = io.a(totalWidth - 2, fracWidth)
@@ -108,6 +118,17 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 
   // --- 5. 结果输出 ---
   val combined_res = Cat(result_sign, final_exp, final_frac)
-  io.result    := ShiftRegister(combined_res, cfg.fdivLatency)
-  io.out_valid := ShiftRegister(io.in_valid, cfg.fdivLatency)
+    io.result    := ShiftRegister(combined_res, cfg.fdivLatency)
+    io.out_valid := ShiftRegister(io.in_valid, cfg.fdivLatency)
+  }
+}
+
+class Fdiv extends BlackBox with HasBlackBoxResource {
+  val io = IO(new Bundle() {
+    val aclk = Input(Clock())
+    val s_axis_a_tdata = Input(UInt(32.W))
+    val s_axis_a_tvalid = Input(Bool())
+    val m_axis_r_tdata = Output(UInt(32.W))
+    val m_axis_r_tvalid = Output(Bool())
+  })
 }

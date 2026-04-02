@@ -61,9 +61,9 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val fullResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.LocalResY).toFloat)
   val fullResZfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResZ * peCfg.LocalResZ).toFloat)
 
-  val fullSubResXfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.SubRes).toFloat)
-  val fullSubResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.SubRes).toFloat)
-  val fullSubResZfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResZ * peCfg.SubRes).toFloat)
+  val fullSubResXfp = java.lang.Float.floatToRawIntBits((peCfg.DDAGlobalRes * peCfg.SubRes).toFloat)
+  val fullSubResYfp = java.lang.Float.floatToRawIntBits((peCfg.DDAGlobalRes * peCfg.SubRes).toFloat)
+  val fullSubResZfp = java.lang.Float.floatToRawIntBits((peCfg.DDAGlobalRes * peCfg.SubRes).toFloat)
 
   val divStart = ShiftRegister(io.setup_valid, cfg.faddLatency)
 

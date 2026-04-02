@@ -13,33 +13,65 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val fflags = Output(UInt(5.W))
   })
 
-  val (a, b) = (io.a, io.b)
-  val fp_a = FloatPoint.fromUInt(a, expWidth, precision)
-  val fp_b = FloatPoint.fromUInt(b, expWidth, precision)
-  val decode_a = fp_a.decode
-  val decode_b = fp_b.decode
+  if (cfg.useBlackBox) {
+    val bb = Module(new Fcmp)
+    bb.io.aclk := clock
+    bb.io.s_axis_a_tdata := io.a
+    bb.io.s_axis_b_tdata := io.b
+    bb.io.s_axis_a_tvalid := true.B
+    bb.io.s_axis_b_tvalid := true.B
 
-  val hasNaN = decode_a.isNaN || decode_b.isNaN
-  val hasSNaN = decode_a.isSNaN || decode_b.isSNaN
-  val bothZero = decode_a.isZero && decode_b.isZero
+    // result bits: [0]=lt, [1]=eq, [2]=le
+    io.lt := bb.io.m_axis_result_tdata(0)
+    io.eq := bb.io.m_axis_result_tdata(1)
+    io.le := bb.io.m_axis_result_tdata(2)
+    io.fflags := 0.U
+  } else {
+    val (a, b) = (io.a, io.b)
+    val fp_a = FloatPoint.fromUInt(a, expWidth, precision)
+    val fp_b = FloatPoint.fromUInt(b, expWidth, precision)
+    val decode_a = fp_a.decode
+    val decode_b = fp_b.decode
 
-  val same_sign = fp_a.sign === fp_b.sign
-  val a_minus_b = Cat(0.U(1.W), a) - Cat(0.U(1.W), b)
-  val uint_eq = a_minus_b.tail(1) === 0.U
-  val uint_less = fp_a.sign ^ a_minus_b.head(1).asBool
+    val hasNaN = decode_a.isNaN || decode_b.isNaN
+    val hasSNaN = decode_a.isSNaN || decode_b.isSNaN
+    val bothZero = decode_a.isZero && decode_b.isZero
 
-  val invalid = hasSNaN || (io.signaling && hasNaN)
+    val same_sign = fp_a.sign === fp_b.sign
+    val a_minus_b = Cat(0.U(1.W), a) - Cat(0.U(1.W), b)
+    val uint_eq = a_minus_b.tail(1) === 0.U
+    val uint_less = fp_a.sign ^ a_minus_b.head(1).asBool
 
-  io.eq := !hasNaN && (uint_eq || bothZero)
-  io.le := !hasNaN && Mux(
-    same_sign,
-    uint_less || uint_eq,
-    fp_a.sign || bothZero
-  )
-  io.lt := !hasNaN && Mux(
-    same_sign,
-    uint_less && !uint_eq,
-    fp_a.sign && !bothZero
-  )
-  io.fflags := Cat(invalid, 0.U(4.W))
+    val invalid = hasSNaN || (io.signaling && hasNaN)
+
+    val eqRaw = !hasNaN && (uint_eq || bothZero)
+    val leRaw = !hasNaN && Mux(
+      same_sign,
+      uint_less || uint_eq,
+      fp_a.sign || bothZero
+    )
+    val ltRaw = !hasNaN && Mux(
+      same_sign,
+      uint_less && !uint_eq,
+      fp_a.sign && !bothZero
+    )
+    val fflagsRaw = Cat(invalid, 0.U(4.W))
+
+    io.eq := ShiftRegister(eqRaw, cfg.fcmpLatency)
+    io.le := ShiftRegister(leRaw, cfg.fcmpLatency)
+    io.lt := ShiftRegister(ltRaw, cfg.fcmpLatency)
+    io.fflags := ShiftRegister(fflagsRaw, cfg.fcmpLatency)
+  }
+}
+
+class Fcmp extends BlackBox with HasBlackBoxResource {
+  val io = IO(new Bundle() {
+    val aclk = Input(Clock())
+    val s_axis_a_tdata = Input(UInt(32.W))
+    val s_axis_a_tvalid = Input(Bool())
+    val s_axis_b_tdata = Input(UInt(32.W))
+    val s_axis_b_tvalid = Input(Bool())
+    val m_axis_result_tdata = Output(UInt(8.W))
+    val m_axis_result_tvalid = Output(Bool())
+  })
 }

@@ -9,7 +9,7 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   private val spWidth    = log2Ceil(c.stackDepth + 1)
   private val countWidth = 20
   private val aabbLatency =
-    4 + c.cfg.faddLatency + c.cfg.fdivLatency + c.cfg.fmulLatency
+    4 + c.cfg.faddLatency + c.cfg.fdivLatency + c.cfg.fmulLatency + (4 * c.cfg.fcmpLatency)
   private val fpInf = "h7f7fffff".U(c.cfg.totalWidth.W)
 
   val io = IO(new Bundle {
@@ -88,6 +88,9 @@ class BvhPE(val c: BvhPeConfig) extends Module {
 
   reqQ.io.enq.valid := canPop
   reqQ.io.enq.bits  := bvhStack.io.topData
+  when(reqQ.io.enq.valid) {
+    assert(reqQ.io.enq.ready, "BvhPE reqQ overflow")
+  }
   val cmpPrune = Module(new FCMP(c.cfg))
   cmpPrune.io.a        := aabb.io.tNear
   cmpPrune.io.b        := bestT

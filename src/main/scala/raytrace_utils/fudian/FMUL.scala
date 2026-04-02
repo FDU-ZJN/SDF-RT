@@ -27,6 +27,19 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val to_fadd = Output(new FMULToFADD(expWidth, precision))
   })
 
+  if (cfg.useBlackBox) {
+    val bb = Module(new Fmul)
+    bb.io.aclk := clock
+    bb.io.s_axis_a_tdata := io.a
+    bb.io.s_axis_b_tdata := io.b
+    bb.io.s_axis_a_tvalid := true.B
+    bb.io.s_axis_b_tvalid := true.B
+
+    io.result := bb.io.m_axis_r_tdata
+    io.fflags := 0.U
+    io.to_fadd := 0.U.asTypeOf(new FMULToFADD(expWidth, precision))
+  } else {
+
   val fp_a = FloatPoint.fromUInt(io.a, expWidth, precision)
   val fp_b = FloatPoint.fromUInt(io.b, expWidth, precision)
   val (decode_a, decode_b) = (fp_a.decode, fp_b.decode)
@@ -162,7 +175,20 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   to_fadd_comb.inter_flags.isInf    := hasInf && !nan_result
   to_fadd_comb.inter_flags.isNaN    := nan_result
   to_fadd_comb.inter_flags.overflow := exp_pre_round > Fill(expWidth, 1.U(1.W))
-  io.result  := ShiftRegister(final_result_comb, cfg.fmulLatency)
-  io.fflags  := ShiftRegister(final_fflags_comb, cfg.fmulLatency)
-  io.to_fadd := ShiftRegister(to_fadd_comb, cfg.fmulLatency)
+    io.result  := ShiftRegister(final_result_comb, cfg.fmulLatency)
+    io.fflags  := ShiftRegister(final_fflags_comb, cfg.fmulLatency)
+    io.to_fadd := ShiftRegister(to_fadd_comb, cfg.fmulLatency)
+  }
+}
+
+class Fmul extends BlackBox with HasBlackBoxResource {
+  val io = IO(new Bundle() {
+    val aclk = Input(Clock())
+    val s_axis_a_tdata = Input(UInt(32.W))
+    val s_axis_a_tvalid = Input(Bool())
+    val s_axis_b_tdata = Input(UInt(32.W))
+    val s_axis_b_tvalid = Input(Bool())
+    val m_axis_r_tdata = Output(UInt(32.W))
+    val m_axis_r_tvalid = Output(Bool())
+  })
 }
