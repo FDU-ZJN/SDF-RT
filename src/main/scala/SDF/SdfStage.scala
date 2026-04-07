@@ -23,7 +23,7 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
   val scheduler = Module(new SdfSchedulerUnit(cfg, addrWidth, peCfg.maxSteps))
   val sdfPE = Module(new SdfPE(peCfg))
-  val sdfMem = Module(new SdfMemDPI(addrWidth, cfg.totalWidth))
+  val sdfMem = Module(new SdfMemDPI(addrWidth, cfg.totalWidth, latency = GlobalConfig.sdfMemDpiLatency))
 
   scheduler.io.issue_in <> io.issue_in
 

@@ -63,7 +63,7 @@ class DDA(
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
   val trace = Module(new TraceStage(TriPeConfig(cfg = cfg, addrWidth = addrWidth)))
-  val subgridMem = Module(new SubgridMetaMemDPI(addrWidth))
+  val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = GlobalConfig.subgridMemDpiLatency))
 
   val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sIssueTrace :: sWaitTrace :: sStep :: sStepApply :: sDone :: Nil = Enum(10)
   val state = RegInit(sIdle)

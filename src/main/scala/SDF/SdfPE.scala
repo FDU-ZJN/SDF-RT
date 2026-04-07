@@ -77,6 +77,11 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     v
   }
 
+  def sampleThenDelay(x: UInt, en: Bool, latency: Int): UInt = {
+    val sampled = RegEnable(x,en)
+    if (latency <= 1) sampled else ShiftRegister(sampled, latency - 1)
+  }
+
   // --------------------
   // Stage A: origin -> grid address pipeline
   // --------------------
@@ -176,9 +181,8 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val pixelXAtAddr = pipeUInt(io.in.bits.meta.pixelX, addrLatency)
   val pixelYAtAddr = pipeUInt(io.in.bits.meta.pixelY, addrLatency)
 
-  // --------------------
-  // Stage B: memory request + response alignment (fixed 1-cycle mem latency)
-  // --------------------
+
+  val sdfMemLatency = GlobalConfig.sdfMemDpiLatency
   io.sdf_mem_req.valid := addrValid && addrInBounds
   io.sdf_mem_req.bits.globalIdx := globalLinear
   io.sdf_mem_req.bits.localIdx := localLinear
@@ -186,28 +190,28 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     assert(io.sdf_mem_req.ready, "SdfPE expects sdf_mem_req.ready to stay high in pipeline mode")
   }
 
-  val bValid = RegNext(addrValid, false.B)
-  val bInBounds = RegNext(addrInBounds, false.B)
+  val bValid = pipeBool(addrValid, sdfMemLatency)
+  val bInBounds = pipeBool(addrInBounds, sdfMemLatency)
 
-  val bRayOX = RegEnable(rayOXAtAddr, addrValid)
-  val bRayOY = RegEnable(rayOYAtAddr, addrValid)
-  val bRayOZ = RegEnable(rayOZAtAddr, addrValid)
-  val bRayDX = RegEnable(rayDXAtAddr, addrValid)
-  val bRayDY = RegEnable(rayDYAtAddr, addrValid)
-  val bRayDZ = RegEnable(rayDZAtAddr, addrValid)
+  val bRayOX = sampleThenDelay(rayOXAtAddr,addrValid, sdfMemLatency)
+  val bRayOY = sampleThenDelay(rayOYAtAddr, addrValid, sdfMemLatency)
+  val bRayOZ = sampleThenDelay(rayOZAtAddr, addrValid, sdfMemLatency)
+  val bRayDX = sampleThenDelay(rayDXAtAddr, addrValid, sdfMemLatency)
+  val bRayDY = sampleThenDelay(rayDYAtAddr, addrValid, sdfMemLatency)
+  val bRayDZ = sampleThenDelay(rayDZAtAddr, addrValid, sdfMemLatency)
 
-  val bIter = RegEnable(iterAtAddr, addrValid)
+  val bIter = pipeUInt(iterAtAddr,sdfMemLatency)
 
-  val bSlotId = RegEnable(slotIdAtAddr, addrValid)
-  val bPixelX = RegEnable(pixelXAtAddr, addrValid)
-  val bPixelY = RegEnable(pixelYAtAddr, addrValid)
+  val bSlotId = pipeUInt(slotIdAtAddr,sdfMemLatency)
+  val bPixelX = pipeUInt(pixelXAtAddr,  sdfMemLatency)
+  val bPixelY = pipeUInt(pixelYAtAddr, sdfMemLatency)
 
   io.sdf_mem_resp.ready := bValid && bInBounds
   when(bValid && bInBounds) {
-    assert(io.sdf_mem_resp.valid, "SdfPE expects fixed 1-cycle sdf_mem_resp.valid for in-bounds requests")
+    assert(io.sdf_mem_resp.valid, "SdfPE expects fixed-latency sdf_mem_resp.valid for in-bounds requests")
   }
 
-  val bSample = Mux(bInBounds, io.sdf_mem_resp.bits, fpZero)
+  val bSample = Mux(bInBounds&&bValid, io.sdf_mem_resp.bits, fpZero)
   val bSampleNeg = bSample(c.cfg.totalWidth - 1)
   val bSampleAbs = Cat(0.U(1.W), bSample(c.cfg.totalWidth - 2, 0))
 
@@ -255,8 +259,8 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   // Miss-only path keeps original one-step sphere tracing march.
   val cValid = pipeBool(bValidCmp && !bHit, hitStepLatency)
-  val cInBounds = pipeBool(bInBoundsCmp && !bHit, hitStepLatency)
-  val cIter = pipeUInt(bIterCmp + 1.U, hitStepLatency)
+  val cInBounds = pipeBool(bInBoundsCmp && !bHit && bValidCmp, hitStepLatency)
+  val cIter = pipeUInt(Mux(bValidCmp, bIterCmp + 1.U, 0.U), hitStepLatency)
 
   val cRayOX = pipeUInt(bRayOXCmp, hitStepLatency)
   val cRayOY = pipeUInt(bRayOYCmp, hitStepLatency)

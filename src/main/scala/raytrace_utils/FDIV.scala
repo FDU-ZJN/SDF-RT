@@ -25,8 +25,8 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_a_tdata := io.b
     bb.io.s_axis_a_tvalid := true.B
 
-    io.result := bb.io.m_axis_r_tdata
-    io.out_valid := bb.io.m_axis_r_tvalid
+    io.result := bb.io.m_axis_result_tdata
+    io.out_valid := bb.io.m_axis_result_tvalid
   } else {
 
   // --- 1. 浮点结构解析 ---
@@ -128,7 +128,7 @@ class Fdiv extends BlackBox with HasBlackBoxResource {
     val aclk = Input(Clock())
     val s_axis_a_tdata = Input(UInt(32.W))
     val s_axis_a_tvalid = Input(Bool())
-    val m_axis_r_tdata = Output(UInt(32.W))
-    val m_axis_r_tvalid = Output(Bool())
+    val m_axis_result_tdata = Output(UInt(32.W))
+    val m_axis_result_tvalid = Output(Bool())
   })
 }

@@ -35,7 +35,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_a_tvalid := true.B
     bb.io.s_axis_b_tvalid := true.B
 
-    io.result := bb.io.m_axis_r_tdata
+    io.result := bb.io.m_axis_result_tdata
     io.fflags := 0.U
     io.to_fadd := 0.U.asTypeOf(new FMULToFADD(expWidth, precision))
   } else {
@@ -188,7 +188,7 @@ class Fmul extends BlackBox with HasBlackBoxResource {
     val s_axis_a_tvalid = Input(Bool())
     val s_axis_b_tdata = Input(UInt(32.W))
     val s_axis_b_tvalid = Input(Bool())
-    val m_axis_r_tdata = Output(UInt(32.W))
-    val m_axis_r_tvalid = Output(Bool())
+    val m_axis_result_tdata = Output(UInt(32.W))
+    val m_axis_result_tvalid = Output(Bool())
   })
 }

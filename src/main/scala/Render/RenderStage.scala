@@ -11,7 +11,8 @@ class RenderStage(cfg: FloatConfig) extends Module {
   })
   // 1. 实例化核心计算单元 (PE)
   val pe = Module(new RenderPE(cfg))
-  val mem = Module(new NormalMemDPI(cfg.addrWidth))
+  val memLatency = GlobalConfig.normalMemDpiLatency
+  val mem = Module(new NormalMemDPI(cfg.addrWidth, latency = memLatency))
   mem.io.clk   := clock
   mem.io.reset := reset
 
@@ -19,16 +20,18 @@ class RenderStage(cfg: FloatConfig) extends Module {
 
   val zeroNormal = 0.U.asTypeOf(new Vec3(cfg))
 
-//  val launchId = RegNext(io.in.bits.hitId)
-//  val launchMeta = RegNext(io.in.bits.meta)
-  val launchHit = RegNext(io.in.bits.hit)
+  val inFire = io.in.fire
+  val launchHit = ShiftRegister(io.in.bits.hit, memLatency)
+  val launchId = ShiftRegister(io.in.bits.hitId, memLatency)
+  val launchMeta = ShiftRegister(io.in.bits.meta, memLatency)
 
-  mem.io.addr := io.in.bits.hitId
-  mem.io.en := true.B
+  // Request only when input is accepted, so control/data timing stays cycle-aligned.
+  mem.io.addr := Mux(io.in.bits.hit, io.in.bits.hitId, 0.U)
+  mem.io.en := inFire
 
-  pe.io.in_meta := io.in.bits.meta
-  pe.io.hit_id := io.in.bits.hitId
-  pe.io.in_hit := io.in.bits.hit
+  pe.io.in_meta := launchMeta
+  pe.io.hit_id := launchId
+  pe.io.in_hit := launchHit
 
   // B. 处理内存返回的数据并送回 PE
   // NormalMemDPI 返回的是 96 位原始数据，我们需要将其解包为 Vec3 浮点向量
@@ -38,7 +41,7 @@ class RenderStage(cfg: FloatConfig) extends Module {
   normal_from_mem.z := mem.io.data(95, 64)
 
   pe.io.in_normal := Mux(launchHit, normal_from_mem, zeroNormal)
-  pe.io.in_valid  := io.in.valid
+  pe.io.in_valid  := mem.io.valid
   io.out.bits := pe.io.out_result
   io.out.valid := pe.io.out_valid
 }
