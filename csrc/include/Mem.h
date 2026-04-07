@@ -83,10 +83,29 @@ extern std::vector<Triangle> triangles;
 extern std::vector<std::array<float,3>> normals;
 extern std::vector<float> global_sdf_flat;
 extern std::vector<float> local_sdf_flat;
+
+// Compact triangle/normal arrays after subgrid layout build
+extern std::vector<Triangle> triangles_compact;
+extern std::vector<std::array<float, 3>> normals_compact;
+extern std::vector<uint32_t> triangles_compact_src_ids;
+extern size_t global_sdf_shape[3];
+extern size_t local_sdf_shape[4];
 extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_start_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_count_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data);
 extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data);
+
+// Memory export utilities for Vivado simulation with $readmemh
+void export_triangle_mem(const std::string& filename, int numPEs);
+void export_bvh_mem(const std::string& filename);
+void export_normal_mem(const std::string& filename);
+void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
+void export_subgrid_meta_mem(const std::string& filename);
+void export_all_mems_for_vivado(const std::string& output_dir);
+
+// Subgrid metadata accessors for export
+uint32_t get_subgrid_tri_start_uint32(unsigned int global_idx, unsigned int local_idx);
+uint16_t get_subgrid_tri_count_uint16(unsigned int global_idx, unsigned int local_idx);
 
 #endif // MEM_H

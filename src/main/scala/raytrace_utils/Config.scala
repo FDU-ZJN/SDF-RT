@@ -6,6 +6,14 @@ object GlobalConfig {
   val commitQueueDepth = 16
   val slotBits  = log2Ceil(commitQueueDepth)
   val useBlackBox = false
+  val normalMemDpiLatency = 2
+  val triMemDpiLatency = 2
+  val sdfMemDpiLatency = 2
+  val subgridMemDpiLatency = 2
+  val GlobalSdfRes=16
+  val LocalSdfRes=4
+  val GlobalDdaRes=8
+  val SubDdaRes=1
 
   // Centralized queue depths used across pipeline stages.
   val triBatchQueueDepth = 16
@@ -64,14 +72,14 @@ case class BvhPeConfig(
 case class SdfPeConfig(
   addrWidth: Int = 32,
   cfg: FloatConfig = FloatConfig.FP32,
-  GlobalResX: Int = 16,
-  GlobalResY: Int = 16,
-  GlobalResZ: Int = 16,
-  LocalResX: Int = 4,
-  LocalResY: Int = 4,
-  LocalResZ: Int = 4,
-  DDAGlobalRes: Int  =8,
-  SubRes: Int = 1,
+  GlobalResX: Int = GlobalConfig.GlobalSdfRes,
+  GlobalResY: Int = GlobalConfig.GlobalSdfRes,
+  GlobalResZ: Int = GlobalConfig.GlobalSdfRes,
+  LocalResX: Int = GlobalConfig.LocalSdfRes,
+  LocalResY: Int = GlobalConfig.LocalSdfRes,
+  LocalResZ: Int = GlobalConfig.LocalSdfRes,
+  DDAGlobalRes: Int  =GlobalConfig.GlobalDdaRes,
+  SubRes: Int = GlobalConfig.SubDdaRes,
   maxSteps: Int = 128,
   DDAMaxSteps: Int  =16,
   threshold3: Float = 0.08f,

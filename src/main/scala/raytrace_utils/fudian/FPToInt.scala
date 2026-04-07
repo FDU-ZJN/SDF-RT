@@ -31,7 +31,7 @@ class FPToInt(
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a
     bb.io.s_axis_a_tvalid := true.B
-    io.result := bb.io.m_axis_r_tdata
+    io.result := bb.io.m_axis_result_tdata
     io.fflags := 0.U
   } else {
     val is_signed_int = io.op(0)
@@ -137,8 +137,8 @@ class Fptoint extends BlackBox with HasBlackBoxResource {
     val aclk = Input(Clock())
     val s_axis_a_tdata = Input(UInt(32.W))
     val s_axis_a_tvalid = Input(Bool())
-    val m_axis_r_tdata = Output(UInt(32.W))
-    val m_axis_r_tvalid = Output(Bool())
+    val m_axis_result_tdata = Output(UInt(32.W))
+    val m_axis_result_tvalid = Output(Bool())
   })
 }
 

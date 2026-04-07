@@ -56,3 +56,4 @@ class BVHMenDPI(val addrWidth: Int = 32, val nodeBytes: Int = 32) extends BlackB
 
   setInline("BVHMenDPI.sv", svCode)
 }
+

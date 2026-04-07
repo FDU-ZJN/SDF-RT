@@ -389,13 +389,13 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   })
 
   if (cfg.useBlackBox) {
-    val bb = Module(new Fadd())
+    val bb = Module(new Fadder())
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a
     bb.io.s_axis_b_tdata := io.b
     bb.io.s_axis_a_tvalid := true.B
     bb.io.s_axis_b_tvalid := true.B
-    io.res := bb.io.m_axis_r_tdata
+    io.res := bb.io.m_axis_result_tdata
     io.fflags := 0.U // BlackBox 不提供 fflags 输出，这里暂时返回 0
   } else {
     val module = Module(new FCMA_ADD(cfg.expWidth, cfg.precision, cfg.precision))
@@ -410,15 +410,15 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 }
 
 
-class Fadd extends BlackBox with HasBlackBoxResource {
+class Fadder extends BlackBox with HasBlackBoxResource {
   val io = IO(new Bundle() {
     val aclk = Input(Clock())
     val s_axis_a_tdata = Input(UInt(32.W))
     val s_axis_a_tvalid = Input(Bool())
     val s_axis_b_tdata = Input(UInt(32.W))
     val s_axis_b_tvalid = Input(Bool())
-    val m_axis_r_tdata = Output(UInt(32.W))
-    val m_axis_r_tvalid = Output(Bool())
+    val m_axis_result_tdata = Output(UInt(32.W))
+    val m_axis_result_tvalid = Output(Bool())
   })
 
 

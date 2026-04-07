@@ -8,20 +8,20 @@ SDF-RT 是一个基于 Chisel/Scala 的光线追踪加速器项目，支持 BVH 
 ## 目录结构说明
 
 - `build.sbt`/`project/`/`target/`：Scala/Chisel 工程配置与构建产物
-- `main.cpp`：C++ 测试/仿真入口
 - `src/main/scala/`：核心硬件模块
-  - `SimTop.scala`：顶层 SoC 集成
-  - `TraceStage.scala`：射线追踪主控
-  - `RenderStage.scala`：渲染阶段控制
-  - `BvhPE.scala`：BVH 遍历处理单元
-  - `AABB.scala`：AABB 相交模块（硬件实现）
-  - `TriangleIntersector.scala`：三角形相交主模块
+  - `SimTOP.scala`：顶层 SoC 集成
+  - `DDA/Trace/`：DDA遍历与三角形相交模块
+  - `BVH/`：BVH遍历处理单元
+  - `SDF/`：SDF遍历模块
+  - `Render/`：渲染阶段控制
   - `raytrace_utils/`：工具库（Bundle、浮点单元、向量运算等）
-    - `Bundles.scala`：射线、三角形、AABB 等数据结构
-    - `Config.scala`：浮点配置参数
-    - `vector.scala`：向量运算（点积、叉积等）
-    - `fudian/`：浮点运算单元（FMUL、FADD、FDIV、FCMP 等）
-- `build/`/`csrc/`/`software_backup/`：仿真、备份、测试数据
+- `src/main/resources/`：Vivado仿真用BlackBox资源（内存初始化）
+- `csrc/`：C++仿真代码（Verilator仿真用）
+  - `main.cpp`：仿真主入口
+  - `src/utils/`：工具库（BVH、SDF、内存导出等）
+  - `include/`：头文件
+- `build/`/`test_run_dir/`：构建产物与仿真输出
+- `vivado/`：Vivado工程文件
 
 ---
 
@@ -73,9 +73,47 @@ SDF-RT 是一个基于 Chisel/Scala 的光线追踪加速器项目，支持 BVH 
 
 ## 测试与验证
 
-- **C++ 差分测试**：`main.cpp`、`test_results.log`，与硬件结果对拍
-- **ChiselTest 单元测试**：`TriangleIntersectorTest.scala`、可扩展到 BVH/AABB
-- **仿真数据**：`csrc/`、`software_backup/`，包含模型、测试用例、性能报告
+### Verilator仿真
+- **C++ 仿真**：`csrc/main.cpp`，使用DPI-C接口直接读取C++内存数据
+- **运行方式**：`cd csrc && make run`
+- **自动导出**：仿真运行时会自动导出所有内存数据到`./vivado_mem/`目录，用于Vivado仿真
+
+### Vivado仿真
+- **内存初始化**：使用`$readmemh`从.mem文件加载数据
+- **配置方法**：在Vivado Simulation Settings中添加+plusargs参数
+- **详细文档**：查看`AGENT.md`中的Vivado仿真使用说明
+
+### ChiselTest单元测试
+- `src/test/scala/`：可扩展到BVH/AABB等模块的单元测试
+
+---
+
+## Vivado仿真快速开始
+
+### 1. 生成.mem文件
+```bash
+cd csrc
+make run  # 会自动导出所有.mem文件到 ./vivado_mem/
+```
+
+### 2. 在Vivado中配置+plusargs
+```
++TRI_MEM_FILE=./vivado_mem/triangle_mem.mem
++NORMAL_MEM_FILE=./vivado_mem/normal_mem.mem
++BVH_MEM_FILE=./vivado_mem/bvh_mem.mem
++SDF_GLOBAL_MEM_FILE=./vivado_mem/sdf_global_mem.mem
++SDF_LOCAL_MEM_FILE=./vivado_mem/sdf_local_mem.mem
++SUBGRID_META_MEM_FILE=./vivado_mem/subgrid_meta_mem.mem
+```
+
+### 3. 验证加载
+仿真启动时会打印：
+```
+[TriangleMem] Loading triangle memory from ./vivado_mem/triangle_mem.mem
+[NormalMem] Loading normal memory from ./vivado_mem/normal_mem.mem
+```
+
+**详细文档**：查看`AGENT.md`了解完整的使用方法
 
 ---
 

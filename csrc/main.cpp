@@ -8,6 +8,7 @@
 
 #include <BVH.h>
 #include <DebugHooks.h>
+#include <GlobalConfig.h>
 #include <Mem.h>
 #include <SDF.h>
 #include <SdfSanity.h>
@@ -17,39 +18,21 @@ using std::array;
 using std::cout;
 using std::endl;
 using std::vector;
+using namespace rt::config;
 
 uint64_t main_time = 0;
-
-namespace {
-constexpr int kWidth = 400;
-constexpr int kHeight = 400;
-constexpr int kMaxWaitCycles = 10000;
-constexpr int kSDFGlobalRes = 16;
-constexpr int kSDFSubRes = 4;
-constexpr int kDdaGlobalRes = 8;
-constexpr int kDdaSubRes = 1;
-constexpr int kDdaTraceSteps = 100;
-constexpr int kSanityFullX = 64;
-constexpr int kSanityFullY = 145;
-constexpr int kSanityFullZ = 195;
-constexpr bool kUseComputedHybridSdf = false;
-constexpr float kLocalActiveBand = 0.15f;
-constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
-
-// Debug configuration (edit here directly, no CLI parsing).
-constexpr bool kEnableVcd = false;
-constexpr bool kPrintMismatchId = false;
-constexpr bool kPrintDdaTrace = false;
-constexpr bool kPrintPerPixelTriId = false;
-constexpr bool kSinglePixelDebug = false;
-constexpr int kDebugPixelX = 171;
-constexpr int kDebugPixelY = 214;
-constexpr bool kDebugOnly = false;
-} // namespace
 
 int main(int argc, char** argv) {
     DebugOptions debugOptions;
     debugOptions.enableVcd = kEnableVcd;
+    debugOptions.vcdWindowByPixel = kVcdWindowByPixel;
+    debugOptions.vcdStartPixelX = kVcdStartPixelX;
+    debugOptions.vcdStartPixelY = kVcdStartPixelY;
+    debugOptions.vcdStopPixelX = kVcdStopPixelX;
+    debugOptions.vcdStopPixelY = kVcdStopPixelY;
+    debugOptions.stopAtPixel = kStopAtPixel;
+    debugOptions.stopPixelX = kStopPixelX;
+    debugOptions.stopPixelY = kStopPixelY;
     debugOptions.printMismatchId = kPrintMismatchId;
     debugOptions.printDdaTrace = kPrintDdaTrace;
     debugOptions.printPerPixelTriId = kPrintPerPixelTriId;
@@ -74,21 +57,37 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    auto inRange = [](int x, int y) {
+        return x >= 0 && x < kWidth && y >= 0 && y < kHeight;
+    };
+    if (debugOptions.vcdWindowByPixel) {
+        if (!inRange(debugOptions.vcdStartPixelX, debugOptions.vcdStartPixelY) ||
+            !inRange(debugOptions.vcdStopPixelX, debugOptions.vcdStopPixelY)) {
+            std::cerr << "VCD window pixel out of range." << std::endl;
+            return 1;
+        }
+    }
+    if (debugOptions.stopAtPixel && !inRange(debugOptions.stopPixelX, debugOptions.stopPixelY)) {
+        std::cerr << "stop pixel out of range." << std::endl;
+        return 1;
+    }
+
     DebugHooks debug(debugOptions, main_time);
 
     cout << "SimTop 400x400 rendering..." << endl;
     Verilated::commandArgs(argc, argv);
 
-    const char* objPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
     printf("Loading model...\n");
-    loadModelFromObj(objPath, triangles, normals);
+    loadModelFromObj(kObjPath, triangles, normals);
     if (triangles.empty()) {
         std::cerr << "No triangles loaded." << endl;
         return 1;
     }
 
-    // Build BVH for CPU reference.
-    globalBVH.build(triangles, normals);
+    if (kEnableReferenceOracle) {
+        // BVH is only needed by software-reference debug paths.
+        globalBVH.build(triangles, normals);
+    }
 
     const auto bounds = computeScaledBoundsFromTriangles(triangles);
     const float gridMinX = bounds[0];
@@ -131,6 +130,11 @@ int main(int argc, char** argv) {
     // Build compact subgrid triangle index for DDA meta lookup.
     build_subgrid_triangle_index(gridMin, gridMax, kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes, kDdaSubRes, kDdaSubRes, kDdaSubRes);
 
+    // Export memory to .mem files for Vivado simulation
+    std::string memExportDir = "./vivado_mem";
+    std::cout << "\nExporting memories to: " << memExportDir << std::endl;
+    export_all_mems_for_vivado(memExportDir);
+
     const size_t compactTriCount = get_compact_triangle_count();
     const size_t nonEmptySubgridCount = get_compact_non_empty_subgrid_count();
     const uint16_t maxTriPerSubgrid = get_compact_max_tri_per_subgrid();
@@ -144,14 +148,16 @@ int main(int argc, char** argv) {
                 nonEmptySubgridCount,
                 static_cast<unsigned>(maxTriPerSubgrid));
 
-    runSdfSanityCheckAtFullCoord(
-        gridMin,
-        gridMax,
-        kDdaGlobalRes,
-        kDdaSubRes,
-        kSanityFullX,
-        kSanityFullY,
-        kSanityFullZ);
+    if (kEnableSdfSanityCheck) {
+        runSdfSanityCheckAtFullCoord(
+            gridMin,
+            gridMax,
+            kDdaGlobalRes,
+            kDdaSubRes,
+            kSanityFullX,
+            kSanityFullY,
+            kSanityFullZ);
+    }
 
     const size_t framePixels = static_cast<size_t>(kWidth) * kHeight;
 
@@ -178,28 +184,30 @@ int main(int argc, char** argv) {
             item.py = py;
             item.dir = makeRayDir(px, py, kWidth, kHeight);
 
-            const SdfSoftwareHit swHit = sdfSoftwareTraceCompact(
-                setupOrigin,
-                item.dir,
-                gridMin,
-                gridMax,
-                sdfCfg,
-                kDdaGlobalRes,
-                kDdaSubRes,
-                kDdaTraceSteps);
+            if (kEnableReferenceOracle) {
+                const SdfSoftwareHit swHit = sdfSoftwareTraceCompact(
+                    setupOrigin,
+                    item.dir,
+                    gridMin,
+                    gridMax,
+                    sdfCfg,
+                    kDdaGlobalRes,
+                    kDdaSubRes,
+                    kDdaTraceSteps);
 
-            item.expectedTriId = swHit.originalTriId;
-            item.expectedCompactTriId = swHit.compactTriId;
-            if (swHit.originalTriId >= 0) {
-                item.expectedRgb = globalBVH.render(swHit.originalTriId, lightDir);
-            }
+                item.expectedTriId = swHit.originalTriId;
+                item.expectedCompactTriId = swHit.compactTriId;
+                if (swHit.originalTriId >= 0) {
+                    item.expectedRgb = globalBVH.render(swHit.originalTriId, lightDir);
+                }
 
-            if (swHit.sdfHit) {
-                int gIdx = -1;
-                int sIdx = -1;
-                if (mapPointToDdaGlobalSub(swHit.sdfHitOrigin, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
-                    item.swGlobalIdx = gIdx;
-                    item.swSubIdx = sIdx;
+                if (swHit.sdfHit) {
+                    int gIdx = -1;
+                    int sIdx = -1;
+                    if (mapPointToDdaGlobalSub(swHit.sdfHitOrigin, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
+                        item.swGlobalIdx = gIdx;
+                        item.swSubIdx = sIdx;
+                    }
                 }
             }
 
@@ -214,7 +222,7 @@ int main(int argc, char** argv) {
     }
 
     auto* dut = new VSimTop;
-    debug.attachTrace(dut, "raytrace.vcd", 99);
+    debug.attachTrace(dut, kVcdPath, 99);
 
     dut->clock = 0;
     dut->reset = 1;
@@ -259,17 +267,22 @@ int main(int argc, char** argv) {
 
     size_t hitCount = 0;
     size_t mismatchCount = 0;
+    bool stopRequested = false;
 
-    while (retired < totalRays) {
+    while (retired < totalRays && !stopRequested) {
         const bool canIssue = (issued < totalRays) && dut->io_out_ready;
         if (canIssue) {
             const RayWorkItem& item = workItems[issued];
+            debug.onPixelIssued(item, dut);
             dut->io_rd_in_x = floatToU32(item.dir[0]);
             dut->io_rd_in_y = floatToU32(item.dir[1]);
             dut->io_rd_in_z = floatToU32(item.dir[2]);
             dut->io_rd_valid = 1;
         } else {
             dut->io_rd_valid = 0;
+            dut->io_rd_in_x = 0;
+            dut->io_rd_in_y = 0;
+            dut->io_rd_in_z = 0;
         }
 
         debug.tick(dut);
@@ -289,22 +302,26 @@ int main(int argc, char** argv) {
             image[idx + 0] = r;
             image[idx + 1] = g;
             image[idx + 2] = b;
-            debug.onPixelRetired(item, static_cast<int>(dut->io_out_id));
+            if (kPrintPerPixelTriId) {
+                debug.onPixelRetired(item, static_cast<int>(dut->io_out_id));
+            }
 
             bool mismatch = false;
-            if (item.expectedTriId >= 0) {
-                ++hitCount;
-                const int expectedHwTriId =
-                    (item.expectedCompactTriId >= 0) ? item.expectedCompactTriId : item.expectedTriId;
-                if (static_cast<int>(dut->io_out_id) != expectedHwTriId) {
-                    mismatch = true;
-                    debug.onMismatch(item,
-                                     static_cast<int>(dut->io_out_id),
-                                     gridMin,
-                                     gridMax,
-                                     kDdaGlobalRes,
-                                     kDdaSubRes,
-                                     kDdaTraceSteps);
+            if (kEnableReferenceOracle) {
+                if (item.expectedTriId >= 0) {
+                    ++hitCount;
+                    const int expectedHwTriId =
+                        (item.expectedCompactTriId >= 0) ? item.expectedCompactTriId : item.expectedTriId;
+                    if (static_cast<int>(dut->io_out_id) != expectedHwTriId) {
+                        mismatch = true;
+                        debug.onMismatch(item,
+                                         static_cast<int>(dut->io_out_id),
+                                         gridMin,
+                                         gridMax,
+                                         kDdaGlobalRes,
+                                         kDdaSubRes,
+                                         kDdaTraceSteps);
+                    }
                 }
             }
 
@@ -313,12 +330,17 @@ int main(int argc, char** argv) {
             }
 
             ++retired;
+            if (debug.onPixelRetiredControl(item)) {
+                stopRequested = true;
+            }
             madeProgress = true;
-            std::fflush(stdout);
-            std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
-                        100.0 * static_cast<double>(retired) / static_cast<double>(totalRays),
-                        issued,
-                        retired);
+            if (kEnableProgressPrint) {
+                std::fflush(stdout);
+                std::printf("\rProgress: %6.2f%% | issued=%zu retired=%zu",
+                            100.0 * static_cast<double>(retired) / static_cast<double>(totalRays),
+                            issued,
+                            retired);
+            }
         }
 
         if (madeProgress) {
@@ -331,12 +353,21 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("\nDone. Average cycles/ray: %.2f\n",
+    if (stopRequested) {
+        std::printf("\nStopped at configured pixel after retired=%zu rays.\n", retired);
+    } else {
+        std::printf("\nDone. Average cycles/ray: %.2f\n",
                 static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
-    std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/ray: %.2f\n",
-                hitCount,
-                mismatchCount,
-                static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
+    }
+    if (kEnableReferenceOracle) {
+        std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/ray: %.2f\n",
+                    hitCount,
+                    mismatchCount,
+                    static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
+    } else {
+        std::printf("Reference oracle disabled. Average cycles/ray: %.2f\n",
+                    static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
+    }
 
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 

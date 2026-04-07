@@ -3,11 +3,13 @@
 *.npz
 *.bin
 *.vcd
-*.sv
 *.wlf
+# 允许 resources 目录下的 .sv 文件
+!src/main/resources/*.sv
 target/
 build/
 .idea/
 .vscode/
 test_run_dir/
 .*/
+vivado/

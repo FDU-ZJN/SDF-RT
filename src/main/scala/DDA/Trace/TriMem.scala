@@ -6,14 +6,10 @@ import raytrace_utils._
 
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   val io = IO(new Bundle {
-    // 与 TriPE 的 mem_req 对接
     val req  = Flipped(Decoupled(UInt(c.addrWidth.W)))
-    // 与 TriPE 的 mem_resp 对接
     val resp = Decoupled(new TriangleBlock(c))
   })
-
-  // 1. 实例化底层的 BlackBox DPI 模块
-  val dpi_mem = Module(new TriangleMemDPI(c))
+  val dpi_mem = Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency))
 
   dpi_mem.io.clk   := clock
   dpi_mem.io.reset := reset

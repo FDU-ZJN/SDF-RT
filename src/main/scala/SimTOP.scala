@@ -3,10 +3,13 @@ import Render.RenderStage
 import SDF.{InitStage, SetupUnit, SdfStage}
 import chisel3._
 import chisel3.util._
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 import raytrace_utils._
+import scala.io.Source
 
-class SimTop extends Module {
-  val c = TriPeConfig()
+class SimTop(useBlackBox: Boolean = GlobalConfig.useBlackBox) extends Module {
+  val c = TriPeConfig(cfg = FloatConfig.FP32.copy(useBlackBox = useBlackBox))
   private val sdfCfg = SdfPeConfig(cfg = c.cfg, addrWidth = c.addrWidth)
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
@@ -145,5 +148,27 @@ class SimTop extends Module {
 }
 
 object SimTopGen extends App {
-  emitVerilog(new SimTop(), Array("--target-dir", "build"))
+  private val bbFileListMarker = "// ----- 8< ----- FILE \"firrtl_black_box_resource_files.f\" ----- 8< -----"
+
+  private def stripFirrtlBbFileList(targetDir: String): Unit = {
+    val outPath = Paths.get(targetDir, "SimTop.sv")
+    if (!Files.exists(outPath)) return
+
+    val src = Source.fromFile(outPath.toFile, "UTF-8")
+    val text = try src.mkString finally src.close()
+    val markerIdx = text.indexOf(bbFileListMarker)
+    if (markerIdx >= 0) {
+      val trimmed = text.substring(0, markerIdx).trim + "\n"
+      Files.write(outPath, trimmed.getBytes(StandardCharsets.UTF_8))
+    }
+  }
+
+  def generateSimTopVerilog(useBlackBox: Boolean, targetDir: String = "build"): Unit = {
+    emitVerilog(new SimTop(useBlackBox = useBlackBox), Array("--target-dir", targetDir))
+    // Remove trailing firrtl blackbox resource file-list payload from combined output.
+    stripFirrtlBbFileList(targetDir)
+  }
+
+  // Keep CLI entry simple; behavior is now controlled by function argument.
+  generateSimTopVerilog(useBlackBox = false,"build")
 }
