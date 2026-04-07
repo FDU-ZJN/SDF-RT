@@ -5,7 +5,7 @@ import chisel3.util.log2Ceil
 object GlobalConfig {
   val commitQueueDepth = 16
   val slotBits  = log2Ceil(commitQueueDepth)
-  val useBlackBox = true
+  val useBlackBox = false
   val normalMemDpiLatency = 2
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 2

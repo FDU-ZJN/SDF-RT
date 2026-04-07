@@ -170,6 +170,5 @@ object SimTopGen extends App {
   }
 
   // Keep CLI entry simple; behavior is now controlled by function argument.
-  generateSimTopVerilog(useBlackBox = true,"verilog")
   generateSimTopVerilog(useBlackBox = false,"build")
 }

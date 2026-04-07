@@ -444,21 +444,22 @@ int get_cell_index(int i, int j, int k) {
 std::vector<Triangle> triangles;
 std::vector<std::array<float,3>> normals;
 
+// Subgrid layout variables (accessible from other translation units)
+bool subgrid_layout_ready = false;
+uint32_t subgrid_global_cells = 0;
+uint32_t subgrid_sub_cells = 0;
+uint16_t subgrid_max_tri_per_cell = 0;
+std::vector<Triangle> triangles_compact;
+std::vector<std::array<float, 3>> normals_compact;
+std::vector<uint32_t> triangles_compact_src_ids;
+
 namespace {
 struct SubgridTriMeta {
     uint32_t start = 0;
     uint16_t count = 0;
 };
 
-std::vector<Triangle> triangles_compact;
-std::vector<std::array<float, 3>> normals_compact;
-std::vector<uint32_t> triangles_compact_src_ids;
 std::unordered_map<uint64_t, SubgridTriMeta> subgrid_tri_meta;
-
-bool subgrid_layout_ready = false;
-uint32_t subgrid_global_cells = 0;
-uint32_t subgrid_sub_cells = 0;
-uint16_t subgrid_max_tri_per_cell = 0;
 
 inline uint64_t make_subgrid_key(uint32_t global_idx, uint32_t local_idx) {
     return (uint64_t(global_idx) << 32) | uint64_t(local_idx);
@@ -936,4 +937,13 @@ extern "C" int subgrid_tri_count_read(unsigned int global_idx, unsigned int loca
     const auto it = subgrid_tri_meta.find(make_subgrid_key(global_idx, local_idx));
     if (it == subgrid_tri_meta.end()) return 0;
     return static_cast<int>(it->second.count);
+}
+
+// Helper functions for memory export
+uint32_t get_subgrid_tri_start_uint32(unsigned int global_idx, unsigned int local_idx) {
+    return static_cast<uint32_t>(subgrid_tri_start_read(global_idx, local_idx));
+}
+
+uint16_t get_subgrid_tri_count_uint16(unsigned int global_idx, unsigned int local_idx) {
+    return static_cast<uint16_t>(subgrid_tri_count_read(global_idx, local_idx));
 }

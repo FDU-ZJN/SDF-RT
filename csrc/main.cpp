@@ -130,6 +130,11 @@ int main(int argc, char** argv) {
     // Build compact subgrid triangle index for DDA meta lookup.
     build_subgrid_triangle_index(gridMin, gridMax, kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes, kDdaSubRes, kDdaSubRes, kDdaSubRes);
 
+    // Export memory to .mem files for Vivado simulation
+    std::string memExportDir = "./vivado_mem";
+    std::cout << "\nExporting memories to: " << memExportDir << std::endl;
+    export_all_mems_for_vivado(memExportDir);
+
     const size_t compactTriCount = get_compact_triangle_count();
     const size_t nonEmptySubgridCount = get_compact_non_empty_subgrid_count();
     const uint16_t maxTriPerSubgrid = get_compact_max_tri_per_subgrid();
