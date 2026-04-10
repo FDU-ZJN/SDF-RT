@@ -6,9 +6,8 @@ import chisel3.util._
 import raytrace_utils._
 
 class BVHTop extends Module {
-  val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4, addrWidth = 32)
+  val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4)
   val bvhC = BvhPeConfig(
-    addrWidth = 32,
     stackDepth = 64,
     reqQueueDepth = GlobalConfig.bvhReqQueueDepth,
     leafQueueDepth = GlobalConfig.bvhLeafQueueDepth,

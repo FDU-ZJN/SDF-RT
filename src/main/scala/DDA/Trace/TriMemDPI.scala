@@ -85,21 +85,21 @@ private class TriangleMemResourceBB(
   val latency: Int = GlobalConfig.triMemDpiLatency
 ) extends BlackBox(
       Map(
-        "ADDR_WIDTH" -> c.addrWidth,
-        "DATA_WIDTH" -> (c.numPEs * 3 * 3 * c.cfg.totalWidth),
+        "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
+        "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
         "LATENCY" -> latency
       )
     )
     with HasBlackBoxResource {
-  private val totalBits = c.numPEs * 3 * 3 * c.cfg.totalWidth
+  private val totalBits = GlobalConfig.triMemDataWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val addr = Input(UInt(c.addrWidth.W))
+    val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
     val en = Input(Bool())
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val addr_q = Output(UInt(c.addrWidth.W))
+    val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
   })
   addResource("/TriangleMemBlackBox.sv")
 }
@@ -108,15 +108,15 @@ class TriangleMemDPI(
   val c: TriPeConfig,
   val latency: Int = GlobalConfig.triMemDpiLatency
 ) extends Module {
-  private val totalBits = c.numPEs * 3 * 3 * c.cfg.totalWidth
+  private val totalBits = GlobalConfig.triMemDataWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val addr = Input(UInt(c.addrWidth.W))
+    val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
     val en = Input(Bool())
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val addr_q = Output(UInt(c.addrWidth.W))
+    val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
   })
 
   if (GlobalConfig.useBlackBox) {

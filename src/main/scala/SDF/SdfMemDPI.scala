@@ -74,7 +74,12 @@ private class SdfMemResourceBB(
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> addrWidth,
-        "DATA_WIDTH" -> dataWidth
+        "DATA_WIDTH" -> dataWidth,
+        "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
+        "BANK_DEPTH" -> GlobalConfig.sdfMemBankDepth,
+        "URAM_COUNT" -> GlobalConfig.sdfMemUramCount,
+        "LOCAL_GRID_SIZE" -> GlobalConfig.sdfMemLocalGridSize,
+        "LATENCY" -> GlobalConfig.sdfMemDpiLatency
       )
     )
     with HasBlackBoxResource {
@@ -92,7 +97,7 @@ private class SdfMemResourceBB(
 
 class SdfMemDPI(
   addrWidth: Int = 32,
-  dataWidth: Int = 32,
+  dataWidth: Int = GlobalConfig.sdfMemDataWidth,
   latency: Int = GlobalConfig.sdfMemDpiLatency
 ) extends Module {
   val io = IO(new Bundle {

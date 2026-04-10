@@ -5,7 +5,7 @@ import chisel3.util._
 import raytrace_utils._
 
 class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
-  private val peCfg = SdfPeConfig(cfg = cfg, addrWidth = addrWidth)
+  private val peCfg = SdfPeConfig(cfg = cfg)
 
   val io = IO(new Bundle {
     val grid_min = Input(new Vec3(cfg))

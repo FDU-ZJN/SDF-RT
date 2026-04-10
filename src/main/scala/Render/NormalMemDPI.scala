@@ -79,12 +79,12 @@ private class NormalMemDPICore(
 }
 
 private class NormalMemResourceBB(
-  val addrWidth: Int = 16,
+  val addrWidth: Int = GlobalConfig.normalMemAddrWidth,
   val latency: Int = GlobalConfig.normalMemDpiLatency
 ) extends BlackBox(
       Map(
-        "ADDR_WIDTH" -> addrWidth,
-        "DATA_WIDTH" -> (3 * 4 * 8),
+        "ADDR_WIDTH" -> GlobalConfig.normalMemAddrWidth,
+        "DATA_WIDTH" -> GlobalConfig.normalMemDataWidth,
         "LATENCY" -> latency
       )
     )
@@ -92,28 +92,28 @@ private class NormalMemResourceBB(
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val addr = Input(UInt(addrWidth.W))
+    val addr = Input(UInt(GlobalConfig.normalMemAddrWidth.W))
     val en = Input(Bool())
-    val data = Output(UInt((3 * 4 * 8).W))
+    val data = Output(UInt(GlobalConfig.normalMemDataWidth.W))
     val valid = Output(Bool())
-    val addr_q = Output(UInt(addrWidth.W))
+    val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
   })
   addResource("/NormalMemBlackBox.sv")
 }
 
 class NormalMemDPI(
-  val addrWidth: Int = 16,
+  val addrWidth: Int = GlobalConfig.normalMemAddrWidth,
   val latency: Int = GlobalConfig.normalMemDpiLatency
 ) extends Module {
-  private val totalBits = 3 * 4 * 8
+  private val totalBits = GlobalConfig.normalMemDataWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val addr = Input(UInt(addrWidth.W))
+    val addr = Input(UInt(GlobalConfig.normalMemAddrWidth.W))
     val en = Input(Bool())
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val addr_q = Output(UInt(addrWidth.W))
+    val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
   })
 
   if (GlobalConfig.useBlackBox) {

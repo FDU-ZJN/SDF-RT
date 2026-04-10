@@ -1,7 +1,8 @@
 module NormalMemResourceBB #(
   parameter int ADDR_WIDTH = 16,
   parameter int DATA_WIDTH = 96,
-  parameter int LATENCY = 1
+  parameter int LATENCY = 1,
+  parameter int MAX_ENTRIES = 65536  // Default depth
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -15,11 +16,10 @@ module NormalMemResourceBB #(
   logic [ADDR_WIDTH-1:0] addr_pipe [LATENCY-1:0];
   logic [DATA_WIDTH-1:0] data_pipe [LATENCY-1:0];
   integer i;
-  
+
   // Memory storage for $readmemh initialization
   // DATA_WIDTH = 96 bits = 3 floats (normal x, y, z)
   localparam int NUM_FLOATS = DATA_WIDTH / 32; // = 3
-  localparam int MAX_ENTRIES = 65536; // 2^16 addresses
   
   reg [31:0] normal_mem [0:MAX_ENTRIES-1][0:NUM_FLOATS-1];
   reg mem_loaded = 1'b0;

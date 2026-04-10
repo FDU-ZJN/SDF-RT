@@ -75,13 +75,13 @@ private class SubgridMetaMemDPICore(
 }
 
 private class SubgridMetaMemResourceBB(
-  addrWidth: Int = 32,
+  addrWidth: Int = GlobalConfig.subgridMetaMemAddrWidth,
   GlobalRes: Int = GlobalConfig.GlobalDdaRes,
   SubRes: Int = GlobalConfig.SubDdaRes,
-  Latency:Int = GlobalConfig.subgridMemDpiLatency
+  Latency: Int = GlobalConfig.subgridMemDpiLatency
 ) extends BlackBox(
       Map(
-        "ADDR_WIDTH" -> addrWidth,
+        "ADDR_WIDTH" -> GlobalConfig.subgridMetaMemAddrWidth,
         "GLOBALRES" -> GlobalRes,
         "SUBRES" -> SubRes,
         "LATENCY" -> Latency
@@ -91,18 +91,18 @@ private class SubgridMetaMemResourceBB(
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
-    val globalIdx = Input(UInt(addrWidth.W))
-    val subIdx = Input(UInt(addrWidth.W))
+    val globalIdx = Input(UInt(GlobalConfig.subgridMetaMemAddrWidth.W))
+    val subIdx = Input(UInt(GlobalConfig.subgridMetaMemAddrWidth.W))
     val en = Input(Bool())
-    val triStart = Output(UInt(addrWidth.W))
-    val triCount = Output(UInt(16.W))
+    val triStart = Output(UInt(GlobalConfig.subgridMetaMemTriStartWidth.W))
+    val triCount = Output(UInt(GlobalConfig.subgridMetaMemTriCountWidth.W))
     val valid = Output(Bool())
   })
   addResource("/SubgridMetaMemBlackBox.sv")
 }
 
 class SubgridMetaMemDPI(
-  addrWidth: Int = 32,
+  addrWidth: Int = GlobalConfig.subgridMetaMemAddrWidth,
   latency: Int = GlobalConfig.subgridMemDpiLatency
 ) extends Module {
   val io = IO(new Bundle {
@@ -111,13 +111,13 @@ class SubgridMetaMemDPI(
     val globalIdx = Input(UInt(addrWidth.W))
     val subIdx = Input(UInt(addrWidth.W))
     val en = Input(Bool())
-    val triStart = Output(UInt(addrWidth.W))
-    val triCount = Output(UInt(16.W))
+    val triStart = Output(UInt(GlobalConfig.subgridMetaMemTriStartWidth.W))
+    val triCount = Output(UInt(GlobalConfig.subgridMetaMemTriCountWidth.W))
     val valid = Output(Bool())
   })
 
   if (GlobalConfig.useBlackBox) {
-    val impl = Module(new SubgridMetaMemResourceBB(addrWidth, GlobalConfig.GlobalDdaRes, GlobalConfig.SubDdaRes))
+    val impl = Module(new SubgridMetaMemResourceBB(addrWidth, GlobalConfig.GlobalDdaRes, GlobalConfig.SubDdaRes, latency))
     impl.io.clk := io.clk
     impl.io.reset := io.reset
     impl.io.globalIdx := io.globalIdx

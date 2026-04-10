@@ -6,7 +6,7 @@ import raytrace_utils._
 
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   val io = IO(new Bundle {
-    val req  = Flipped(Decoupled(UInt(c.addrWidth.W)))
+    val req  = Flipped(Decoupled(UInt(GlobalConfig.triMemAddrWidth.W)))
     val resp = Decoupled(new TriangleBlock(c))
   })
   val dpi_mem = Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency))
@@ -33,7 +33,7 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
     block_data.tris(i).v2.x := triBits(223, 192)
     block_data.tris(i).v2.y := triBits(255, 224)
     block_data.tris(i).v2.z := triBits(287, 256)
-    block_data.tris(i).id := dpi_mem.io.addr_q + i.U(c.addrWidth.W)
+    block_data.tris(i).id := dpi_mem.io.addr_q + i.U(GlobalConfig.triMemAddrWidth.W)
     block_data.mask(i) := dpi_mem.io.valid
   }
 

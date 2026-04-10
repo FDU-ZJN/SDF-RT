@@ -2,7 +2,8 @@ module SubgridMetaMemResourceBB #(
   parameter int ADDR_WIDTH = 32,
   parameter int GLOBALRES = 8,
   parameter int SUBRES = 1,
-  parameter int LATENCY = 2
+  parameter int LATENCY = 2,
+  parameter int MAX_ENTRIES = 65536  // Default depth: 2^16 subgrids
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -21,7 +22,6 @@ logic [LATENCY-1:0]    valid_pipe;
 // Memory storage for $readmemh initialization
 // Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
 // This allows $readmemh to load both values from a single 32-bit word
-localparam int MAX_ENTRIES = 65536; // 2^16 subgrids
 
 reg [31:0] subgrid_meta_mem [0:MAX_ENTRIES-1];
 reg mem_loaded = 1'b0;

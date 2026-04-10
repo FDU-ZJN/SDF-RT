@@ -2,40 +2,120 @@ package raytrace_utils
 
 import chisel3._
 import chisel3.util.log2Ceil
+
 object GlobalConfig {
-  val commitQueueDepth = 16
-  val slotBits  = log2Ceil(commitQueueDepth)
+  // ============================================================
+  // BlackBox vs DPI mode switch
+  // ============================================================
   private var useBlackBoxState = false
   def useBlackBox: Boolean = useBlackBoxState
-  def setUseBlackBox(value: Boolean): Unit = {
-    useBlackBoxState = value
-  }
+  def setUseBlackBox(value: Boolean): Unit = { useBlackBoxState = value }
   def withUseBlackBox[T](value: Boolean)(body: => T): T = {
     val prev = useBlackBoxState
     useBlackBoxState = value
-    try body
-    finally useBlackBoxState = prev
+    try body finally useBlackBoxState = prev
   }
-  val normalMemDpiLatency = 2
-  val triMemDpiLatency = 2
-  val sdfMemDpiLatency = 2
-  val subgridMemDpiLatency = 2
-  val GlobalSdfRes=16
-  val LocalSdfRes=4
-  val GlobalDdaRes=8
-  val SubDdaRes=1
 
-  // Centralized queue depths used across pipeline stages.
+  // ============================================================
+  // Queue depths (centralized)
+  // ============================================================
+  val commitQueueDepth = 16
+  val slotBits = log2Ceil(commitQueueDepth)
+
   val triBatchQueueDepth = 16
   val sdfWorkQueueDepth = 16
   val sdfRetryQueueDepth = 16
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 16
   val simSdfHitQueueDepth = 16
-  //nouse
+
+  // Unused / reserved for future
   val bvhReqQueueDepth = 16
   val bvhLeafQueueDepth = 16
   val bvhMissQueueDepth = 8
+
+  // ============================================================
+  // Memory latency (pipeline depth for DPI / BlackBox)
+  // ============================================================
+  val normalMemDpiLatency = 2
+  val triMemDpiLatency = 2
+  val sdfMemDpiLatency = 2
+  val subgridMemDpiLatency = 2
+
+  // ============================================================
+  // Grid resolutions
+  // ============================================================
+  // SDF PE grid
+  val GlobalSdfRes = 16
+  val LocalSdfRes = 4
+  // DDA grid
+  val GlobalDdaRes = 8
+  val SubDdaRes = 1
+
+  // ============================================================
+  // Memory address widths (key interfaces)
+  // ============================================================
+  // Triangle memory: address width for compact triangle storage
+  val triMemAddrWidth = 32
+  // Triangle data: numPEs * 9 floats per batch
+  val triMemNumPEs = 4
+  val triMemDataWidth = triMemNumPEs * 9 * 32  // = 1152 bits
+
+  // Normal memory: address width (triangle index)
+  val normalMemAddrWidth = 16
+  // Normal data: 3 floats (x, y, z)
+  val normalMemDataWidth = 3 * 32  // = 96 bits
+
+  // Subgrid meta memory: combined address = globalIdx[Global_ADDR_WIDTH] + subIdx[SUB_ADDR_WIDTH]
+  val subgridMetaMemAddrWidth = 32
+  val subgridMetaMemTriStartWidth = 16
+  val subgridMetaMemTriCountWidth = 16
+
+  // SDF memory: global and local address widths
+  val sdfMemAddrWidth = 32           // External interface address width
+  val sdfMemGlobalAddrWidth = 12   // 2^12 = 4096 global entries
+  val sdfMemLocalAddrWidth = 20    // 2^20 = 1M local entries
+  val sdfMemDataWidth = 32         // Single FP32 per access
+
+  // SDF memory internal banking (for synthesis BlackBox)
+  val sdfMemBankDepth = 4096
+  val sdfMemUramCount = 64
+  val sdfMemLocalGridSize = 64
+
+  // BVH memory (unused currently, but configured for future)
+  val bvhMemAddrWidth = 32
+  val bvhMemNodeBytes = 32  // 6 floats bounds + 4 int32 node info
+  val bvhMemDataWidth = bvhMemNodeBytes * 8  // = 256 bits
+
+  // ============================================================
+  // Global address width (used across all modules)
+  // ============================================================
+  val addrWidth = 32
+
+  // ============================================================
+  // SDF PE algorithm parameters
+  // ============================================================
+  val sdfMaxSteps = 128
+  val sdfThreshold1 = 0.02f
+  val sdfThreshold2 = 0.04f
+  val sdfThreshold3 = 0.08f
+  val sdfStepScale = 0.8f
+  val sdfMinStep = -0.500f
+  val sdfHitAdvance = 1e-3f
+  val sdfHitBackoffN = 1
+
+  // DDA parameters
+  val ddaMaxSteps = 16
+
+  // ============================================================
+  // Memory depths (MAX_ENTRIES equivalents)
+  // ============================================================
+  val triMemDepth = 4096           // 2^12 triangle batches
+  val normalMemDepth = 65536       // 2^16 normals
+  val subgridMetaMemDepth = 65536  // 2^16 subgrid entries
+  val sdfGlobalMemDepth = 4096     // 2^12 global SDF entries
+  val sdfLocalMemDepth = 1048576   // 2^20 local SDF entries
+  val bvhMemDepth = 65536          // 2^16 BVH nodes
 }
 case class FloatConfig(
                         expWidth: Int,
@@ -48,39 +128,40 @@ case class FloatConfig(
                         useBlackBox: Boolean = GlobalConfig.useBlackBox,
                       ) {
   val totalWidth = expWidth + precision
-  val fmacLatency=fmulLatency+faddLatency
-  val fdotLatency=fmulLatency+faddLatency+faddLatency
-  val fcrossLatency=fmulLatency+faddLatency
+  val fmacLatency = fmulLatency + faddLatency
+  val fdotLatency = fmulLatency + faddLatency + faddLatency
+  val fcrossLatency = fmulLatency + faddLatency
   val bias = (1 << (expWidth - 1)) - 1
   val maxExp = (1 << expWidth) - 1
   val sigWidth = precision
   val oneHex = "3F800000"
   val oneBigInt = BigInt(oneHex, 16)
-  val addrWidth = 32
+  // Alias to GlobalConfig.addrWidth for backward compatibility
+  val addrWidth = GlobalConfig.addrWidth
 }
 
 object FloatConfig {
-  // 预定义常用格式（带默认延时）
-  // FP32 仅固定位宽，延时使用 FloatConfig 的当前默认参数。
   def FP32 = FloatConfig(8, 24)
   def FP16 = FloatConfig(5, 11, fmulLatency = 2, faddLatency = 1)
 }
+
 case class TriPeConfig(
-                      numPEs: Int = 4,        // 块大小/PE 数量
-                      addrWidth: Int = 32,
-                      cfg: FloatConfig = FloatConfig.FP32
-                    )
+  numPEs: Int = GlobalConfig.triMemNumPEs,
+  cfg: FloatConfig = FloatConfig.FP32
+) {
+  val addrWidth = GlobalConfig.addrWidth
+}
 
 case class BvhPeConfig(
-                        addrWidth: Int = 32,
-                        stackDepth: Int = 64,
-                        reqQueueDepth: Int = GlobalConfig.bvhReqQueueDepth,
-                        leafQueueDepth: Int = GlobalConfig.bvhLeafQueueDepth,
-                        cfg: FloatConfig = FloatConfig.FP32
-                      )
+  stackDepth: Int = 64,
+  reqQueueDepth: Int = GlobalConfig.bvhReqQueueDepth,
+  leafQueueDepth: Int = GlobalConfig.bvhLeafQueueDepth,
+  cfg: FloatConfig = FloatConfig.FP32
+) {
+  val addrWidth = GlobalConfig.addrWidth
+}
 
 case class SdfPeConfig(
-  addrWidth: Int = 32,
   cfg: FloatConfig = FloatConfig.FP32,
   GlobalResX: Int = GlobalConfig.GlobalSdfRes,
   GlobalResY: Int = GlobalConfig.GlobalSdfRes,
@@ -88,26 +169,27 @@ case class SdfPeConfig(
   LocalResX: Int = GlobalConfig.LocalSdfRes,
   LocalResY: Int = GlobalConfig.LocalSdfRes,
   LocalResZ: Int = GlobalConfig.LocalSdfRes,
-  DDAGlobalRes: Int  =GlobalConfig.GlobalDdaRes,
+  DDAGlobalRes: Int = GlobalConfig.GlobalDdaRes,
   SubRes: Int = GlobalConfig.SubDdaRes,
-  maxSteps: Int = 128,
-  DDAMaxSteps: Int  =16,
-  threshold3: Float = 0.08f,
-  threshold2: Float = 0.04f,
-  threshold1: Float = 0.02f,
-  StepScale: Float  =0.8f,
-  minStep: Float = -0.500f,
-  hitAdvance: Float = 1e-3f,
-  hitBackoffN: Int = 1
+  maxSteps: Int = GlobalConfig.sdfMaxSteps,
+  DDAMaxSteps: Int = GlobalConfig.ddaMaxSteps,
+  threshold3: Float = GlobalConfig.sdfThreshold3,
+  threshold2: Float = GlobalConfig.sdfThreshold2,
+  threshold1: Float = GlobalConfig.sdfThreshold1,
+  StepScale: Float = GlobalConfig.sdfStepScale,
+  minStep: Float = GlobalConfig.sdfMinStep,
+  hitAdvance: Float = GlobalConfig.sdfHitAdvance,
+  hitBackoffN: Int = GlobalConfig.sdfHitBackoffN
 ) {
+  val addrWidth = GlobalConfig.addrWidth
   require(hitBackoffN >= 1, s"hitBackoffN must be >= 1, got $hitBackoffN")
   require(StepScale > 0.0f, s"StepScale must be > 0, got $StepScale")
   val threshold1Bits = java.lang.Float.floatToRawIntBits(threshold1)
   val threshold2Bits = java.lang.Float.floatToRawIntBits(threshold2)
   val threshold3Bits = java.lang.Float.floatToRawIntBits(threshold3)
-  val thresholdBits  = threshold1Bits
-  val stepScaleBits  = java.lang.Float.floatToRawIntBits(StepScale)
-  val minStepBits    = java.lang.Float.floatToRawIntBits(minStep)
+  val thresholdBits = threshold1Bits
+  val stepScaleBits = java.lang.Float.floatToRawIntBits(StepScale)
+  val minStepBits = java.lang.Float.floatToRawIntBits(minStep)
   val hitAdvanceBits = java.lang.Float.floatToRawIntBits(hitAdvance)
   val hitBackoffBits = java.lang.Float.floatToRawIntBits(hitAdvance * hitBackoffN.toFloat)
 }

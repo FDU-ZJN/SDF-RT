@@ -62,7 +62,7 @@ class DDA(
   def fpAbs(x: UInt): UInt = Cat(0.U(1.W), x(cfg.totalWidth - 2, 0))
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
-  val trace = Module(new TraceStage(TriPeConfig(cfg = cfg, addrWidth = addrWidth)))
+  val trace = Module(new TraceStage(TriPeConfig(cfg = cfg)))
   val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = GlobalConfig.subgridMemDpiLatency))
 
   val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sIssueTrace :: sWaitTrace :: sStep :: sStepApply :: sDone :: Nil = Enum(10)

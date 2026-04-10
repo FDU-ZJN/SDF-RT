@@ -1,7 +1,8 @@
 module TriangleMemResourceBB #(
   parameter int ADDR_WIDTH = 32,
   parameter int DATA_WIDTH = 1152,
-  parameter int LATENCY = 2
+  parameter int LATENCY = 2,
+  parameter int MAX_ENTRIES = 4096  // Default depth, can be overridden
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -15,11 +16,10 @@ module TriangleMemResourceBB #(
   logic [ADDR_WIDTH-1:0]          addr_pipe [LATENCY-1:0];
   logic [DATA_WIDTH-1:0]          data_pipe [LATENCY-1:0];
   integer i;
-  
+
   // Memory storage for $readmemh initialization
   // DATA_WIDTH bits = 1152 bits = 36 floats (4 PEs * 9 floats/tri)
   localparam int NUM_FLOATS = DATA_WIDTH / 32;
-  localparam int MAX_ENTRIES = 4096; // Adjustable based on needs
   
   reg [31:0] triangle_mem [0:MAX_ENTRIES-1][0:NUM_FLOATS-1];
   reg mem_loaded = 1'b0;

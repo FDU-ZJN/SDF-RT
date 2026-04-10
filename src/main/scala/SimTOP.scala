@@ -10,7 +10,7 @@ import scala.io.Source
 
 class SimTop extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32.copy())
-  private val sdfCfg = SdfPeConfig(cfg = c.cfg, addrWidth = c.addrWidth)
+  private val sdfCfg = SdfPeConfig(cfg = c.cfg)
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
     val setup_origin = Input(new Vec3(c.cfg))
