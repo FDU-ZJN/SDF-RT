@@ -5,7 +5,7 @@ import chisel3.util.log2Ceil
 
 object GlobalConfig {
   // ============================================================
-  // BlackBox vs DPI mode switch
+  // BlackBox vs DPI mode switch (memory modules)
   // ============================================================
   private var useBlackBoxState = false
   def useBlackBox: Boolean = useBlackBoxState
@@ -14,6 +14,19 @@ object GlobalConfig {
     val prev = useBlackBoxState
     useBlackBoxState = value
     try body finally useBlackBoxState = prev
+  }
+
+  // ============================================================
+  // Float IP BlackBox switch (fudian modules: FADD, FMUL, FCMP, etc.)
+  // Used for FPGA IP integration, disabled in Verilator simulation
+  // ============================================================
+  private var useFloatIPState = false
+  def useFloatIP: Boolean = useFloatIPState
+  def setUseFloatIP(value: Boolean): Unit = { useFloatIPState = value }
+  def withUseFloatIP[T](value: Boolean)(body: => T): T = {
+    val prev = useFloatIPState
+    useFloatIPState = value
+    try body finally useFloatIPState = prev
   }
 
   // ============================================================
@@ -125,7 +138,7 @@ case class FloatConfig(
                         fcmpLatency: Int = 2,
                         fptointLatency: Int = 6,
                         fdivLatency: Int = 29,
-                        useBlackBox: Boolean = GlobalConfig.useBlackBox,
+                        useFloatIP: Boolean = GlobalConfig.useFloatIP,
                       ) {
   val totalWidth = expWidth + precision
   val fmacLatency = fmulLatency + faddLatency

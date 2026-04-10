@@ -16,7 +16,7 @@ class FPToInt(
   val expWidth: Int,
   val precision: Int,
   val latency: Int = FloatConfig.FP32.fptointLatency,
-  val useBlackBox: Boolean = GlobalConfig.useBlackBox
+  val useFloatIP: Boolean = GlobalConfig.useFloatIP
 ) extends Module {
   val io = IO(new Bundle() {
     val a = Input(UInt((expWidth + precision).W))
@@ -26,7 +26,7 @@ class FPToInt(
     val fflags = Output(UInt(5.W))
   })
 
-  if (useBlackBox) {
+  if (useFloatIP) {
     val bb = Module(new Fptoint)
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a

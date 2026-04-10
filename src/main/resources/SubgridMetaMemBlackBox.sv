@@ -93,6 +93,9 @@ generate
     // Pipeline registers for data
     logic [15:0] triStart_pipe [LATENCY-1:0];
     logic [15:0] triCount_pipe [LATENCY-1:0];
+    logic [31:0] extended_addr;
+
+    assign extended_addr = {{(32-Global_ADDR_WIDTH){1'b0}}, globalIdx[Global_ADDR_WIDTH-1:0]};
 
     always_ff @(posedge clk) begin
       if (reset) begin
@@ -108,9 +111,9 @@ generate
         subIdx_pipe[0] <= subIdx;
         valid_pipe[0] <= en;
         if (en) begin
-          if (mem_loaded && (globalIdx[Global_ADDR_WIDTH-1:0] < MAX_ENTRIES)) begin
-            triStart_pipe[0] <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][31:16];
-            triCount_pipe[0] <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][15:0];
+          if (mem_loaded && (extended_addr < MAX_ENTRIES)) begin
+            triStart_pipe[0] <= subgrid_meta_mem[extended_addr[15:0]][31:16];
+            triCount_pipe[0] <= subgrid_meta_mem[extended_addr[15:0]][15:0];
           end else begin
             triStart_pipe[0] <= '0;
             triCount_pipe[0] <= '0;

@@ -249,20 +249,20 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         size_t LK = local_sdf_shape[3];
 
         uint32_t entryCount = 0;
+        size_t localPerCell = LI * LJ * LK;
         for (size_t cell_idx = 0; cell_idx < C; ++cell_idx) {
-            for (size_t local_idx = 0; local_idx < LI * LJ * LK; ++local_idx) {
+            for (size_t local_idx = 0; local_idx < localPerCell; ++local_idx) {
                 const int li = static_cast<int>(local_idx % LI);
                 const int lj = static_cast<int>((local_idx / LI) % LJ);
                 const int lk = static_cast<int>(local_idx / (LI * LJ));
-                
+
                 float value = get_local_sdf(static_cast<int>(cell_idx), li, lj, lk);
-                
-                // Combined address: cell_idx << 16 | local_idx
-                uint32_t combined_addr = (static_cast<uint32_t>(cell_idx) << 16) | 
-                                         static_cast<uint32_t>(local_idx);
-                
-                out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
-                    << combined_addr << std::endl;
+
+                // Linear address: contiguous from 0
+                uint32_t linear_addr = static_cast<uint32_t>(cell_idx * localPerCell + local_idx);
+
+                out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                    << linear_addr << std::endl;
                 out << u32ToHex(floatToRawU32(value)) << std::endl;
                 ++entryCount;
             }
@@ -273,6 +273,54 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
                   << LI << "x" << LJ << "x" << LK << " = " << entryCount 
                   << " entries) to " << local_filename << std::endl;
     }
+}
+
+// Export SDF Local Mapping (Global -> Cell Index)
+void export_sdf_local_mapping(const std::string& filename) {
+    size_t I = global_sdf_shape[0];
+    size_t J = global_sdf_shape[1];
+    size_t K = global_sdf_shape[2];
+    size_t totalGlobals = I * J * K;
+
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
+        return;
+    }
+
+    out << "// SDF Local Mapping File" << std::endl;
+    out << "// Format: Each address = Global SDF Index (0..4095)" << std::endl;
+    out << "// Data: [15]=valid, [10:0]=cell_idx (in 1998 cells)" << std::endl;
+    out << "// $readmemh format: @address data..." << std::endl;
+    out << std::endl;
+
+    // Build mapping: globalLinear -> cell_idx
+    std::vector<int> mapping(totalGlobals, -1);
+    for (size_t c = 0; c < num_cells; ++c) {
+        int gi = local_sdf_keys_flat[c * 3 + 0];
+        int gj = local_sdf_keys_flat[c * 3 + 1];
+        int gk = local_sdf_keys_flat[c * 3 + 2];
+        size_t globalLinear = gi + gj * J + gk * J * K;
+        mapping[globalLinear] = static_cast<int>(c);
+    }
+
+    for (size_t globalLinear = 0; globalLinear < totalGlobals; ++globalLinear) {
+        int cell_idx = mapping[globalLinear];
+        uint16_t entry = 0;
+        if (cell_idx >= 0) {
+            // valid bit (15) | cell_idx (10:0)
+            entry = (1 << 15) | (cell_idx & 0x7FF);
+        }
+
+        out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+            << static_cast<uint32_t>(globalLinear) << std::endl;
+        out << std::hex << std::uppercase << std::setfill('0') << std::setw(4)
+            << entry << std::endl;
+    }
+
+    out.close();
+    std::cout << "[MemExport] Exported local mapping (" << totalGlobals
+              << " entries) to " << filename << std::endl;
 }
 
 // Export subgrid metadata to .mem file
@@ -304,15 +352,16 @@ void export_subgrid_meta_mem(const std::string& filename) {
         for (uint32_t sub_idx = 0; sub_idx < subgrid_sub_cells; ++sub_idx) {
             uint32_t triStart = get_subgrid_tri_start_uint32(global_idx, sub_idx);
             uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
-            
-            uint32_t combined_addr = (global_idx << 16) | sub_idx;
-            
+
+            // Linear address: contiguous from 0
+            uint32_t linear_addr = global_idx * subgrid_sub_cells + sub_idx;
+
             // Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
             // This matches the BlackBox extraction: triStart = mem[31:16], triCount = mem[15:0]
             uint32_t packed_value = ((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF);
-            
-            out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
-                << combined_addr << std::endl;
+
+            out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                << linear_addr << std::endl;
             out << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
                 << packed_value << std::endl;
             ++entryCount;

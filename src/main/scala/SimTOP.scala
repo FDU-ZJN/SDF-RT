@@ -163,15 +163,20 @@ object SimTopGen extends App {
     }
   }
 
-  def generateSimTopVerilog(useBlackBox: Boolean, targetDir: String = "build"): Unit = {
+  def generateSimTopVerilog(useBlackBox: Boolean, useFloatIP: Boolean, targetDir: String): Unit = {
     GlobalConfig.withUseBlackBox(useBlackBox) {
-      emitVerilog(new SimTop, Array("--target-dir", targetDir))
+      GlobalConfig.withUseFloatIP(useFloatIP) {
+        emitVerilog(new SimTop, Array("--target-dir", targetDir))
+      }
     }
     // Remove trailing firrtl blackbox resource file-list payload from combined output.
     stripFirrtlBbFileList(targetDir)
   }
 
-  // Always emit both variants to avoid manual switching.
-  generateSimTopVerilog(useBlackBox = false, "build")
-  generateSimTopVerilog(useBlackBox = true, "verilog")
+  // Emit both variants into build/ subdirectories.
+  // noblackbox: pure SV for Verilator simulation (useFloatIP = false)
+  // useblackbox: BlackBox memory + float IP for FPGA (useFloatIP = true)
+  generateSimTopVerilog(useBlackBox = false, useFloatIP = false, "build/noblackbox")
+  generateSimTopVerilog(useBlackBox = true,  useFloatIP = false,  "build/useblackbox")
+  generateSimTopVerilog(useBlackBox = true,  useFloatIP = true,  "build/fpga_sim")
 }

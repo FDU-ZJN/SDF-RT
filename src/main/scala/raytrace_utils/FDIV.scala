@@ -19,7 +19,7 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val in_valid  = Input(Bool())
   })
 
-  if (cfg.useBlackBox) {
+  if (cfg.useFloatIP) {
     val bb = Module(new Fdiv)
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.b

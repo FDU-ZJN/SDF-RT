@@ -388,7 +388,7 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val fflags = Output(UInt(5.W))
   })
 
-  if (cfg.useBlackBox) {
+  if (cfg.useFloatIP) {
     val bb = Module(new Fadder())
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a

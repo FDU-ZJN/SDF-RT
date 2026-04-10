@@ -27,7 +27,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val to_fadd = Output(new FMULToFADD(expWidth, precision))
   })
 
-  if (cfg.useBlackBox) {
+  if (cfg.useFloatIP) {
     val bb = Module(new Fmul)
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a

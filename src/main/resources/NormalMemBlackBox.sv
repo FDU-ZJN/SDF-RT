@@ -47,7 +47,7 @@ module NormalMemResourceBB #(
       valid_pipe[0] <= en;
       addr_pipe[0] <= addr;
       if (en) begin
-        if (mem_loaded && (addr < MAX_ENTRIES)) begin
+        if (mem_loaded && ({{(32-ADDR_WIDTH){1'b0}}, addr} < MAX_ENTRIES)) begin
           for (i = 0; i < NUM_FLOATS; i = i + 1) begin
             data_pipe[0][i*32 +: 32] <= normal_mem[addr][i];
           end

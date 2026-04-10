@@ -537,6 +537,21 @@ inline void writeU32LE(uint8_t* dst, uint32_t value) {
 }
 } // namespace
 
+// Verilator DPI compatibility stubs
+// These provide fallback implementations when verilated_dpi.cpp is not linked
+// (which happens in useblackbox mode where BlackBox memory uses $readmemh)
+// The __attribute__((weak)) allows Verilator's implementations to override these.
+extern "C" __attribute__((weak)) void* svGetArrayPtr(const svOpenArrayHandle h) {
+    (void)h;
+    return nullptr;
+}
+
+extern "C" __attribute__((weak)) int svSize(const svOpenArrayHandle h, int dim) {
+    (void)h;
+    (void)dim;
+    return 0;
+}
+
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
     if (data == nullptr) {
         return;
