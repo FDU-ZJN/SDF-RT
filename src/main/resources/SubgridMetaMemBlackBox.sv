@@ -46,79 +46,91 @@ generate
   if (SUB_ADDR_WIDTH > 0) begin : gen_combined_addr
     logic [Global_ADDR_WIDTH + SUB_ADDR_WIDTH - 1:0] combined_addr;
     assign combined_addr = {globalIdx[Global_ADDR_WIDTH-1:0], subIdx[SUB_ADDR_WIDTH-1:0]};
-    
+
+    // Pipeline registers for data
+    logic [15:0] triStart_pipe [LATENCY-1:0];
+    logic [15:0] triCount_pipe [LATENCY-1:0];
+
     always_ff @(posedge clk) begin
       if (reset) begin
         valid_pipe <= '0;
         for (int i = 0; i < LATENCY; i++) begin
           globalIdx_pipe[i] <= '0;
           subIdx_pipe[i] <= '0;
+          triStart_pipe[i] <= '0;
+          triCount_pipe[i] <= '0;
         end
       end else begin
         globalIdx_pipe[0] <= globalIdx;
         subIdx_pipe[0] <= subIdx;
         valid_pipe[0] <= en;
+        if (en) begin
+          if (mem_loaded && (combined_addr < MAX_ENTRIES)) begin
+            triStart_pipe[0] <= subgrid_meta_mem[combined_addr][31:16];
+            triCount_pipe[0] <= subgrid_meta_mem[combined_addr][15:0];
+          end else begin
+            triStart_pipe[0] <= '0;
+            triCount_pipe[0] <= '0;
+          end
+        end else begin
+          triStart_pipe[0] <= '0;
+          triCount_pipe[0] <= '0;
+        end
         for (int i = 1; i < LATENCY; i++) begin
           globalIdx_pipe[i] <= globalIdx_pipe[i - 1];
           subIdx_pipe[i] <= subIdx_pipe[i - 1];
           valid_pipe[i] <= valid_pipe[i - 1];
+          triStart_pipe[i] <= triStart_pipe[i - 1];
+          triCount_pipe[i] <= triCount_pipe[i - 1];
         end
       end
     end
-    
-    // Read from memory and extract packed values
-    always_ff @(posedge clk) begin
-      if (en) begin
-        if (mem_loaded && (combined_addr < MAX_ENTRIES)) begin
-          // Packed format: [31:16] = triStart, [15:0] = triCount
-          triStart <= subgrid_meta_mem[combined_addr][31:16];
-          triCount <= subgrid_meta_mem[combined_addr][15:0];
-        end else begin
-          triStart <= '0;
-          triCount <= '0;
-        end
-      end else begin
-        triStart <= '0;
-        triCount <= '0;
-      end
-    end
+
+    assign triStart = triStart_pipe[LATENCY - 1];
+    assign triCount = triCount_pipe[LATENCY - 1];
   end
   else begin : gen_global_only_addr
+    // Pipeline registers for data
+    logic [15:0] triStart_pipe [LATENCY-1:0];
+    logic [15:0] triCount_pipe [LATENCY-1:0];
+
     always_ff @(posedge clk) begin
       if (reset) begin
         valid_pipe <= '0;
         for (int i = 0; i < LATENCY; i++) begin
           globalIdx_pipe[i] <= '0;
           subIdx_pipe[i] <= '0;
+          triStart_pipe[i] <= '0;
+          triCount_pipe[i] <= '0;
         end
       end else begin
         globalIdx_pipe[0] <= globalIdx;
         subIdx_pipe[0] <= subIdx;
         valid_pipe[0] <= en;
+        if (en) begin
+          if (mem_loaded && (globalIdx[Global_ADDR_WIDTH-1:0] < MAX_ENTRIES)) begin
+            triStart_pipe[0] <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][31:16];
+            triCount_pipe[0] <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][15:0];
+          end else begin
+            triStart_pipe[0] <= '0;
+            triCount_pipe[0] <= '0;
+          end
+        end else begin
+          triStart_pipe[0] <= '0;
+          triCount_pipe[0] <= '0;
+        end
         for (int i = 1; i < LATENCY; i++) begin
           globalIdx_pipe[i] <= globalIdx_pipe[i - 1];
           subIdx_pipe[i] <= subIdx_pipe[i - 1];
           valid_pipe[i] <= valid_pipe[i - 1];
+          triStart_pipe[i] <= triStart_pipe[i - 1];
+          triCount_pipe[i] <= triCount_pipe[i - 1];
         end
       end
     end
-    
-    // Read from memory and extract packed values
-    always_ff @(posedge clk) begin
-      if (en) begin
-        if (mem_loaded && (globalIdx[Global_ADDR_WIDTH-1:0] < MAX_ENTRIES)) begin
-          // Packed format: [31:16] = triStart, [15:0] = triCount
-          triStart <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][31:16];
-          triCount <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][15:0];
-        end else begin
-          triStart <= '0;
-          triCount <= '0;
-        end
-      end else begin
-        triStart <= '0;
-        triCount <= '0;
-      end
-    end
+
+    assign triStart = triStart_pipe[LATENCY - 1];
+    assign triCount = triCount_pipe[LATENCY - 1];
   end
 endgenerate
 

@@ -176,6 +176,8 @@ void export_normal_mem(const std::string& filename) {
 // Export SDF memory to .mem files
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename) {
     // Export global SDF
+    // BlackBox expects: each address holds 2 FP32 values packed into [63:32] and [31:0]
+    // Address = global_idx >> 1, with global_idx[0] selecting the lane
     {
         std::ofstream out(global_filename);
         if (!out.is_open()) {
@@ -184,29 +186,48 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         }
 
         out << "// Global SDF Memory Initialization File" << std::endl;
-        out << "// Format: Each line = 1 SDF value (1 hex float)" << std::endl;
+        out << "// Format: Each address = 2 SDF values packed into 64 bits" << std::endl;
+        out << "// [63:32] = SDF at odd index, [31:0] = SDF at even index" << std::endl;
         out << "// $readmemh format: @address data..." << std::endl;
         out << std::endl;
 
         size_t I = global_sdf_shape[0];
         size_t J = global_sdf_shape[1];
         size_t K = global_sdf_shape[2];
+        size_t totalEntries = I * J * K;
 
-        for (size_t global_idx = 0; global_idx < I * J * K; ++global_idx) {
-            const int gi = static_cast<int>(global_idx % I);
-            const int gj = static_cast<int>((global_idx / I) % J);
-            const int gk = static_cast<int>(global_idx / (I * J));
-            
-            float value = get_global_sdf(gi, gj, gk);
-            
-            out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
-                << static_cast<uint32_t>(global_idx) << std::endl;
-            out << u32ToHex(floatToRawU32(value)) << std::endl;
+        // Export in pairs: address = global_idx >> 1
+        for (size_t wordAddr = 0; wordAddr < (totalEntries + 1) / 2; ++wordAddr) {
+            size_t evenIdx = wordAddr * 2;
+            size_t oddIdx = wordAddr * 2 + 1;
+
+            // Calculate 3D coordinates for debugging (not used in export)
+            const int even_gi = static_cast<int>(evenIdx % I);
+            const int even_gj = static_cast<int>((evenIdx / I) % J);
+            const int even_gk = static_cast<int>(evenIdx / (I * J));
+
+            float evenValue = (evenIdx < totalEntries) ? get_global_sdf(even_gi, even_gj, even_gk) : 0.0f;
+            float oddValue = 0.0f;
+
+            if (oddIdx < totalEntries) {
+                const int odd_gi = static_cast<int>(oddIdx % I);
+                const int odd_gj = static_cast<int>((oddIdx / I) % J);
+                const int odd_gk = static_cast<int>(oddIdx / (I * J));
+                oddValue = get_global_sdf(odd_gi, odd_gj, odd_gk);
+            }
+
+            // Pack: [63:32] = odd value, [31:0] = even value
+            uint32_t evenBits = floatToRawU32(evenValue);
+            uint32_t oddBits = floatToRawU32(oddValue);
+
+            out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                << static_cast<uint32_t>(wordAddr) << std::endl;
+            out << u32ToHex(oddBits) << " " << u32ToHex(evenBits) << std::endl;
         }
 
         out.close();
-        std::cout << "[MemExport] Exported global SDF (" << I << "x" << J << "x" << K 
-                  << " = " << (I*J*K) << " entries) to " << global_filename << std::endl;
+        std::cout << "[MemExport] Exported global SDF (" << I << "x" << J << "x" << K
+                  << " = " << totalEntries << " entries, " << ((totalEntries + 1) / 2) << " words) to " << global_filename << std::endl;
     }
 
     // Export local SDF

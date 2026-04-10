@@ -126,7 +126,7 @@ module SdfMemResourceBB #(
       valid <= 1'b0;
     end else begin
       data <= data_s1[DATA_WIDTH-1:0];
-      valid <= vld_pipe[0];
+      valid <= valid_s1;
     end
   end
 

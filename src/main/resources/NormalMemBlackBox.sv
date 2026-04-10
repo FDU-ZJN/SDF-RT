@@ -13,6 +13,7 @@ module NormalMemResourceBB #(
 );
   logic [LATENCY-1:0]    valid_pipe;
   logic [ADDR_WIDTH-1:0] addr_pipe [LATENCY-1:0];
+  logic [DATA_WIDTH-1:0] data_pipe [LATENCY-1:0];
   integer i;
   
   // Memory storage for $readmemh initialization
@@ -40,32 +41,31 @@ module NormalMemResourceBB #(
       valid_pipe <= '0;
       for (i = 0; i < LATENCY; i = i + 1) begin
         addr_pipe[i] <= '0;
+        data_pipe[i] <= '0;
       end
     end else begin
       valid_pipe[0] <= en;
       addr_pipe[0] <= addr;
+      if (en) begin
+        if (mem_loaded && (addr < MAX_ENTRIES)) begin
+          for (i = 0; i < NUM_FLOATS; i = i + 1) begin
+            data_pipe[0][i*32 +: 32] <= normal_mem[addr][i];
+          end
+        end else begin
+          data_pipe[0] <= '0;
+        end
+      end else begin
+        data_pipe[0] <= '0;
+      end
       for (i = 1; i < LATENCY; i = i + 1) begin
         valid_pipe[i] <= valid_pipe[i - 1];
         addr_pipe[i]  <= addr_pipe[i - 1];
+        data_pipe[i]  <= data_pipe[i - 1];
       end
-    end
-  end
-  
-  // Read from initialized memory
-  always_ff @(posedge clk) begin
-    if (en) begin
-      if (mem_loaded && (addr < MAX_ENTRIES)) begin
-        for (i = 0; i < NUM_FLOATS; i = i + 1) begin
-          data[i*32 +: 32] <= normal_mem[addr][i];
-        end
-      end else begin
-        data <= '0;
-      end
-    end else begin
-      data <= '0;
     end
   end
 
+  assign data   = data_pipe[LATENCY - 1];
   assign valid  = valid_pipe[LATENCY - 1];
   assign addr_q = addr_pipe[LATENCY - 1];
 endmodule
