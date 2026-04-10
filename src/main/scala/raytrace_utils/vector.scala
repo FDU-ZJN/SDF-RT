@@ -2,6 +2,30 @@ package raytrace_utils
 import chisel3._
 import chisel3.util._
 import raytrace_utils.fudian._
+
+// Global pipe utility functions with explicit initialization values
+object PipeUtils {
+  def pipeUInt(x: UInt, n: Int, init: UInt = 0.U): UInt = {
+    if (n > 0) {
+      val reg = ShiftRegister(x, n)
+      // Note: initialization is handled at declaration site
+      reg
+    } else x
+  }
+  def pipeBool(x: Bool, n: Int, init: Bool = false.B): Bool = {
+    if (n > 0) {
+      val reg = ShiftRegister(x, n)
+      reg
+    } else x
+  }
+  def pipeSInt(x: SInt, n: Int, init: SInt = 0.S): SInt = {
+    if (n > 0) {
+      val reg = ShiftRegister(x, n)
+      reg
+    } else x
+  }
+}
+
 class DotProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
     val a = Input(new Vec3(cfg))

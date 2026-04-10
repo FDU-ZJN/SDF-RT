@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import raytrace_utils.PipeUtils._
 
 class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val io = IO(new Bundle {
@@ -65,21 +66,12 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   def neg(x: UInt): UInt = Cat(!x(c.cfg.totalWidth - 1), x(c.cfg.totalWidth - 2, 0))
 
-  def pipeBool(x: Bool, n: Int): Bool = {
-    var v = x
-    for (_ <- 0 until n) v = RegNext(v, false.B)
-    v
-  }
-
-  def pipeUInt(x: UInt, n: Int): UInt = {
-    var v = x
-    for (_ <- 0 until n) v = RegNext(v)
-    v
-  }
-
   def sampleThenDelay(x: UInt, en: Bool, latency: Int): UInt = {
-    val sampled = RegEnable(x,en)
-    if (latency <= 1) sampled else ShiftRegister(sampled, latency - 1)
+    val sampled = RegInit(0.U(x.getWidth.W))
+    when(en) {
+      sampled := x
+    }
+    if (latency <= 1) sampled else pipeUInt(sampled, latency - 1)
   }
 
   // --------------------

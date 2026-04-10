@@ -4,49 +4,50 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import raytrace_utils.PipeUtils._
 
 class TriPE(val c: TriPeConfig) extends Module {
 
   val io = IO(new Bundle {
-    val ray_in = Input(new Ray(c.cfg))
-    val ray_meta = Input(new RayMeta(c.addrWidth))
-    val ray_valid = Input(Bool())
+    val ray_in: Ray = Input(new Ray(c.cfg))
+    val ray_meta: RayMeta = Input(new RayMeta(c.addrWidth))
+    val ray_valid: Bool = Input(Bool())
 
-    val tri_batch_in = Input(new TriBatch(c.addrWidth))
-    val tri_batch_valid = Input(Bool())
-    val end_exec = Input(Bool())
+    val tri_batch_in: TriBatch = Input(new TriBatch(c.addrWidth))
+    val tri_batch_valid: Bool = Input(Bool())
+    val end_exec: Bool = Input(Bool())
 
-    val mem_req = Decoupled(UInt(c.addrWidth.W))
-    val mem_resp = Flipped(Decoupled(new TriangleBlock(c)))
+    val mem_req: DecoupledIO[UInt] = Decoupled(UInt(c.addrWidth.W))
+    val mem_resp: DecoupledIO[TriangleBlock] = Flipped(Decoupled(new TriangleBlock(c)))
 
-    val start_ready = Output(Bool())
-    val output_ready = Output(Bool())
-    val out_best_hit = Output(Bool())
-    val hit_id = Output(UInt(c.addrWidth.W))
-    val t_best = Output(UInt(c.cfg.totalWidth.W))
-    val out_meta = Output(new RayMeta(c.addrWidth))
-    val out_done = Output(Bool())
+    val start_ready: Bool = Output(Bool())
+    val output_ready: Bool = Output(Bool())
+    val out_best_hit: Bool = Output(Bool())
+    val hit_id: UInt = Output(UInt(c.addrWidth.W))
+    val t_best: UInt = Output(UInt(c.cfg.totalWidth.W))
+    val out_meta: RayMeta = Output(new RayMeta(c.addrWidth))
+    val out_done: Bool = Output(Bool())
   })
 
   // ============================================================
   // 1. 任务调度
   // ============================================================
 
-  val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth))
+  private val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth))
   batch_queue.io.enq.bits := io.tri_batch_in
   batch_queue.io.enq.valid := io.tri_batch_valid
   when(batch_queue.io.enq.valid) {
     assert(batch_queue.io.enq.ready, "TriPE batch_queue overflow")
   }
 
-  val current_batch = Reg(new TriBatch(c.addrWidth))
-  val ray_meta_reg = Reg(new RayMeta(c.addrWidth))
-  val block_offset = RegInit(0.U(16.W))
-  val batch_active = RegInit(false.B)
-  val no_more_batches = RegInit(false.B)
+  private val current_batch: TriBatch = RegInit(0.U.asTypeOf(new TriBatch(c.addrWidth)))
+  private val ray_meta_reg: RayMeta = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
+  private val block_offset: UInt = RegInit(0.U(16.W))
+  private val batch_active: Bool = RegInit(false.B)
+  private val no_more_batches: Bool = RegInit(false.B)
 
-  val s_IDLE :: s_BUSY :: s_FINISHING :: Nil = Enum(3)
-  val state = RegInit(s_IDLE)
+  private val s_IDLE :: s_BUSY :: s_FINISHING :: Nil = Enum(3)
+  private val state: UInt = RegInit(s_IDLE)
 
   when(state === s_IDLE && io.ray_valid) {
     state := s_BUSY
@@ -66,10 +67,10 @@ class TriPE(val c: TriPeConfig) extends Module {
     batch_active := true.B
   }
 
-  val shiftAmt = log2Up(c.numPEs)
+  private val shiftAmt: Int = log2Up(c.numPEs)
 
   io.mem_req.valid := batch_active
-  io.mem_req.bits := current_batch.base_addr + (block_offset << shiftAmt)
+  io.mem_req.bits := current_batch.base_addr + (block_offset << shiftAmt).asUInt
 
   when(io.mem_req.fire) {
     block_offset := block_offset + 1.U
@@ -86,13 +87,13 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 2. PE 阵列
   // ============================================================
 
-  val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
+  private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
 
-  val pe_best_t = RegInit(VecInit(Seq.fill(c.numPEs)(
+  private val pe_best_t: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(
     0x7F7FFFFF.U(c.cfg.totalWidth.W)
   )))
-  val pe_best_id = Reg(Vec(c.numPEs, UInt(c.addrWidth.W)))
-  val pe_has_hit = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
+  private val pe_best_id: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(0.U(c.addrWidth.W))))
+  private val pe_has_hit: Vec[Bool] = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
 
   // 新 ray 清空历史 best
   when(state === s_IDLE && io.ray_valid) {
@@ -103,7 +104,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     }
   }
 
-  val ray_reg = RegEnable(io.ray_in, io.ray_valid && state === s_IDLE)
+  private val ray_reg: Ray = pipeUInt(io.ray_in.asUInt, 1, 0.U).asTypeOf(new Ray(c.cfg))
 
   io.mem_resp.ready := true.B
 
@@ -134,13 +135,10 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 3. inflight 计数 + 状态转换
   // ============================================================
 
-  val inflight_cnt = RegInit(0.U(10.W))
+  private val inflight_cnt: UInt = RegInit(0.U(10.W))
 
-  val incoming_count =
-    PopCount(io.mem_resp.bits.mask.asUInt)
-
-  val outgoing_count =
-    PopCount(pes.map(_.io.out_valid))
+  private val incoming_count: UInt = PopCount(io.mem_resp.bits.mask.asUInt)
+  private val outgoing_count: UInt = PopCount(pes.map(_.io.out_valid))
 
   inflight_cnt :=
     inflight_cnt +
@@ -162,28 +160,19 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 4. 全局 argmin(t)
   // ============================================================
 
-  val pairs =
-    (0 until c.numPEs).map(i =>
-      (pe_best_t(i), pe_best_id(i), pe_has_hit(i))
+  private val pairs = (0 until c.numPEs).map(i => (pe_best_t(i), pe_best_id(i), pe_has_hit(i)))
+  private val (global_best_t, global_best_id, global_has_hit) = pairs.reduce { (a, b) =>
+    val cmp = Module(new FCMP(c.cfg))
+    cmp.io.a := a._1
+    cmp.io.b := b._1
+    cmp.io.signaling := false.B
+    val a_better = a._3 && (!b._3 || cmp.io.lt)
+    (
+      Mux(a_better, a._1, b._1),
+      Mux(a_better, a._2, b._2),
+      a._3 || b._3
     )
-
-  val (global_best_t, global_best_id, global_has_hit) =
-    pairs.reduce { (a, b) =>
-
-      val cmp = Module(new FCMP(c.cfg))
-      cmp.io.a := a._1
-      cmp.io.b := b._1
-      cmp.io.signaling := false.B
-
-      val a_better =
-        a._3 && (!b._3 || cmp.io.lt)
-
-      (
-        Mux(a_better, a._1, b._1),
-        Mux(a_better, a._2, b._2),
-        a._3 || b._3
-      )
-    }
+  }
 
   // ============================================================
   // 5. 输出
@@ -196,9 +185,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   io.hit_id := global_best_id
   io.t_best := global_best_t
   io.out_meta := ray_meta_reg
-  val done_pulse =
-    (RegNext(state) === s_FINISHING &&
-      state === s_IDLE)
+
+  private val done_pulse: Bool = pipeBool(state === s_FINISHING, 1, false.B) && (state === s_IDLE)
 
   io.out_done := done_pulse
 }

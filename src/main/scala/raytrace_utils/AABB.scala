@@ -3,6 +3,7 @@ package raytrace_utils
 import chisel3._
 import chisel3.util._
 import raytrace_utils.fudian._
+import raytrace_utils.PipeUtils._
 
 class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
@@ -22,8 +23,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val fpEps = java.lang.Float.floatToIntBits(1e-9f).U(cfg.totalWidth.W)
 
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
-  def pipeUInt(x: UInt, n: Int): UInt = if (n > 0) ShiftRegister(x, n) else x
-  def pipeBool(x: Bool, n: Int): Bool = if (n > 0) ShiftRegister(x, n) else x
 
   // Parallel per-axis setup: dir' = dir + eps, then invDir = 1 / dir'.
   val dirs = Seq(io.ray.dir.x, io.ray.dir.y, io.ray.dir.z)
@@ -89,8 +88,8 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   }
 
   // Stage align: per-axis values are ready after 2 + 6 + 3 = 11 cycles.
-  val nearS0 = VecInit(axisNear).map(v => RegNext(v))
-  val farS0 = VecInit(axisFar).map(v => RegNext(v))
+  val nearS0 = VecInit(axisNear).map(v => RegNext(v, 0.U))
+  val farS0 = VecInit(axisFar).map(v => RegNext(v, 0.U))
 
   // Reduction level 1: tMin01=max(near0,near1), tMax01=min(far0,far1)
   val cmpNear01 = Module(new FCMP(cfg))
@@ -100,7 +99,7 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val near01Le = cmpNear01.io.le
   val near00Cmp = pipeUInt(nearS0(0), cfg.fcmpLatency)
   val near01Cmp = pipeUInt(nearS0(1), cfg.fcmpLatency)
-  val tMin01 = RegNext(Mux(near01Le, near01Cmp, near00Cmp))
+  val tMin01 = RegNext(Mux(near01Le, near01Cmp, near00Cmp), 0.U)
 
   val cmpFar01 = Module(new FCMP(cfg))
   cmpFar01.io.a := farS0(0)
@@ -109,10 +108,10 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val far01Le = cmpFar01.io.le
   val far00Cmp = pipeUInt(farS0(0), cfg.fcmpLatency)
   val far01Cmp = pipeUInt(farS0(1), cfg.fcmpLatency)
-  val tMax01 = RegNext(Mux(far01Le, far00Cmp, far01Cmp))
+  val tMax01 = RegNext(Mux(far01Le, far00Cmp, far01Cmp), 0.U)
 
-  val near2S1 = ShiftRegister(RegNext(nearS0(2)), cfg.fcmpLatency)
-  val far2S1  = ShiftRegister(RegNext(farS0(2)),  cfg.fcmpLatency)
+  val near2S1 = ShiftRegister(RegNext(nearS0(2), 0.U), cfg.fcmpLatency)
+  val far2S1  = ShiftRegister(RegNext(farS0(2),  0.U), cfg.fcmpLatency)
 
   // Reduction level 2: tMin=max(tMin01,near2), tMax=min(tMax01,far2)
   val cmpNear012 = Module(new FCMP(cfg))
@@ -122,7 +121,7 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val near012Le = cmpNear012.io.le
   val near2S1Cmp = pipeUInt(near2S1, cfg.fcmpLatency)
   val tMin01Cmp = pipeUInt(tMin01, cfg.fcmpLatency)
-  val tMin = RegNext(Mux(near012Le, near2S1Cmp, tMin01Cmp))
+  val tMin = RegNext(Mux(near012Le, near2S1Cmp, tMin01Cmp), 0.U)
 
   val cmpFar012 = Module(new FCMP(cfg))
   cmpFar012.io.a := tMax01
@@ -131,7 +130,7 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val far012Le = cmpFar012.io.le
   val tMax01Cmp = pipeUInt(tMax01, cfg.fcmpLatency)
   val far2S1Cmp = pipeUInt(far2S1, cfg.fcmpLatency)
-  val tMax = RegNext(Mux(far012Le, tMax01Cmp, far2S1Cmp))
+  val tMax = RegNext(Mux(far012Le, tMax01Cmp, far2S1Cmp), 0.U)
 
   // Hit: tMax >= tMin && tMax >= 0
   val cmpRange = Module(new FCMP(cfg))
@@ -159,9 +158,9 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val tNearComb = Mux(tMinPos, tMinFinal, tMaxFinal)
   val hitComb = rangeOk && tMaxNonNeg
 
-  io.tNear := RegNext(tNearComb)
-  io.tFar := RegNext(tMaxFinal)
-  io.hit := RegNext(hitComb)
+  io.tNear := RegNext(tNearComb, 0.U)
+  io.tFar := RegNext(tMaxFinal, 0.U)
+  io.hit := RegNext(hitComb, false.B)
 
   val totalLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   io.out_valid := ShiftRegister(io.in_valid, totalLatency)

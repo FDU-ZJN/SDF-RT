@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import raytrace_utils.PipeUtils._
 
 class DDA(
   cfg: FloatConfig = FloatConfig.FP32,
@@ -53,10 +54,9 @@ class DDA(
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
   private val fpEps = java.lang.Float.floatToRawIntBits(1.0e-9f).U(cfg.totalWidth.W)
 
-  private def align(x: UInt, n: Int): UInt = if (n > 0) ShiftRegister(x, n) else x
   // Align a value produced at `pathLatency` to the common `targetLatency` stage.
   private def alignToTarget(x: UInt, pathLatency: Int, targetLatency: Int): UInt = {
-    align(x, math.max(0, targetLatency - pathLatency))
+    pipeUInt(x, math.max(0, targetLatency - pathLatency))
   }
 
   def fpAbs(x: UInt): UInt = Cat(0.U(1.W), x(cfg.totalWidth - 2, 0))
@@ -68,9 +68,9 @@ class DDA(
   val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sIssueTrace :: sWaitTrace :: sStep :: sStepApply :: sDone :: Nil = Enum(10)
   val state = RegInit(sIdle)
 
-  val rayReg = Reg(new Ray(cfg))
-  val metaReg = Reg(new RayMeta(addrWidth))
-  val resultReg = Reg(new DdaTraversalResult(cfg, addrWidth))
+  val rayReg = RegInit(0.U.asTypeOf(new Ray(cfg)))
+  val metaReg = RegInit(0.U.asTypeOf(new RayMeta(addrWidth)))
+  val resultReg = RegInit(0.U.asTypeOf(new DdaTraversalResult(cfg, addrWidth)))
   val reverseTraversalReg = RegInit(false.B)
 
   val subX = RegInit(0.S((addrWidth + 1).W))
@@ -89,8 +89,8 @@ class DDA(
   val tDeltaY = RegInit(fpOne)
   val tDeltaZ = RegInit(fpOne)
 
-  val triStartReg = Reg(UInt(addrWidth.W))
-  val triCountReg = Reg(UInt(16.W))
+  val triStartReg = RegInit(0.U(addrWidth.W))
+  val triCountReg = RegInit(0.U(16.W))
 
   val inBounds = subX >= 0.S && subY >= 0.S && subZ >= 0.S &&
     subX < totalSubS && subY < totalSubS && subZ < totalSubS
@@ -211,9 +211,9 @@ class DDA(
   oneMinusFracZ.io.b := neg(fracSubZ.io.res)
   oneMinusFracZ.io.rm := RNE
 
-  val fracXAligned = align(fracSubX.io.res, cfg.faddLatency)
-  val fracYAligned = align(fracSubY.io.res, cfg.faddLatency)
-  val fracZAligned = align(fracSubZ.io.res, cfg.faddLatency)
+  val fracXAligned = pipeUInt(fracSubX.io.res, cfg.faddLatency)
+  val fracYAligned = pipeUInt(fracSubY.io.res, cfg.faddLatency)
+  val fracZAligned = pipeUInt(fracSubZ.io.res, cfg.faddLatency)
   val distX = Mux(stepNegX, fracXAligned, oneMinusFracX.io.res)
   val distY = Mux(stepNegY, fracYAligned, oneMinusFracY.io.res)
   val distZ = Mux(stepNegZ, fracZAligned, oneMinusFracZ.io.res)
@@ -248,9 +248,9 @@ class DDA(
   cmpEpsZ.io.b := fpEps
   cmpEpsZ.io.signaling := false.B
 
-  val absDsdtXAligned = align(absDsdtX, cfg.fcmpLatency)
-  val absDsdtYAligned = align(absDsdtY, cfg.fcmpLatency)
-  val absDsdtZAligned = align(absDsdtZ, cfg.fcmpLatency)
+  val absDsdtXAligned = pipeUInt(absDsdtX, cfg.fcmpLatency)
+  val absDsdtYAligned = pipeUInt(absDsdtY, cfg.fcmpLatency)
+  val absDsdtZAligned = pipeUInt(absDsdtZ, cfg.fcmpLatency)
   val cmpEpsXLe = cmpEpsX.io.le
   val cmpEpsYLe = cmpEpsY.io.le
   val cmpEpsZLe = cmpEpsZ.io.le

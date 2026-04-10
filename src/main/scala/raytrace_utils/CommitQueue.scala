@@ -19,7 +19,7 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     val out        = Decoupled(new RenderResult(cfg, cfg.addrWidth))
   })
 
-  val entries  = Reg(Vec(depth, new RenderResult(cfg, cfg.addrWidth)))
+  val entries  = RegInit(VecInit(Seq.fill(depth)(0.U.asTypeOf(new RenderResult(cfg, cfg.addrWidth)))))
   val reserved = RegInit(VecInit(Seq.fill(depth)(false.B)))
   val done     = RegInit(VecInit(Seq.fill(depth)(false.B)))
 

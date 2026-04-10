@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import raytrace_utils.PipeUtils._
 
 class BvhPE(val c: BvhPeConfig) extends Module {
   private val spWidth    = log2Ceil(c.stackDepth + 1)
@@ -37,11 +38,11 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   })
 
   // ── 全局状态寄存器 ──────────────────────────────────────────────────────────
-  val rayReg  = Reg(new Ray(c.cfg))
+  val rayReg  = RegInit(0.U.asTypeOf(new Ray(c.cfg)))
   val active  = RegInit(false.B)
   val bestT   = RegInit(fpInf)
   val hasBest = RegInit(false.B)
-  val startMetaReg = Reg(new RayMeta(c.addrWidth))
+  val startMetaReg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
   val sawValidLeaf = RegInit(false.B)
 
   // ── 栈模块实例化 ────────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   io.stack_level := bvhStack.io.level
 
   // ── 透射光线寄存器 ───────────────────────────────────────────────────────────
-  val rayPassthroughReg = Reg(new Ray(c.cfg))
+  val rayPassthroughReg = RegInit(0.U.asTypeOf(new Ray(c.cfg)))
 
   when(io.start && !active) {
     rayPassthroughReg := io.ray_in

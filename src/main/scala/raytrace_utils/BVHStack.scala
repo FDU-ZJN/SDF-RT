@@ -16,7 +16,7 @@ class BvhStack(addrWidth: Int, depth: Int) extends Module {
     val full      = Output(Bool())
   })
 
-  val mem = Reg(Vec(depth, UInt(addrWidth.W)))
+  val mem = RegInit(VecInit(Seq.fill(depth)(0.U(addrWidth.W))))
   val sp  = RegInit(0.U(ptrW.W))
 
   val pushCount = io.pushLeft.asUInt +& io.pushRight.asUInt
