@@ -5,7 +5,17 @@ import chisel3.util.log2Ceil
 object GlobalConfig {
   val commitQueueDepth = 16
   val slotBits  = log2Ceil(commitQueueDepth)
-  val useBlackBox = false
+  private var useBlackBoxState = false
+  def useBlackBox: Boolean = useBlackBoxState
+  def setUseBlackBox(value: Boolean): Unit = {
+    useBlackBoxState = value
+  }
+  def withUseBlackBox[T](value: Boolean)(body: => T): T = {
+    val prev = useBlackBoxState
+    useBlackBoxState = value
+    try body
+    finally useBlackBoxState = prev
+  }
   val normalMemDpiLatency = 2
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 2

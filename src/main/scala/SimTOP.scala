@@ -8,8 +8,8 @@ import java.nio.file.{Files, Paths}
 import raytrace_utils._
 import scala.io.Source
 
-class SimTop(useBlackBox: Boolean = GlobalConfig.useBlackBox) extends Module {
-  val c = TriPeConfig(cfg = FloatConfig.FP32.copy(useBlackBox = useBlackBox))
+class SimTop extends Module {
+  val c = TriPeConfig(cfg = FloatConfig.FP32.copy())
   private val sdfCfg = SdfPeConfig(cfg = c.cfg, addrWidth = c.addrWidth)
   val io = IO(new Bundle {
     val setup_valid = Input(Bool())
@@ -164,11 +164,14 @@ object SimTopGen extends App {
   }
 
   def generateSimTopVerilog(useBlackBox: Boolean, targetDir: String = "build"): Unit = {
-    emitVerilog(new SimTop(useBlackBox = useBlackBox), Array("--target-dir", targetDir))
+    GlobalConfig.withUseBlackBox(useBlackBox) {
+      emitVerilog(new SimTop, Array("--target-dir", targetDir))
+    }
     // Remove trailing firrtl blackbox resource file-list payload from combined output.
     stripFirrtlBbFileList(targetDir)
   }
 
-  // Keep CLI entry simple; behavior is now controlled by function argument.
-  generateSimTopVerilog(useBlackBox = false,"build")
+  // Always emit both variants to avoid manual switching.
+  generateSimTopVerilog(useBlackBox = false, "build")
+  generateSimTopVerilog(useBlackBox = true, "verilog")
 }
