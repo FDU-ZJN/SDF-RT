@@ -1,7 +1,8 @@
 # 路径自动获取
 CSRC_DIR := $(shell pwd)
 ROOT_DIR := $(abspath $(CSRC_DIR)/..)
-WAVE_FILE = $(CSRC_DIR)/raytrace.vcd
+WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
+WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
 # ============================================================
 # 仿真模式选择：noblackbox 或 useblackbox
@@ -13,16 +14,21 @@ WAVE_FILE = $(CSRC_DIR)/raytrace.vcd
 #       noblackbox 模式使用 Chisel/SC 浮点实现 (useFloatIP = false)
 # ============================================================
 MODE ?= noblackbox
+ifneq ($(strip $(mode)),)
+	MODE := $(mode)
+endif
 
 ifeq ($(MODE),noblackbox)
   VERILOG_DIR := $(ROOT_DIR)/build/noblackbox
-  PLUSARGS :=
+	PLUSARGS := +RT_VCD_PATH=$(WAVE_FILE)
 else ifeq ($(MODE),useblackbox)
   VERILOG_DIR := $(ROOT_DIR)/build/useblackbox
   # vivado_mem 文件夹路径
   VIVADO_MEM_DIR := $(CSRC_DIR)/vivado_mem
-  PLUSARGS = +SDF_GLOBAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_global_mem.mem \
+	PLUSARGS = +RT_VCD_PATH=$(WAVE_FILE) \
+						 +SDF_GLOBAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_global_mem.mem \
              +SDF_LOCAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_local_mem.mem \
+             +SDF_LOCAL_MAPPING_FILE=$(VIVADO_MEM_DIR)/sdf_local_mapping.mem \
              +TRI_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_mem.mem \
              +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
              +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem \
@@ -42,11 +48,12 @@ TOP_MODULE = SimTop
 VERILOG_SRC = $(wildcard $(VERILOG_DIR)/*.sv)
 
 VCD2WLF = /opt/intelFPGA/20.1/modelsim_ase/bin/vcd2wlf
-WLF_FILE = $(CSRC_DIR)/raytrace.wlf
 
 # 自动搜集 C++ 源文件
 CPPS = $(CSRC_DIR)/main.cpp \
        $(wildcard $(CSRC_DIR)/src/utils/*.cpp)
+HEADERS = $(wildcard $(CSRC_DIR)/include/*.h) \
+	   $(wildcard $(CSRC_DIR)/src/utils/*.h)
 
 # 设置包含目录
 INC_FLAGS = -I$(CSRC_DIR)/include \
@@ -76,7 +83,7 @@ generate:
 	@echo "============================================"
 	cd $(ROOT_DIR) && sbt "runMain SimTopGen"
 
-$(TARGET): $(VERILOG_SRC) $(CPPS)
+$(TARGET): $(VERILOG_SRC) $(CPPS) $(HEADERS)
 	@echo "============================================"
 	@echo "编译 Verilator 仿真程序..."
 	@echo "  模式: $(MODE)"

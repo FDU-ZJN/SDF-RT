@@ -23,6 +23,15 @@ using namespace rt::config;
 uint64_t main_time = 0;
 
 int main(int argc, char** argv) {
+    std::string runtimeVcdPath = kVcdPath;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
+        if (arg.rfind(kVcdArgPrefix, 0) == 0) {
+            runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
+        }
+    }
+
     DebugOptions debugOptions;
     debugOptions.enableVcd = kEnableVcd;
     debugOptions.vcdWindowByPixel = kVcdWindowByPixel;
@@ -49,9 +58,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::cout << "Single-pixel debug enabled at ("
-                  << debugOptions.debugPixelX << ","
-                  << debugOptions.debugPixelY << ")"
-                  << (kDebugOnly ? " [debug-only]" : "") << std::endl;
+              << debugOptions.debugPixelX << ","
+              << debugOptions.debugPixelY << ")"
+              << (kDebugOnly ? " [debug-only]" : "") << std::endl;
     } else if (kDebugOnly) {
         std::cerr << "kDebugOnly requires kSinglePixelDebug" << std::endl;
         return 1;
@@ -176,7 +185,8 @@ int main(int argc, char** argv) {
 
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
-            if (kDebugOnly && (px != debugOptions.debugPixelX || py != debugOptions.debugPixelY)) {
+            if (debugOptions.singlePixelDebug &&
+                (px != debugOptions.debugPixelX || py != debugOptions.debugPixelY)) {
                 continue;
             }
             RayWorkItem item;
@@ -220,9 +230,12 @@ int main(int argc, char** argv) {
         std::cerr << "No work items generated." << std::endl;
         return 2;
     }
+    if (debugOptions.singlePixelDebug) {
+        std::cout << "Single-pixel workload generated: " << totalRays << " ray(s)." << std::endl;
+    }
 
     auto* dut = new VSimTop;
-    debug.attachTrace(dut, kVcdPath, 99);
+    debug.attachTrace(dut, runtimeVcdPath.c_str(), 99);
 
     dut->clock = 0;
     dut->reset = 1;

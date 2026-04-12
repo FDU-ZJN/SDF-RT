@@ -60,12 +60,11 @@ void export_triangle_mem(const std::string& filename, int numPEs) {
 
     const int triBatchSize = numPEs;
     const int floatsPerAddr = triBatchSize * 9; // 9 floats per triangle
-    int addr = 0;
-    
+
+    // Note: $readmemh fills multi-dimensional arrays using linear addressing.
+    // For triangle_mem[0:MAX-1][0:NUM_FLOATS-1], @1 means linear offset 1 (element [0][1]),
+    // NOT element [1][0]. So we omit @address and let $readmemh fill sequentially from 0.
     for (size_t baseIdx = 0; baseIdx < tri_store.size(); baseIdx += triBatchSize) {
-        out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
-            << addr << std::endl;
-        
         for (int lane = 0; lane < triBatchSize; ++lane) {
             const size_t triIdx = baseIdx + lane;
             if (triIdx >= tri_store.size()) {
@@ -83,17 +82,17 @@ void export_triangle_mem(const std::string& filename, int numPEs) {
                 
                 for (int f = 0; f < 9; ++f) {
                     out << u32ToHex(floatToRawU32(values[f]));
-                    out << (f == 8 ? "" : " ");
+                    out << " ";
                 }
             }
         }
         out << std::endl;
-        ++addr;
     }
 
     out.close();
-    std::cout << "[MemExport] Exported " << tri_store.size() 
-              << " triangles to " << filename << " (" << addr << " addresses)" << std::endl;
+    size_t totalAddrs = (tri_store.size() + triBatchSize - 1) / triBatchSize;
+    std::cout << "[MemExport] Exported " << tri_store.size()
+              << " triangles to " << filename << " (" << totalAddrs << " addresses)" << std::endl;
 }
 
 // Export BVH memory to .mem file
@@ -381,6 +380,7 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_bvh_mem(output_dir + "/bvh_mem.mem");
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
+    export_sdf_local_mapping(output_dir + "/sdf_local_mapping.mem");
     export_subgrid_meta_mem(output_dir + "/subgrid_meta_mem.mem");
     
     std::cout << "========== Memory Export Complete ==========\n" << std::endl;

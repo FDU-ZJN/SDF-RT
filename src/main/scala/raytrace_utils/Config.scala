@@ -123,11 +123,11 @@ object GlobalConfig {
   // ============================================================
   // Memory depths (MAX_ENTRIES equivalents)
   // ============================================================
-  val triMemDepth = 4096           // 2^12 triangle batches
-  val normalMemDepth = 65536       // 2^16 normals
-  val subgridMetaMemDepth = 65536  // 2^16 subgrid entries
+  val triMemDepth = 4096
+  val normalMemDepth = 16384
+  val subgridMetaMemDepth = 512
   val sdfGlobalMemDepth = 4096     // 2^12 global SDF entries
-  val sdfLocalMemDepth = 1048576   // 2^20 local SDF entries
+  val sdfLocalMemDepth = 65536   // 2^20 local SDF entries
   val bvhMemDepth = 65536          // 2^16 BVH nodes
 }
 case class FloatConfig(

@@ -90,6 +90,10 @@ extern std::vector<std::array<float, 3>> normals_compact;
 extern std::vector<uint32_t> triangles_compact_src_ids;
 extern size_t global_sdf_shape[3];
 extern size_t local_sdf_shape[4];
+
+// External declarations for SDF Local Mapping
+extern size_t num_cells;
+extern std::vector<int> local_sdf_keys_flat;
 extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_start_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_count_read(unsigned int global_idx, unsigned int local_idx);
@@ -101,6 +105,7 @@ void export_triangle_mem(const std::string& filename, int numPEs);
 void export_bvh_mem(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
+void export_sdf_local_mapping(const std::string& filename);
 void export_subgrid_meta_mem(const std::string& filename);
 void export_all_mems_for_vivado(const std::string& output_dir);
 

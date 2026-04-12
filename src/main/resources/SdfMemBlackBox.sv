@@ -15,18 +15,23 @@ module SdfMemResourceBB #(
   output logic [DATA_WIDTH-1:0]  data,
   output logic                   valid
 );
+  // Simplified memory storage for simulation
   localparam int MAX_GLOBAL_ENTRIES = 4096;  // 2^12
-  localparam int MAX_LOCAL_ENTRIES = 1048576; // 2^20
+  localparam int MAX_LOCAL_ENTRIES = 131072; // 1998 * 64 + padding = ~127872
+  localparam int MAX_MAPPING_ENTRIES = 4096; // Global SDF size
+  localparam int LOCAL_PER_CELL = 64; // 4*4*4
 
   reg [31:0] sdf_global_mem [0:MAX_GLOBAL_ENTRIES-1];
   reg [31:0] sdf_local_mem [0:MAX_LOCAL_ENTRIES-1];
+  reg [15:0] sdf_local_mapping [0:MAX_MAPPING_ENTRIES-1]; // [15]=valid, [10:0]=cell_idx
+
   reg global_mem_loaded = 1'b0;
   reg local_mem_loaded = 1'b0;
+  reg mapping_loaded = 1'b0;
 
   // Pipeline registers
-  logic [ADDR_WIDTH-1:0] gidx_pipe [1:0];
-  logic [ADDR_WIDTH-1:0] lidx_pipe [1:0];
-  logic                  vld_pipe [1:0];
+  logic [ADDR_WIDTH-1:0] gidx_pipe;
+  logic [ADDR_WIDTH-1:0] lidx_pipe;
 
   // Initialize global SDF memory from file
   initial begin
@@ -52,28 +57,21 @@ module SdfMemResourceBB #(
     end
   end
 
-  // Check if we should access local SDF (based on meta information)
-  // Simplified: assume local_idx bit 31 indicates local access
-  function logic is_local_access;
-    input logic [ADDR_WIDTH-1:0] gidx;
-    begin
-      // Simplified heuristic: if global index has bit 31 set, use local
-      is_local_access = gidx[31];
-    end
-  endfunction
-
-  // Pipeline stage 0: capture inputs
-  always_ff @(posedge clk) begin
-    if (reset) begin
-      gidx_pipe[0] <= '0;
-      lidx_pipe[0] <= '0;
-      vld_pipe[0] <= 1'b0;
+  // Initialize local mapping file
+  initial begin
+    string mem_file;
+    if ($value$plusargs("SDF_LOCAL_MAPPING_FILE=%s", mem_file)) begin
+      $display("[SdfMem] Loading local SDF mapping from %s", mem_file);
+      $readmemh(mem_file, sdf_local_mapping);
+      mapping_loaded = 1'b1;
     end else begin
-      gidx_pipe[0] <= globalIdx;
-      lidx_pipe[0] <= localIdx;
-      vld_pipe[0] <= en;
+      $display("[SdfMem] Warning: SDF_LOCAL_MAPPING_FILE not specified, using empty mapping");
     end
   end
+
+
+      assign gidx_pipe = globalIdx;
+      assign lidx_pipe = localIdx;
 
   // Pipeline stage 1: read from memory
   logic [31:0] data_s1;
@@ -84,21 +82,36 @@ module SdfMemResourceBB #(
       data_s1 <= '0;
       valid_s1 <= 1'b0;
     end else if (en) begin
-      // Simplified addressing logic
-      // In real hardware, this uses meta to determine local/global
-      // For simulation, we use a simple heuristic
-      if (global_mem_loaded && !is_local_access(gidx_pipe[0])) begin
-        if (gidx_pipe[0] < MAX_GLOBAL_ENTRIES) begin
-          data_s1 <= sdf_global_mem[gidx_pipe[0]];
+      // Read Mapping
+      logic [15:0] mapping_entry;
+      logic        has_local;
+      logic [10:0] cell_idx;
+      logic [31:0] local_linear_addr;
+
+      mapping_entry = mapping_loaded ? sdf_local_mapping[gidx_pipe[GLOBAL_ADDR_BITS-1:0]] : 16'h0;
+      has_local     = mapping_entry[15];
+      cell_idx      = mapping_entry[10:0];
+      // cell_idx: which 4x4x4 local cell this global SDF belongs to
+      // lidx_pipe[0]: linear index within the 4x4x4 subgrid (from Chisel SdfPE)
+      // final address = cell_idx * LOCAL_PER_CELL + local_linear_offset
+      /* verilator lint_off WIDTHTRUNC */
+      local_linear_addr = {21'h0, cell_idx} * LOCAL_PER_CELL + {26'h0, lidx_pipe};
+      /* verilator lint_on WIDTHTRUNC */
+
+      // Global access
+      if (global_mem_loaded && !has_local) begin
+        if (gidx_pipe < MAX_GLOBAL_ENTRIES) begin
+          data_s1 <= sdf_global_mem[gidx_pipe];
           valid_s1 <= 1'b1;
         end else begin
           data_s1 <= '0;
           valid_s1 <= 1'b0;
         end
-      end else if (local_mem_loaded && is_local_access(gidx_pipe[0])) begin
-        // Use localIdx for local SDF access
-        if (lidx_pipe[0] < MAX_LOCAL_ENTRIES) begin
-          data_s1 <= sdf_local_mem[lidx_pipe[0]];
+      end
+      // Local access
+      else if (local_mem_loaded && has_local) begin
+        if (local_linear_addr < MAX_LOCAL_ENTRIES) begin
+          data_s1 <= sdf_local_mem[local_linear_addr];
           valid_s1 <= 1'b1;
         end else begin
           data_s1 <= '0;

@@ -24,10 +24,14 @@ inline constexpr float kLocalActiveBand = 0.15f;
 
 inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
 inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
+#ifdef RT_VCD_PATH
+inline constexpr const char* kVcdPath = RT_VCD_PATH;
+#else
 inline constexpr const char* kVcdPath = "raytrace.vcd";
+#endif
 
 // Debug configuration (edit here directly, no CLI parsing).
-inline constexpr bool kEnableVcd = false;
+inline constexpr bool kEnableVcd = true;
 inline constexpr bool kVcdWindowByPixel = false;
 inline constexpr int kVcdStartPixelX = 150;
 inline constexpr int kVcdStartPixelY = 163;
@@ -39,10 +43,10 @@ inline constexpr int kStopPixelY = 163;
 inline constexpr bool kPrintMismatchId = false;
 inline constexpr bool kPrintDdaTrace = false;
 inline constexpr bool kPrintPerPixelTriId = false;
-inline constexpr bool kSinglePixelDebug = false;
+inline constexpr bool kSinglePixelDebug = true;
 inline constexpr int kDebugPixelX = 150;
 inline constexpr int kDebugPixelY = 163;
-inline constexpr bool kDebugOnly = false;
+inline constexpr bool kDebugOnly = true;
 inline constexpr bool kEnableSdfSanityCheck = false;
 inline constexpr bool kEnableProgressPrint = true;
 
