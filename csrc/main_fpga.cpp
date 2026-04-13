@@ -26,12 +26,27 @@ void tick(VFpgaTop* dut) {
     dut->clock = 0;
     dut->eval();
     main_time++;
+    if (tfp != nullptr) {
+        tfp->dump(main_time);
+    }
     dut->clock = 1;
     dut->eval();
     main_time++;
+    if (tfp != nullptr) {
+        tfp->dump(main_time);
+    }
 }
 
 int main(int argc, char** argv) {
+    std::string runtimeVcdPath = kVcdPath;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
+        if (arg.rfind(kVcdArgPrefix, 0) == 0) {
+            runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
+        }
+    }
+
     cout << "FPGA_TOP " << kWidth << "x" << kHeight << " frame rendering..." << endl;
     Verilated::commandArgs(argc, argv);
 
@@ -82,6 +97,12 @@ int main(int argc, char** argv) {
     auto* dut = new VFpgaTop;
 
     // Enable VCD waveform dump
+    if (kEnableVcd) {
+        Verilated::traceEverOn(true);
+        tfp = new VerilatedVcdC;
+        dut->trace(tfp, 99);
+        tfp->open(runtimeVcdPath.c_str());
+    }
 
     // Initialize signals
     dut->clock = 0;

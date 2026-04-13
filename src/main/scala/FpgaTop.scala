@@ -41,9 +41,9 @@ class FpgaTop(
   val rayDirCalc = Module(new RayDirCalc(c.cfg))
 
   val setupReg        = RegInit(false.B)
-  val setupOriginReg  = Reg(new Vec3(c.cfg))
-  val setupGridMinReg = Reg(new Vec3(c.cfg))
-  val setupGridMaxReg = Reg(new Vec3(c.cfg))
+  val setupOriginReg  = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
+  val setupGridMinReg = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
+  val setupGridMaxReg = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
 
   when(io.setup_valid && !setupReg) {
     setupOriginReg  := io.setup_origin
@@ -278,10 +278,10 @@ object FpgaTopGen extends App {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga"): Unit = {
+  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
     GlobalConfig.withUseBlackBox(true) {
-      GlobalConfig.withUseFloatIP(true) {
+      GlobalConfig.withUseFloatIP(withUseFloatIP) {
         emitVerilog(
           new FpgaTop(
             width = GlobalConfig.frameWidth,
@@ -292,9 +292,11 @@ object FpgaTopGen extends App {
         )
       }
     }
+
     stripFirrtlBbFileList(targetDir)
     println(s"FPGA_TOP generated in $targetDir")
   }
 
-  generateFpgaTopVerilog()
+  generateFpgaTopVerilog(targetDir = "build/vivado")
+  generateFpgaTopVerilog(withUseFloatIP = false)
 }

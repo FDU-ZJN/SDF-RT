@@ -7,8 +7,8 @@ object GlobalConfig {
   // ============================================================
   // FPGA top / frame config
   // ============================================================
-  val frameWidth = 400
-  val frameHeight = 400
+  val frameWidth = 10
+  val frameHeight = 10
   val pixelQueueDepth = 4
   val rayDirFifoDepth = 16
 

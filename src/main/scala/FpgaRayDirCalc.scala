@@ -59,6 +59,7 @@ class RayDirCalc(
 
   val twoFp    = f32(2.0f).U(cfg.totalWidth.W)
   val invHFp   = f32(1.0f / height.toFloat).U(cfg.totalWidth.W)
+  val negInvHFp = f32(-1.0f / height.toFloat).U(cfg.totalWidth.W)
   val negWFp   = f32((-width).toFloat).U(cfg.totalWidth.W)
   val negHFp   = f32((-height).toFloat).U(cfg.totalWidth.W)
   val neg1_8Fp = f32(-1.8f).U(cfg.totalWidth.W)
@@ -122,18 +123,11 @@ class RayDirCalc(
 
   val mulV = Module(new FMUL(cfg))
   mulV.io.a := subH.io.res
-  mulV.io.b := invHFp
+  mulV.io.b := negInvHFp
   mulV.io.rm := rm
 
-  // v = -((2y-h)/h) = -mulV.io.result
-  val negOneFp = f32(-1.0f).U(cfg.totalWidth.W)
-  val mulNegV = Module(new FMUL(cfg))
-  mulNegV.io.a := mulV.io.result
-  mulNegV.io.b := negOneFp
-  mulNegV.io.rm := rm
-
   val u = mulU.io.result  // available at cumulative 23
-  val v = mulNegV.io.result
+  val v = mulV.io.result
 
   // =========================================================================
   // S4: FMUL — u², v²  (latency +8, cumulative 31)
