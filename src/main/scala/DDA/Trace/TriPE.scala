@@ -18,6 +18,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val end_exec: Bool = Input(Bool())
 
     val mem_req: DecoupledIO[UInt] = Decoupled(UInt(c.addrWidth.W))
+    val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))  // per-lane valid mask
     val mem_resp: DecoupledIO[TriangleBlock] = Flipped(Decoupled(new TriangleBlock(c)))
 
     val start_ready: Bool = Output(Bool())
@@ -68,15 +69,34 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   private val shiftAmt: Int = log2Up(c.numPEs)
+  private val blockSize: Int = c.numPEs  // 4
+
+  // Align base_addr to block boundary (multiple of 4)
+  private val alignedBase: UInt = (current_batch.base_addr >> shiftAmt).asUInt << shiftAmt.U
+
+  // Calculate total blocks needed to cover [base_addr, base_addr + count)
+  private val lastTri: UInt = current_batch.base_addr + current_batch.count - 1.U
+  private val totalBlocks: UInt = ((lastTri >> shiftAmt).asUInt - (alignedBase >> shiftAmt).asUInt) + 1.U
+
+  // Calculate per-lane mask for current aligned address
+  // lane i corresponds to triangle: aligned_addr + i
+  // mask[i] = 1 iff base_addr <= (aligned_addr + i) < base_addr + count
+  private val alignedAddr: UInt = alignedBase + (block_offset << shiftAmt).asUInt
+  private val reqMask: UInt = {
+    val masks = (0 until c.numPEs).map { lane =>
+      val triIdx = alignedAddr + lane.U
+      (triIdx >= current_batch.base_addr) && (triIdx < current_batch.base_addr + current_batch.count)
+    }
+    Cat(masks.reverse)
+  }
 
   io.mem_req.valid := batch_active
-  io.mem_req.bits := current_batch.base_addr + (block_offset << shiftAmt).asUInt
+  io.mem_req.bits := alignedAddr
+  io.mem_req_mask.valid := batch_active
+  io.mem_req_mask.bits := reqMask
 
   when(io.mem_req.fire) {
     block_offset := block_offset + 1.U
-
-    val totalBlocks =
-      (current_batch.count + (c.numPEs - 1).U) / c.numPEs.U
 
     when(block_offset === totalBlocks - 1.U) {
       batch_active := false.B

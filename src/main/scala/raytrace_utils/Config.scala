@@ -5,6 +5,15 @@ import chisel3.util.log2Ceil
 
 object GlobalConfig {
   // ============================================================
+  // FPGA top / frame config
+  // ============================================================
+  val frameWidth = 400
+  val frameHeight = 400
+  val pixelQueueDepth = 16 
+  val rayDirFifoDepth = 32
+
+
+  // ============================================================
   // BlackBox vs DPI mode switch (memory modules)
   // ============================================================
   private var useBlackBoxState = false

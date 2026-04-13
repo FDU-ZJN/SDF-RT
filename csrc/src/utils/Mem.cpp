@@ -596,6 +596,7 @@ extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
         }
     }
 }
+
 extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
     if (data == nullptr) return;
     auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));

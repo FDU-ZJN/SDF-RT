@@ -4,27 +4,35 @@ ROOT_DIR := $(abspath $(CSRC_DIR)/..)
 WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
 WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
-# ============================================================
-# 仿真模式选择：noblackbox 或 useblackbox
-# 用法: make                   (默认，使用 build/noblackbox/)
-#       make MODE=noblackbox   (使用 Chisel 生成的纯 SV 代码，Verilator 仿真)
-#       make MODE=useblackbox  (使用 BlackBox + vivado_mem 文件，FPGA 仿真)
-#
-# 注意: useblackbox 模式启用浮点 IP 核 (useFloatIP = true)
-#       noblackbox 模式使用 Chisel/SC 浮点实现 (useFloatIP = false)
-# ============================================================
+
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
 	MODE := $(mode)
 endif
 
 ifeq ($(MODE),noblackbox)
-  VERILOG_DIR := $(ROOT_DIR)/build/noblackbox
+	VERILOG_DIR := $(ROOT_DIR)/build/noblackbox
+	TOP_MODULE := SimTop
+	CPP_MAIN := main.cpp
 	PLUSARGS := +RT_VCD_PATH=$(WAVE_FILE)
 else ifeq ($(MODE),useblackbox)
-  VERILOG_DIR := $(ROOT_DIR)/build/useblackbox
-  # vivado_mem 文件夹路径
-  VIVADO_MEM_DIR := $(CSRC_DIR)/vivado_mem
+	VERILOG_DIR := $(ROOT_DIR)/build/useblackbox
+	TOP_MODULE := SimTop
+	CPP_MAIN := main.cpp
+	VIVADO_MEM_DIR := $(CSRC_DIR)/vivado_mem
+	PLUSARGS = +RT_VCD_PATH=$(WAVE_FILE) \
+						 +SDF_GLOBAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_global_mem.mem \
+             +SDF_LOCAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_local_mem.mem \
+             +SDF_LOCAL_MAPPING_FILE=$(VIVADO_MEM_DIR)/sdf_local_mapping.mem \
+             +TRI_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_mem.mem \
+             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
+             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem \
+             +BVH_MEM_FILE=$(VIVADO_MEM_DIR)/bvh_mem.mem
+else ifeq ($(MODE),fpga)
+	VERILOG_DIR := $(ROOT_DIR)/build/fpga
+	TOP_MODULE := FpgaTop
+	CPP_MAIN := main_fpga.cpp
+	VIVADO_MEM_DIR := $(CSRC_DIR)/vivado_mem
 	PLUSARGS = +RT_VCD_PATH=$(WAVE_FILE) \
 						 +SDF_GLOBAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_global_mem.mem \
              +SDF_LOCAL_MEM_FILE=$(VIVADO_MEM_DIR)/sdf_local_mem.mem \
@@ -34,7 +42,7 @@ else ifeq ($(MODE),useblackbox)
              +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem \
              +BVH_MEM_FILE=$(VIVADO_MEM_DIR)/bvh_mem.mem
 else
-  $(error Unknown MODE "$(MODE)". Use "noblackbox" or "useblackbox")
+	$(error Unknown MODE "$(MODE)". Use "noblackbox", "useblackbox", or "fpga")
 endif
 
 # 构建目录和对象目录（各自独立）
@@ -42,7 +50,7 @@ BUILD_DIR := $(VERILOG_DIR)
 OBJ_DIR   := $(VERILOG_DIR)/obj_dir
 
 # 模块配置
-TOP_MODULE = SimTop
+TOP_MODULE ?= SimTop
 
 # 捕获对应目录下所有 .sv 文件
 VERILOG_SRC = $(wildcard $(VERILOG_DIR)/*.sv)
@@ -50,8 +58,21 @@ VERILOG_SRC = $(wildcard $(VERILOG_DIR)/*.sv)
 VCD2WLF = /opt/intelFPGA/20.1/modelsim_ase/bin/vcd2wlf
 
 # 自动搜集 C++ 源文件
-CPPS = $(CSRC_DIR)/main.cpp \
+# FPGA模式排除DebugHooks等不需要的文件
+ifeq ($(MODE),fpga)
+CPPS = $(CSRC_DIR)/$(CPP_MAIN) \
+       $(wildcard $(CSRC_DIR)/src/utils/BVH.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/Mem.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/MemExport.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/SDF.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/SimUtils.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/golden_model.cpp) \
+       $(wildcard $(CSRC_DIR)/src/utils/rsqrt_dpi.cpp)
+else
+CPPS = $(CSRC_DIR)/$(CPP_MAIN) \
        $(wildcard $(CSRC_DIR)/src/utils/*.cpp)
+endif
+
 HEADERS = $(wildcard $(CSRC_DIR)/include/*.h) \
 	   $(wildcard $(CSRC_DIR)/src/utils/*.h)
 
@@ -72,7 +93,7 @@ V_OPTS = --cc --trace --exe --build -j $(shell nproc) \
 # 目标程序路径（放在各自模式文件夹内）
 TARGET = $(VERILOG_DIR)/test_runner
 
-.PHONY: all clean run wave generate
+.PHONY: all clean run wave generate convert_vcd
 
 all: $(TARGET)
 
@@ -99,9 +120,10 @@ run: $(TARGET)
 	@echo "开始运行仿真..."
 	@echo "  模式: $(MODE)"
 	@echo "  源目录: $(VERILOG_DIR)"
+	@echo "  顶层模块: $(TOP_MODULE)"
 	@echo "============================================"
 ifneq ($(strip $(PLUSARGS)),)
-	@echo "  使用 vivado_mem 文件..."
+	@echo "  使用 plusargs 参数..."
 	@echo "  Plusargs: $(PLUSARGS)"
 	$(TARGET) $(PLUSARGS)
 else
@@ -111,6 +133,33 @@ endif
 	@if [ -f $(WAVE_FILE) ]; then \
 		echo "检测到 VCD 波形文件: $(WAVE_FILE)"; \
 		echo "可运行 'make wave' 查看波形"; \
+	fi
+	@$(MAKE) --no-print-directory convert_vcd MODE=$(MODE)
+
+convert_vcd:
+	@echo "开始遍历并转换 VCD -> WLF ..."
+	@if [ ! -x "$(VCD2WLF)" ]; then \
+		echo "警告: 未找到可执行的 vcd2wlf 工具: $(VCD2WLF)"; \
+		echo "跳过转换。"; \
+		exit 0; \
+	fi
+	@set -e; \
+	converted=0; \
+	for dir in "$(CSRC_DIR)" "$(VERILOG_DIR)"; do \
+		if [ -d "$$dir" ]; then \
+			for vcd in "$$dir"/*.vcd; do \
+				[ -e "$$vcd" ] || continue; \
+				wlf="$${vcd%.vcd}.wlf"; \
+				echo "转换: $$vcd -> $$wlf"; \
+				"$(VCD2WLF)" "$$vcd" "$$wlf"; \
+				converted=$$((converted + 1)); \
+			done; \
+		fi; \
+	done; \
+	if [ "$$converted" -eq 0 ]; then \
+		echo "未发现可转换的 .vcd 文件。"; \
+	else \
+		echo "转换完成，共 $$converted 个文件。"; \
 	fi
 
 wave:

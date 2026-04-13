@@ -6,17 +6,19 @@ import raytrace_utils._
 
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   val io = IO(new Bundle {
-    val req  = Flipped(Decoupled(UInt(GlobalConfig.triMemAddrWidth.W)))
-    val resp = Decoupled(new TriangleBlock(c))
+    val req      = Flipped(Decoupled(UInt(GlobalConfig.triMemAddrWidth.W)))
+    val req_mask = Flipped(Decoupled(UInt(c.numPEs.W)))
+    val resp     = Decoupled(new TriangleBlock(c))
   })
   val dpi_mem = Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency))
 
-  dpi_mem.io.clk   := clock
+  dpi_mem.io.clk := clock
   dpi_mem.io.reset := reset
-  io.req.ready := true.B
+  io.req.ready := dpi_mem.io.req_ready
+  io.req_mask.ready := dpi_mem.io.req_ready
   dpi_mem.io.addr := io.req.bits
-  dpi_mem.io.en   := io.req.valid
-
+  dpi_mem.io.req_valid := io.req.valid
+  dpi_mem.io.req_mask := io.req_mask.bits
 
   val block_data = Wire(new TriangleBlock(c))
   val bitsPerTri = 3 * 3 * c.cfg.totalWidth
@@ -34,7 +36,7 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
     block_data.tris(i).v2.y := triBits(255, 224)
     block_data.tris(i).v2.z := triBits(287, 256)
     block_data.tris(i).id := dpi_mem.io.addr_q + i.U(GlobalConfig.triMemAddrWidth.W)
-    block_data.mask(i) := dpi_mem.io.valid
+    block_data.mask(i) := dpi_mem.io.valid_mask(i)
   }
 
   io.resp.valid := dpi_mem.io.valid

@@ -179,4 +179,7 @@ object SimTopGen extends App {
   generateSimTopVerilog(useBlackBox = false, useFloatIP = false, "build/noblackbox")
   generateSimTopVerilog(useBlackBox = true,  useFloatIP = false,  "build/useblackbox")
   generateSimTopVerilog(useBlackBox = true,  useFloatIP = true,  "build/fpga_sim")
+  
+  // Generate FPGA_TOP for FPGA deployment
+  FpgaTopGen.generateFpgaTopVerilog("build/fpga")
 }

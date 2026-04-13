@@ -29,10 +29,6 @@ module SdfMemResourceBB #(
   reg local_mem_loaded = 1'b0;
   reg mapping_loaded = 1'b0;
 
-  // Pipeline registers
-  logic [ADDR_WIDTH-1:0] gidx_pipe;
-  logic [ADDR_WIDTH-1:0] lidx_pipe;
-
   // Initialize global SDF memory from file
   initial begin
     string mem_file;
@@ -69,46 +65,36 @@ module SdfMemResourceBB #(
     end
   end
 
-
-      assign gidx_pipe = globalIdx;
-      assign lidx_pipe = localIdx;
-
-  // Pipeline stage 1: read from memory
-  logic [31:0] data_s1;
-  logic        valid_s1;
+  // Pipeline stage 1: read memory and compute result
+  logic [DATA_WIDTH-1:0] data_s1;
+  logic                  valid_s1;
 
   always_ff @(posedge clk) begin
     if (reset) begin
       data_s1 <= '0;
       valid_s1 <= 1'b0;
     end else if (en) begin
-      // Read Mapping
       logic [15:0] mapping_entry;
       logic        has_local;
       logic [10:0] cell_idx;
       logic [31:0] local_linear_addr;
 
-      mapping_entry = mapping_loaded ? sdf_local_mapping[gidx_pipe[GLOBAL_ADDR_BITS-1:0]] : 16'h0;
+      mapping_entry = mapping_loaded ? sdf_local_mapping[globalIdx[GLOBAL_ADDR_BITS-1:0]] : 16'h0;
       has_local     = mapping_entry[15];
       cell_idx      = mapping_entry[10:0];
-      // cell_idx: which 4x4x4 local cell this global SDF belongs to
-      // lidx_pipe[0]: linear index within the 4x4x4 subgrid (from Chisel SdfPE)
-      // final address = cell_idx * LOCAL_PER_CELL + local_linear_offset
       /* verilator lint_off WIDTHTRUNC */
-      local_linear_addr = {21'h0, cell_idx} * LOCAL_PER_CELL + {26'h0, lidx_pipe};
+      local_linear_addr = {21'h0, cell_idx} * LOCAL_PER_CELL + {26'h0, localIdx};
       /* verilator lint_on WIDTHTRUNC */
 
-      // Global access
       if (global_mem_loaded && !has_local) begin
-        if (gidx_pipe < MAX_GLOBAL_ENTRIES) begin
-          data_s1 <= sdf_global_mem[gidx_pipe];
+        if (globalIdx < MAX_GLOBAL_ENTRIES) begin
+          data_s1 <= sdf_global_mem[globalIdx];
           valid_s1 <= 1'b1;
         end else begin
           data_s1 <= '0;
           valid_s1 <= 1'b0;
         end
       end
-      // Local access
       else if (local_mem_loaded && has_local) begin
         if (local_linear_addr < MAX_LOCAL_ENTRIES) begin
           data_s1 <= sdf_local_mem[local_linear_addr];
@@ -127,16 +113,22 @@ module SdfMemResourceBB #(
     end
   end
 
-  // Pipeline stage 2: output
+  // Pipeline stage 2: additional delay to match LATENCY parameter
+  logic [DATA_WIDTH-1:0] data_s2;
+  logic                  valid_s2;
+
   always_ff @(posedge clk) begin
     if (reset) begin
-      data <= '0;
-      valid <= 1'b0;
+      data_s2 <= '0;
+      valid_s2 <= 1'b0;
     end else begin
-      data <= data_s1[DATA_WIDTH-1:0];
-      valid <= valid_s1;
+      data_s2  <= data_s1;
+      valid_s2 <= valid_s1;
     end
   end
+
+  assign data  = data_s2;
+  assign valid = valid_s2;
 
 endmodule
 

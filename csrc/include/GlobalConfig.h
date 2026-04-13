@@ -4,9 +4,17 @@
 namespace rt {
 namespace config {
 
+// ============================================================
+// Simulation Mode Selection
+// ============================================================
+// MODE=noblackbox: Verilator simulation with SimTop (default)
+// MODE=useblackbox: Verilator with BlackBox memory + SimTop
+// MODE=fpga: FPGA simulation with FpgaTop (waits for frame_done)
+inline constexpr bool kFpgaMode = false;
+
 inline constexpr int kWidth = 400;
 inline constexpr int kHeight = 400;
-inline constexpr int kMaxWaitCycles = 10000;
+inline constexpr int kMaxWaitCycles = 10000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
 
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
@@ -31,7 +39,7 @@ inline constexpr const char* kVcdPath = "raytrace.vcd";
 #endif
 
 // Debug configuration (edit here directly, no CLI parsing).
-inline constexpr bool kEnableVcd = true;
+inline constexpr bool kEnableVcd = false;
 inline constexpr bool kVcdWindowByPixel = false;
 inline constexpr int kVcdStartPixelX = 150;
 inline constexpr int kVcdStartPixelY = 163;
@@ -43,10 +51,10 @@ inline constexpr int kStopPixelY = 163;
 inline constexpr bool kPrintMismatchId = false;
 inline constexpr bool kPrintDdaTrace = false;
 inline constexpr bool kPrintPerPixelTriId = false;
-inline constexpr bool kSinglePixelDebug = true;
+inline constexpr bool kSinglePixelDebug = false;
 inline constexpr int kDebugPixelX = 150;
 inline constexpr int kDebugPixelY = 163;
-inline constexpr bool kDebugOnly = true;
+inline constexpr bool kDebugOnly = false;
 inline constexpr bool kEnableSdfSanityCheck = false;
 inline constexpr bool kEnableProgressPrint = true;
 
