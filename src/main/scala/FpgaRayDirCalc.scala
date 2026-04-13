@@ -185,9 +185,9 @@ class RayDirCalc(
   //       u, v produced at t=23 must be delayed to t=74 (51 cycles)
   //       z is constant, delayed 74 cycles for alignment
   // =========================================================================
-  val uDelayed = ShiftRegister(u, invLenLatency - uvLatency)
-  val vDelayed = ShiftRegister(v, invLenLatency - uvLatency)
-  val zDelayed = ShiftRegister(neg1_8Fp, invLenLatency)
+  val uDelayed = PipeUtils.pipeData(u, invLenLatency - uvLatency)
+  val vDelayed = PipeUtils.pipeData(v, invLenLatency - uvLatency)
+  val zDelayed = PipeUtils.pipeData(neg1_8Fp, invLenLatency)
 
   val mulDirX = Module(new FMUL(cfg))
   mulDirX.io.a := uDelayed
@@ -216,9 +216,9 @@ class RayDirCalc(
   io.dir_z := mulDirZ.io.result
 
   // out_valid tracks in_valid through the pipeline
-  io.out_valid := ShiftRegister(io.in_valid, totalLatency)
+  io.out_valid := PipeUtils.pipeData(io.in_valid, totalLatency)
 
   // Pass through pixel coordinates with matching delay
-  io.out_pixel_x := ShiftRegister(io.pixel_x, totalLatency)
-  io.out_pixel_y := ShiftRegister(io.pixel_y, totalLatency)
+  io.out_pixel_x := PipeUtils.pipeData(io.pixel_x, totalLatency)
+  io.out_pixel_y := PipeUtils.pipeData(io.pixel_y, totalLatency)
 }

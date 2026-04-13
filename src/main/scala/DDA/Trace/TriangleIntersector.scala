@@ -64,7 +64,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val e2 = vecSub(v2, v0)
   val s  = vecSub(orig, v0)
 
-  val dir_d2 = ShiftRegister(dir, latADD)
+  val dir_d2 = PipeUtils.pipeData(dir, latADD)
 
   // ---------------- Stage B (T0+ADD -> T0+ADD+latCP) ----------------
   val cp_p = Module(new CrossProductUnit(cfg))
@@ -73,10 +73,10 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   cp_p.io.rm := rm
   val p = cp_p.io.res
 
-  val e1_d7  = ShiftRegister(e1, latCP)
-  val s_d7   = ShiftRegister(s, latCP)
-  val dir_d7 = ShiftRegister(dir_d2, latCP)
-  val e2_d7  = ShiftRegister(e2, latCP)
+  val e1_d7  = PipeUtils.pipeData(e1, latCP)
+  val s_d7   = PipeUtils.pipeData(s, latCP)
+  val dir_d7 = PipeUtils.pipeData(dir_d2, latCP)
+  val e2_d7  = PipeUtils.pipeData(e2, latCP)
 
   // ---------------- Stage C (T0+ADD+latCP -> T0+stageCLatency) ----------------
   val dp_det = Module(new DotProductUnit(cfg))
@@ -98,10 +98,10 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   cp_q.io.a := s_d7
   cp_q.io.b := e1_d7
   cp_q.io.rm := rm
-  val q_d14 = ShiftRegister(cp_q.io.res, latDP - latCP)
+  val q_d14 = PipeUtils.pipeData(cp_q.io.res, latDP - latCP)
 
-  val dir_d14 = ShiftRegister(dir_d7, latDP)
-  val e2_d14  = ShiftRegister(e2_d7, latDP)
+  val dir_d14 = PipeUtils.pipeData(dir_d7, latDP)
+  val e2_d14  = PipeUtils.pipeData(e2_d7, latDP)
 
   // ---------------- Stage D ----------------
   // Align division and dot-product branches with computed latency target
@@ -112,25 +112,25 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   // det(T0+stageCLatency) -> invDet(T0+stageCLatency+latDIV)
   val fdiv = Module(new FRQ(cfg))
   fdiv.io.in := det
-  fdiv.io.in_valid := ShiftRegister(io.in_valid, stageCLatency)
+  fdiv.io.in_valid := PipeUtils.pipeData(io.in_valid, stageCLatency)
 
-  val invDet_aligned = ShiftRegister(fdiv.io.result, stageDAlignLatency - latDIV)
+  val invDet_aligned = PipeUtils.pipeData(fdiv.io.result, stageDAlignLatency - latDIV)
 
   // u'(T0+stageCLatency) -> aligned to T0+stageCLatency+stageDAlignLatency
-  val u_prime_aligned = ShiftRegister(u_prime, stageDAlignLatency)
+  val u_prime_aligned = PipeUtils.pipeData(u_prime, stageDAlignLatency)
 
   // v' / t' paths naturally produce at T0+stageCLatency+latDP
   val dp_v_prime = Module(new DotProductUnit(cfg))
   dp_v_prime.io.a := dir_d14
   dp_v_prime.io.b := q_d14
   dp_v_prime.io.rm := rm
-  val v_prime_aligned = ShiftRegister(dp_v_prime.io.res, stageDAlignLatency - latDP)
+  val v_prime_aligned = PipeUtils.pipeData(dp_v_prime.io.res, stageDAlignLatency - latDP)
 
   val dp_t_prime = Module(new DotProductUnit(cfg))
   dp_t_prime.io.a := e2_d14
   dp_t_prime.io.b := q_d14
   dp_t_prime.io.rm := rm
-  val t_prime_aligned = ShiftRegister(dp_t_prime.io.res, stageDAlignLatency - latDP)
+  val t_prime_aligned = PipeUtils.pipeData(dp_t_prime.io.res, stageDAlignLatency - latDP)
 
   // ---------------- Stage E ----------------
   def finalMul(a: UInt, b: UInt): UInt = {
@@ -152,17 +152,17 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   uv_adder.io.rm := rm
   val uv_sum = uv_adder.io.res
 
-  val t_d26 = ShiftRegister(t_raw, latADD)
-  val u_d26 = ShiftRegister(u_raw, latADD)
-  val v_d26 = ShiftRegister(v_raw, latADD)
+  val t_d26 = PipeUtils.pipeData(t_raw, latADD)
+  val u_d26 = PipeUtils.pipeData(u_raw, latADD)
+  val v_d26 = PipeUtils.pipeData(v_raw, latADD)
 
   val preCmpLatency = stageCLatency + stageDAlignLatency + latMUL + latADD
-  val det_is_zero_pre_cmp = ShiftRegister(det_is_zero, preCmpLatency - stageCLatency)
+  val det_is_zero_pre_cmp = PipeUtils.pipeData(det_is_zero, preCmpLatency - stageCLatency)
 
   // 总延迟包含最终 uv 比较路径。
   val totalLatency = preCmpLatency + cfg.fcmpLatency
-  val out_valid_final = ShiftRegister(io.in_valid, totalLatency)
-  io.id:=ShiftRegister(io.tri.id, totalLatency)
+  val out_valid_final = PipeUtils.pipeData(io.in_valid, totalLatency)
+  io.id:=PipeUtils.pipeData(io.tri.id, totalLatency)
   io.out_valid := out_valid_final
 
   // ---------------- Hit 判断 ----------------
@@ -175,12 +175,12 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     fcmp_uv.io.b := fp_one
     fcmp_uv.io.signaling := false.B
     val uv_le_one = fcmp_uv.io.le
-  val det_is_zero_final = ShiftRegister(det_is_zero_pre_cmp, cfg.fcmpLatency)
-  val u_pos_final = ShiftRegister(u_pos, cfg.fcmpLatency)
-  val v_pos_final = ShiftRegister(v_pos, cfg.fcmpLatency)
-  val t_final = ShiftRegister(t_d26, cfg.fcmpLatency)
-  val u_final = ShiftRegister(u_d26, cfg.fcmpLatency)
-  val v_final = ShiftRegister(v_d26, cfg.fcmpLatency)
+  val det_is_zero_final = PipeUtils.pipeData(det_is_zero_pre_cmp, cfg.fcmpLatency)
+  val u_pos_final = PipeUtils.pipeData(u_pos, cfg.fcmpLatency)
+  val v_pos_final = PipeUtils.pipeData(v_pos, cfg.fcmpLatency)
+  val t_final = PipeUtils.pipeData(t_d26, cfg.fcmpLatency)
+  val u_final = PipeUtils.pipeData(u_d26, cfg.fcmpLatency)
+  val v_final = PipeUtils.pipeData(v_d26, cfg.fcmpLatency)
 
   io.hit := out_valid_final && !det_is_zero_final && u_pos_final && v_pos_final && uv_le_one
 

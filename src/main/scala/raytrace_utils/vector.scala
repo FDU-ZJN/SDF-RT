@@ -5,24 +5,26 @@ import raytrace_utils.fudian._
 
 // Global pipe utility functions with explicit initialization values
 object PipeUtils {
-  def pipeUInt(x: UInt, n: Int, init: UInt = 0.U): UInt = {
+  def pipeData[T <: Data](x: T, n: Int): T = {
     if (n > 0) {
-      val reg = ShiftRegister(x, n)
-      // Note: initialization is handled at declaration site
-      reg
+      var stage = x
+      for (_ <- 0 until n) {
+        val reg = RegInit(0.U.asTypeOf(chiselTypeOf(x)))
+        reg := stage
+        stage = reg
+      }
+      stage
     } else x
+  }
+
+  def pipeUInt(x: UInt, n: Int, init: UInt = 0.U): UInt = {
+    pipeData(x, n)
   }
   def pipeBool(x: Bool, n: Int, init: Bool = false.B): Bool = {
-    if (n > 0) {
-      val reg = ShiftRegister(x, n)
-      reg
-    } else x
+    pipeData(x, n)
   }
   def pipeSInt(x: SInt, n: Int, init: SInt = 0.S): SInt = {
-    if (n > 0) {
-      val reg = ShiftRegister(x, n)
-      reg
-    } else x
+    pipeData(x, n)
   }
 }
 
@@ -51,8 +53,8 @@ class DotProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   add_xy.io.rm := io.rm
 
   // 3. 路径对齐：Z 的乘法结果需要多等 2 拍，直到 xy 加法完成
-  val mul_z_delayed = ShiftRegister(mul_z.io.result, cfg.faddLatency)
-  val flags_z_delayed = ShiftRegister(mul_z.io.fflags, cfg.faddLatency)
+  val mul_z_delayed = PipeUtils.pipeData(mul_z.io.result, cfg.faddLatency)
+  val flags_z_delayed = PipeUtils.pipeData(mul_z.io.fflags, cfg.faddLatency)
 
   // 4. 第二层加法 (Stage 6-7: 2 拍)
   val add_final = Module(new FADD(cfg))

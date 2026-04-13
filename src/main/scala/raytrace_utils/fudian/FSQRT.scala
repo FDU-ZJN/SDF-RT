@@ -2,7 +2,7 @@ package raytrace_utils.fudian
 
 import chisel3._
 import chisel3.util._
-import raytrace_utils.FloatConfig
+import raytrace_utils._
 
 
 class FSQRT(cfg: FloatConfig = FloatConfig.FP32) extends Module {
@@ -24,7 +24,7 @@ class FSQRT(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   } else {
     val rsqrtSim = Module(new RsqrtSimBlackBox(expWidth, precision))
     rsqrtSim.io.a := io.in
-    io.out := ShiftRegister(rsqrtSim.io.result, cfg.fsqrtLatency)
+    io.out := PipeUtils.pipeData(rsqrtSim.io.result, cfg.fsqrtLatency)
   }
 }
 

@@ -175,9 +175,9 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   to_fadd_comb.inter_flags.isInf    := hasInf && !nan_result
   to_fadd_comb.inter_flags.isNaN    := nan_result
   to_fadd_comb.inter_flags.overflow := exp_pre_round > Fill(expWidth, 1.U(1.W))
-    io.result  := ShiftRegister(final_result_comb, cfg.fmulLatency)
-    io.fflags  := ShiftRegister(final_fflags_comb, cfg.fmulLatency)
-    io.to_fadd := ShiftRegister(to_fadd_comb, cfg.fmulLatency)
+    io.result  := PipeUtils.pipeData(final_result_comb, cfg.fmulLatency)
+    io.fflags  := PipeUtils.pipeData(final_fflags_comb, cfg.fmulLatency)
+    io.to_fadd := PipeUtils.pipeData(to_fadd_comb, cfg.fmulLatency)
   }
 }
 

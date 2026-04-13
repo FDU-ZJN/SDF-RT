@@ -60,7 +60,7 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val fullSubResYfp = java.lang.Float.floatToRawIntBits((peCfg.DDAGlobalRes * peCfg.SubRes).toFloat)
   val fullSubResZfp = java.lang.Float.floatToRawIntBits((peCfg.DDAGlobalRes * peCfg.SubRes).toFloat)
 
-  val divStart = ShiftRegister(io.setup_valid, cfg.faddLatency)
+  val divStart = PipeUtils.pipeData(io.setup_valid, cfg.faddLatency)
 
   divX.io.in := spanXSub.io.res
   divY.io.in := spanYSub.io.res
@@ -97,7 +97,7 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   mulSubResY.io.rm := RNE
   mulSubResZ.io.rm := RNE
 
-  val mulDone = ShiftRegister(divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid, cfg.fmulLatency)
+  val mulDone = PipeUtils.pipeData(divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid, cfg.fmulLatency)
 
   when(io.setup_valid) {
     originReg := io.setup_origin

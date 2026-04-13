@@ -64,8 +64,8 @@ class BvhPE(val c: BvhPeConfig) extends Module {
   io.node_resp.ready := true.B
 
   // 将节点上下文和有效位与 AABB 结果对齐（同步延迟流水线）
-  val nodeCtxPipe  = ShiftRegister(io.node_resp.bits, aabbLatency)
-  val nodeCtxValid = ShiftRegister(io.node_resp.fire, aabbLatency)
+  val nodeCtxPipe  = PipeUtils.pipeData(io.node_resp.bits, aabbLatency)
+  val nodeCtxValid = PipeUtils.pipeData(io.node_resp.fire, aabbLatency)
 
 
   // ── 启动逻辑 ────────────────────────────────────────────────────────────────

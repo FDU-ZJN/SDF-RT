@@ -67,7 +67,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   def neg(x: UInt): UInt = Cat(!x(c.cfg.totalWidth - 1), x(c.cfg.totalWidth - 2, 0))
 
   def sampleThenDelay(x: UInt, en: Bool, latency: Int): UInt = {
-    val sampled = RegInit(0.U(x.getWidth.W))
+    val sampled = RegInit(0.U(c.cfg.totalWidth.W))
     when(en) {
       sampled := x
     }

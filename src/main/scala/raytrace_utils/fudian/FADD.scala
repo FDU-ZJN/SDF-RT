@@ -404,8 +404,8 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     module.io.rm := io.rm
     module.io.b_inter_valid := false.B
     module.io.b_inter_flags := DontCare
-    io.res := ShiftRegister(module.io.result, cfg.faddLatency)
-    io.fflags := ShiftRegister(module.io.fflags, cfg.faddLatency)
+    io.res := PipeUtils.pipeData(module.io.result, cfg.faddLatency)
+    io.fflags := PipeUtils.pipeData(module.io.fflags, cfg.faddLatency)
   }
 }
 

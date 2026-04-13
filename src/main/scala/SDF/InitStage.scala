@@ -36,30 +36,30 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   val inFire = io.in.fire
   aabb.io.in_valid := inFire
 
-  val rdXAtAabb = ShiftRegister(io.in.bits.rd.x, aabbLatency)
-  val rdYAtAabb = ShiftRegister(io.in.bits.rd.y, aabbLatency)
-  val rdZAtAabb = ShiftRegister(io.in.bits.rd.z, aabbLatency)
+  val rdXAtAabb = PipeUtils.pipeData(io.in.bits.rd.x, aabbLatency)
+  val rdYAtAabb = PipeUtils.pipeData(io.in.bits.rd.y, aabbLatency)
+  val rdZAtAabb = PipeUtils.pipeData(io.in.bits.rd.z, aabbLatency)
 
-  val roXAtAabb = ShiftRegister(io.setup_origin.x, aabbLatency)
-  val roYAtAabb = ShiftRegister(io.setup_origin.y, aabbLatency)
-  val roZAtAabb = ShiftRegister(io.setup_origin.z, aabbLatency)
+  val roXAtAabb = PipeUtils.pipeData(io.setup_origin.x, aabbLatency)
+  val roYAtAabb = PipeUtils.pipeData(io.setup_origin.y, aabbLatency)
+  val roZAtAabb = PipeUtils.pipeData(io.setup_origin.z, aabbLatency)
 
-  val slotAtAabb = ShiftRegister(io.in.bits.meta.slotId, aabbLatency)
+  val slotAtAabb = PipeUtils.pipeData(io.in.bits.meta.slotId, aabbLatency)
 
   val tEntry = Module(new FADD(cfg))
   tEntry.io.a := aabb.io.tNear
   tEntry.io.b := entryAdvanceBits
   tEntry.io.rm := rm
 
-  val rdXAtEntry = ShiftRegister(rdXAtAabb, entryLatency)
-  val rdYAtEntry = ShiftRegister(rdYAtAabb, entryLatency)
-  val rdZAtEntry = ShiftRegister(rdZAtAabb, entryLatency)
+  val rdXAtEntry = PipeUtils.pipeData(rdXAtAabb, entryLatency)
+  val rdYAtEntry = PipeUtils.pipeData(rdYAtAabb, entryLatency)
+  val rdZAtEntry = PipeUtils.pipeData(rdZAtAabb, entryLatency)
 
-  val roXAtEntry = ShiftRegister(roXAtAabb, entryLatency)
-  val roYAtEntry = ShiftRegister(roYAtAabb, entryLatency)
-  val roZAtEntry = ShiftRegister(roZAtAabb, entryLatency)
+  val roXAtEntry = PipeUtils.pipeData(roXAtAabb, entryLatency)
+  val roYAtEntry = PipeUtils.pipeData(roYAtAabb, entryLatency)
+  val roZAtEntry = PipeUtils.pipeData(roZAtAabb, entryLatency)
 
-  val slotAtEntry = ShiftRegister(slotAtAabb, entryLatency)
+  val slotAtEntry = PipeUtils.pipeData(slotAtAabb, entryLatency)
 
   val mulX = Module(new FMUL(cfg))
   val mulY = Module(new FMUL(cfg))
@@ -90,12 +90,12 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   addZ.io.rm := rm
 
   val outAlignLatency = entryLatency + pointLatency
-  val outValid = ShiftRegister(aabb.io.out_valid, outAlignLatency)
-  val outHit = ShiftRegister(aabb.io.hit, outAlignLatency)
-  val outSlot = ShiftRegister(slotAtEntry, pointLatency)
-  val outRdX = ShiftRegister(rdXAtEntry, pointLatency)
-  val outRdY = ShiftRegister(rdYAtEntry, pointLatency)
-  val outRdZ = ShiftRegister(rdZAtEntry, pointLatency)
+  val outValid = PipeUtils.pipeData(aabb.io.out_valid, outAlignLatency)
+  val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
+  val outSlot = PipeUtils.pipeData(slotAtEntry, pointLatency)
+  val outRdX = PipeUtils.pipeData(rdXAtEntry, pointLatency)
+  val outRdY = PipeUtils.pipeData(rdYAtEntry, pointLatency)
+  val outRdZ = PipeUtils.pipeData(rdZAtEntry, pointLatency)
 
   io.to_sdf.valid := outValid && outHit
   io.to_sdf.bits.ray.origin.x := addX.io.res

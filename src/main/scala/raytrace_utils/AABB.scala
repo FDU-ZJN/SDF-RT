@@ -59,8 +59,8 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     subMax.io.b := neg(origs(i))
     subMax.io.rm := rm
 
-    val subMinAligned = ShiftRegister(subMin.io.res, cfg.fdivLatency)
-    val subMaxAligned = ShiftRegister(subMax.io.res, cfg.fdivLatency)
+    val subMinAligned = PipeUtils.pipeData(subMin.io.res, cfg.fdivLatency)
+    val subMaxAligned = PipeUtils.pipeData(subMax.io.res, cfg.fdivLatency)
 
     val mul0 = Module(new FMUL(cfg))
     mul0.io.a := subMinAligned
@@ -109,8 +109,8 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val far01Cmp = pipeUInt(farS0(1), cfg.fcmpLatency)
   val tMax01 = RegNext(Mux(far01Le, far00Cmp, far01Cmp), 0.U)
 
-  val near2S1 = ShiftRegister(RegNext(nearS0(2), 0.U), cfg.fcmpLatency)
-  val far2S1  = ShiftRegister(RegNext(farS0(2),  0.U), cfg.fcmpLatency)
+  val near2S1 = PipeUtils.pipeData(RegNext(nearS0(2), 0.U), cfg.fcmpLatency)
+  val far2S1  = PipeUtils.pipeData(RegNext(farS0(2),  0.U), cfg.fcmpLatency)
 
   // Reduction level 2: tMin=max(tMin01,near2), tMax=min(tMax01,far2)
   val cmpNear012 = Module(new FCMP(cfg))
@@ -162,5 +162,5 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   io.hit := RegNext(hitComb, false.B)
 
   val totalLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
-  io.out_valid := ShiftRegister(io.in_valid, totalLatency)
+  io.out_valid := PipeUtils.pipeData(io.in_valid, totalLatency)
 }

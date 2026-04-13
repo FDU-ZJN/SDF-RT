@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils.FloatConfig
 import raytrace_utils.GlobalConfig
+import raytrace_utils.PipeUtils
 import raytrace_utils.fudian.utils.ShiftRightJam
 
 /**
@@ -126,8 +127,8 @@ class FPToInt(
     )
     val fflagsRaw = Cat(iv, false.B, false.B, false.B, ix)
 
-    io.result := ShiftRegister(resultRaw, latency)
-    io.fflags := ShiftRegister(fflagsRaw, latency)
+    io.result := PipeUtils.pipeData(resultRaw, latency)
+    io.fflags := PipeUtils.pipeData(fflagsRaw, latency)
   }
 
 }

@@ -38,7 +38,7 @@ class RenderPE(cfg: FloatConfig) extends Module {
   cmpDot.io.a := dotUnit.io.res
   cmpDot.io.b := val_0_0
   cmpDot.io.signaling:=false.B
-  val dotAligned = ShiftRegister(dotUnit.io.res, cfg.fcmpLatency)
+  val dotAligned = PipeUtils.pipeData(dotUnit.io.res, cfg.fcmpLatency)
   val diff = Mux(cmpDot.io.lt, val_0_0, dotAligned)
 
   // 3. Add Ambient: (diff + 0.15)
@@ -61,17 +61,17 @@ class RenderPE(cfg: FloatConfig) extends Module {
     cmpMax.io.a := val_1_0
     cmpMax.io.b := mul.io.result
     cmpMax.io.signaling:= false.B
-    val mulAligned = ShiftRegister(mul.io.result, cfg.fcmpLatency)
+    val mulAligned = PipeUtils.pipeData(mul.io.result, cfg.fcmpLatency)
     Mux(cmpMax.io.lt, val_1_0, mulAligned)
   }
 
   // --- 阶段 3: 流水线同步 ---
   // 总延迟 = 点积前比较 + 点积 + 加法 + 乘法后比较
   val totalLatency = cfg.fcmpLatency + cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fcmpLatency
-  val hit_sync = ShiftRegister(io.in_hit, totalLatency)
-  val valid_sync = ShiftRegister(io.in_valid, totalLatency)
-  val id_sync = ShiftRegister(io.hit_id, totalLatency)
-  val meta_sync = ShiftRegister(io.in_meta, totalLatency)
+  val hit_sync = PipeUtils.pipeData(io.in_hit, totalLatency)
+  val valid_sync = PipeUtils.pipeData(io.in_valid, totalLatency)
+  val id_sync = PipeUtils.pipeData(io.hit_id, totalLatency)
+  val meta_sync = PipeUtils.pipeData(io.in_meta, totalLatency)
 
   io.out_result.meta := meta_sync
   io.out_result.hit := hit_sync

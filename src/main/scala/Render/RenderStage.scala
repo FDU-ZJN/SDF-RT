@@ -21,9 +21,9 @@ class RenderStage(cfg: FloatConfig) extends Module {
   val zeroNormal = 0.U.asTypeOf(new Vec3(cfg))
 
   val inFire = io.in.fire
-  val launchHit = ShiftRegister(io.in.bits.hit, memLatency)
-  val launchId = ShiftRegister(io.in.bits.hitId, memLatency)
-  val launchMeta = ShiftRegister(io.in.bits.meta, memLatency)
+  val launchHit = PipeUtils.pipeData(io.in.bits.hit, memLatency)
+  val launchId = PipeUtils.pipeData(io.in.bits.hitId, memLatency)
+  val launchMeta = PipeUtils.pipeData(io.in.bits.meta, memLatency)
 
   // Request only when input is accepted, so control/data timing stays cycle-aligned.
   mem.io.addr := Mux(io.in.bits.hit, io.in.bits.hitId, 0.U)

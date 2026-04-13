@@ -3,6 +3,7 @@ package raytrace_utils.fudian
 import chisel3._
 import chisel3.util._
 import raytrace_utils.FloatConfig
+import raytrace_utils.PipeUtils
 class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val expWidth=cfg.expWidth
   val precision=cfg.precision
@@ -57,10 +58,10 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     )
     val fflagsRaw = Cat(invalid, 0.U(4.W))
 
-    io.eq := ShiftRegister(eqRaw, cfg.fcmpLatency)
-    io.le := ShiftRegister(leRaw, cfg.fcmpLatency)
-    io.lt := ShiftRegister(ltRaw, cfg.fcmpLatency)
-    io.fflags := ShiftRegister(fflagsRaw, cfg.fcmpLatency)
+    io.eq := PipeUtils.pipeData(eqRaw, cfg.fcmpLatency)
+    io.le := PipeUtils.pipeData(leRaw, cfg.fcmpLatency)
+    io.lt := PipeUtils.pipeData(ltRaw, cfg.fcmpLatency)
+    io.fflags := PipeUtils.pipeData(fflagsRaw, cfg.fcmpLatency)
   }
 }
 
