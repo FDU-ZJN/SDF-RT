@@ -48,11 +48,9 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   spanZSub.io.rm := RNE
 
   // inv_span(axis) = 1 / span(axis)
-  val divX = Module(new FDIV(cfg))
-  val divY = Module(new FDIV(cfg))
-  val divZ = Module(new FDIV(cfg))
-
-  val fullOne = BigInt(0x3F800000L).U(cfg.totalWidth.W) // 1.0f
+  val divX = Module(new FRQ(cfg))
+  val divY = Module(new FRQ(cfg))
+  val divZ = Module(new FRQ(cfg))
 
   val fullResXfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.LocalResX).toFloat)
   val fullResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.LocalResY).toFloat)
@@ -64,12 +62,9 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
 
   val divStart = ShiftRegister(io.setup_valid, cfg.faddLatency)
 
-  divX.io.a := fullOne
-  divY.io.a := fullOne
-  divZ.io.a := fullOne
-  divX.io.b := spanXSub.io.res
-  divY.io.b := spanYSub.io.res
-  divZ.io.b := spanZSub.io.res
+  divX.io.in := spanXSub.io.res
+  divY.io.in := spanYSub.io.res
+  divZ.io.in := spanZSub.io.res
   divX.io.in_valid := divStart
   divY.io.in_valid := divStart
   divZ.io.in_valid := divStart

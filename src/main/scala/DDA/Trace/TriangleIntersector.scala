@@ -110,9 +110,8 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val stageDAlignLatency = math.max(latDIV, latDP)
 
   // det(T0+stageCLatency) -> invDet(T0+stageCLatency+latDIV)
-  val fdiv = Module(new FDIV(cfg))
-  fdiv.io.a := cfg.oneBigInt.U(cfg.totalWidth.W)
-  fdiv.io.b := det
+  val fdiv = Module(new FRQ(cfg))
+  fdiv.io.in := det
   fdiv.io.in_valid := ShiftRegister(io.in_valid, stageCLatency)
 
   val invDet_aligned = ShiftRegister(fdiv.io.result, stageDAlignLatency - latDIV)

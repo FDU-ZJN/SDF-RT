@@ -44,9 +44,8 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     addDirEps.io.rm := rm
     dirPlusEps(i) := addDirEps.io.res
 
-    val div = Module(new FDIV(cfg))
-    div.io.a := fpOne
-    div.io.b := dirPlusEps(i)
+    val div = Module(new FRQ(cfg))
+    div.io.in := dirPlusEps(i)
     div.io.in_valid := io.in_valid
     invDir(i) := div.io.result
 

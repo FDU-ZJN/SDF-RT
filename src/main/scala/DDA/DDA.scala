@@ -259,17 +259,14 @@ class DDA(
   val denomY = Mux(cmpEpsYLe, fpEps, absDsdtYAligned)
   val denomZ = Mux(cmpEpsZLe, fpEps, absDsdtZAligned)
 
-  val deltaDivX = Module(new FDIV(cfg))
-  val deltaDivY = Module(new FDIV(cfg))
-  val deltaDivZ = Module(new FDIV(cfg))
-  deltaDivX.io.a := fpOne
-  deltaDivX.io.b := denomX
+  val deltaDivX = Module(new FRQ(cfg))
+  val deltaDivY = Module(new FRQ(cfg))
+  val deltaDivZ = Module(new FRQ(cfg))
+  deltaDivX.io.in := denomX
   deltaDivX.io.in_valid := true.B
-  deltaDivY.io.a := fpOne
-  deltaDivY.io.b := denomY
+  deltaDivY.io.in := denomY
   deltaDivY.io.in_valid := true.B
-  deltaDivZ.io.a := fpOne
-  deltaDivZ.io.b := denomZ
+  deltaDivZ.io.in := denomZ
   deltaDivZ.io.in_valid := true.B
 
   val distToMulX = alignToTarget(distX, ddaDistLatency, ddaAlignLatency)
