@@ -32,7 +32,7 @@ class FPToInt(
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a
     bb.io.s_axis_a_tvalid := true.B
-    io.result := bb.io.m_axis_result_tdata
+    io.result := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U(64.W))
     io.fflags := 0.U
   } else {
     val is_signed_int = io.op(0)

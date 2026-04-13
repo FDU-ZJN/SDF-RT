@@ -395,7 +395,7 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_b_tdata := io.b
     bb.io.s_axis_a_tvalid := true.B
     bb.io.s_axis_b_tvalid := true.B
-    io.res := bb.io.m_axis_result_tdata
+    io.res := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U(cfg.totalWidth.W))
     io.fflags := 0.U // BlackBox 不提供 fflags 输出，这里暂时返回 0
   } else {
     val module = Module(new FCMA_ADD(cfg.expWidth, cfg.precision, cfg.precision))

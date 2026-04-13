@@ -35,7 +35,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_a_tvalid := true.B
     bb.io.s_axis_b_tvalid := true.B
 
-    io.result := bb.io.m_axis_result_tdata
+    io.result := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U((expWidth + precision).W))
     io.fflags := 0.U
     io.to_fadd := 0.U.asTypeOf(new FMULToFADD(expWidth, precision))
   } else {

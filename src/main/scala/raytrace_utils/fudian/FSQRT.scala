@@ -20,7 +20,7 @@ class FSQRT(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.in
     bb.io.s_axis_a_tvalid := true.B
-    io.out := bb.io.m_axis_result_tdata
+    io.out := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U(totalWidth.W))
   } else {
     val rsqrtSim = Module(new RsqrtSimBlackBox(expWidth, precision))
     rsqrtSim.io.a := io.in
