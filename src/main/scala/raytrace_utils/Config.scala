@@ -9,8 +9,8 @@ object GlobalConfig {
   // ============================================================
   val frameWidth = 400
   val frameHeight = 400
-  val pixelQueueDepth = 16 
-  val rayDirFifoDepth = 32
+  val pixelQueueDepth = 4
+  val rayDirFifoDepth = 16
 
 
   // ============================================================
@@ -41,7 +41,7 @@ object GlobalConfig {
   // ============================================================
   // Queue depths (centralized)
   // ============================================================
-  val commitQueueDepth = 16
+  val commitQueueDepth = 32
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 16
@@ -49,7 +49,7 @@ object GlobalConfig {
   val sdfRetryQueueDepth = 16
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 16
-  val simSdfHitQueueDepth = 16
+  val simSdfHitQueueDepth = 32
 
   // Unused / reserved for future
   val bvhReqQueueDepth = 16
@@ -117,17 +117,17 @@ object GlobalConfig {
   // ============================================================
   // SDF PE algorithm parameters
   // ============================================================
-  val sdfMaxSteps = 128
-  val sdfThreshold1 = 0.02f
-  val sdfThreshold2 = 0.04f
-  val sdfThreshold3 = 0.08f
-  val sdfStepScale = 0.8f
+  val sdfMaxSteps = 64
+  val sdfThreshold1 = 0.01f
+  val sdfThreshold2 = 0.02f
+  val sdfThreshold3 = 0.04f
+  val sdfStepScale = 0.7f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f
   val sdfHitBackoffN = 1
 
   // DDA parameters
-  val ddaMaxSteps = 16
+  val ddaMaxSteps = 8
 
   // ============================================================
   // Memory depths (MAX_ENTRIES equivalents)

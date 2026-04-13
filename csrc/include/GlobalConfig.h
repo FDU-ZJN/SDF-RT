@@ -14,7 +14,7 @@ inline constexpr bool kFpgaMode = false;
 
 inline constexpr int kWidth = 400;
 inline constexpr int kHeight = 400;
-inline constexpr int kMaxWaitCycles = 10000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
+inline constexpr int kMaxWaitCycles = 30000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
 
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
