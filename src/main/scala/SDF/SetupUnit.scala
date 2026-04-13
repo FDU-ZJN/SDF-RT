@@ -47,15 +47,12 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   spanZSub.io.b := neg(io.setup_grid_min.z)
   spanZSub.io.rm := RNE
 
-  // inv_voxel(axis) = (GlobalRes*LocalRes) / span(axis)
+  // inv_span(axis) = 1 / span(axis)
   val divX = Module(new FDIV(cfg))
   val divY = Module(new FDIV(cfg))
   val divZ = Module(new FDIV(cfg))
 
-  // inv_sub_voxel(axis) = (GlobalRes*SubRes) / span(axis)
-  val subDivX = Module(new FDIV(cfg))
-  val subDivY = Module(new FDIV(cfg))
-  val subDivZ = Module(new FDIV(cfg))
+  val fullOne = BigInt(0x3F800000L).U(cfg.totalWidth.W) // 1.0f
 
   val fullResXfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.LocalResX).toFloat)
   val fullResYfp = java.lang.Float.floatToRawIntBits((peCfg.GlobalResY * peCfg.LocalResY).toFloat)
@@ -67,9 +64,9 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
 
   val divStart = ShiftRegister(io.setup_valid, cfg.faddLatency)
 
-  divX.io.a := BigInt(fullResXfp & 0xffffffffL).U(cfg.totalWidth.W)
-  divY.io.a := BigInt(fullResYfp & 0xffffffffL).U(cfg.totalWidth.W)
-  divZ.io.a := BigInt(fullResZfp & 0xffffffffL).U(cfg.totalWidth.W)
+  divX.io.a := fullOne
+  divY.io.a := fullOne
+  divZ.io.a := fullOne
   divX.io.b := spanXSub.io.res
   divY.io.b := spanYSub.io.res
   divZ.io.b := spanZSub.io.res
@@ -77,15 +74,35 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   divY.io.in_valid := divStart
   divZ.io.in_valid := divStart
 
-  subDivX.io.a := BigInt(fullSubResXfp & 0xffffffffL).U(cfg.totalWidth.W)
-  subDivY.io.a := BigInt(fullSubResYfp & 0xffffffffL).U(cfg.totalWidth.W)
-  subDivZ.io.a := BigInt(fullSubResZfp & 0xffffffffL).U(cfg.totalWidth.W)
-  subDivX.io.b := spanXSub.io.res
-  subDivY.io.b := spanYSub.io.res
-  subDivZ.io.b := spanZSub.io.res
-  subDivX.io.in_valid := divStart
-  subDivY.io.in_valid := divStart
-  subDivZ.io.in_valid := divStart
+  // inv_voxel = (GlobalRes*LocalRes) * inv_span
+  val mulResX = Module(new FMUL(cfg))
+  val mulResY = Module(new FMUL(cfg))
+  val mulResZ = Module(new FMUL(cfg))
+  mulResX.io.a := BigInt(fullResXfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulResY.io.a := BigInt(fullResYfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulResZ.io.a := BigInt(fullResZfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulResX.io.b := divX.io.result
+  mulResY.io.b := divY.io.result
+  mulResZ.io.b := divZ.io.result
+  mulResX.io.rm := RNE
+  mulResY.io.rm := RNE
+  mulResZ.io.rm := RNE
+
+  // inv_sub_voxel = (GlobalRes*SubRes) * inv_span
+  val mulSubResX = Module(new FMUL(cfg))
+  val mulSubResY = Module(new FMUL(cfg))
+  val mulSubResZ = Module(new FMUL(cfg))
+  mulSubResX.io.a := BigInt(fullSubResXfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulSubResY.io.a := BigInt(fullSubResYfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulSubResZ.io.a := BigInt(fullSubResZfp & 0xffffffffL).U(cfg.totalWidth.W)
+  mulSubResX.io.b := divX.io.result
+  mulSubResY.io.b := divY.io.result
+  mulSubResZ.io.b := divZ.io.result
+  mulSubResX.io.rm := RNE
+  mulSubResY.io.rm := RNE
+  mulSubResZ.io.rm := RNE
+
+  val mulDone = ShiftRegister(divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid, cfg.fmulLatency)
 
   when(io.setup_valid) {
     originReg := io.setup_origin
@@ -94,15 +111,13 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
     setupFinishReg := false.B
   }
 
-  val invVoxelReady = divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid
-  val invSubVoxelReady = subDivX.io.out_valid && subDivY.io.out_valid && subDivZ.io.out_valid
-  when(invVoxelReady && invSubVoxelReady) {
-    invVoxelReg.x := divX.io.result
-    invVoxelReg.y := divY.io.result
-    invVoxelReg.z := divZ.io.result
-    invSubVoxelReg.x := subDivX.io.result
-    invSubVoxelReg.y := subDivY.io.result
-    invSubVoxelReg.z := subDivZ.io.result
+  when(mulDone) {
+    invVoxelReg.x := mulResX.io.result
+    invVoxelReg.y := mulResY.io.result
+    invVoxelReg.z := mulResZ.io.result
+    invSubVoxelReg.x := mulSubResX.io.result
+    invSubVoxelReg.y := mulSubResY.io.result
+    invSubVoxelReg.z := mulSubResZ.io.result
     setupFinishReg := true.B
   }
 

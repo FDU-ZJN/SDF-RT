@@ -63,6 +63,7 @@ object GlobalConfig {
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 2
   val subgridMemDpiLatency = 2
+  val fsqrtLatency = 29
 
   // ============================================================
   // Grid resolutions
@@ -147,6 +148,7 @@ case class FloatConfig(
                         fcmpLatency: Int = 2,
                         fptointLatency: Int = 6,
                         fdivLatency: Int = 29,
+                        fsqrtLatency: Int = GlobalConfig.fsqrtLatency,
                         useFloatIP: Boolean = GlobalConfig.useFloatIP,
                       ) {
   val totalWidth = expWidth + precision
