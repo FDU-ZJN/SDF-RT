@@ -12,8 +12,8 @@ namespace config {
 // MODE=fpga: FPGA simulation with FpgaTop (waits for frame_done)
 inline constexpr bool kFpgaMode = false;
 
-inline constexpr int kWidth = 10;
-inline constexpr int kHeight = 10;
+inline constexpr int kWidth = 400;
+inline constexpr int kHeight = 400;
 inline constexpr int kMaxWaitCycles = 30000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
 
 inline constexpr int kSDFGlobalRes = 16;

@@ -1,76 +1,180 @@
-# SDF-RT Agent 开发文档
+# SDF-RT Agent Development Guidelines
 
-## 最近修改记录 (2026-04-07)
+This document provides development guidelines for AI agents working on the SDF-RT project.
 
-### Vivado仿真内存初始化支持
+---
 
-#### 修改原因
-为支持Vivado仿真中使用`$readmemh`初始化内存模块，替代Verilator仿真中使用的DPI-C接口。
+## Project Overview
 
-#### 修改的文件
+SDF-RT is a Chisel/Scala-based hardware ray tracing accelerator with:
+- **46 Scala source files** in `src/main/scala/`
+- **3 ChiselTest unit tests** in `src/test/scala/`
+- **C++ simulation framework** in `csrc/`
+- **Vivado BlackBox memory models** in `src/main/resources/`
 
-##### 1. BlackBox资源文件 (src/main/resources/)
-**修改目的**：将原本使用Vivado IP核（BRAM/URAM）的BlackBox改为使用`$readmemh`初始化的行为级内存模型，便于Vivado仿真时加载测试数据。
+**Primary Documentation:**
+- `README.md` - Main project overview and feature documentation
+- `FPGA.md` - FPGA deployment and simulation guide
+- This file (`AGENT.md`) - Development guidelines
 
-**修改的文件**：
-- `TriangleMemBlackBox.sv` - 三角形几何数据内存
-- `NormalMemBlackBox.sv` - 法线数据内存
-- `BVHMemBlackBox.sv` - BVH层次结构内存
-- `SubgridMetaMemBlackBox.sv` - 子网格元数据内存
-- `SdfMemBlackBox_simulation.sv` - SDF内存（新增简化版，原版保留用于综合）
+---
 
-**关键技术点**：
-1. **内存数组定义**：使用`reg [31:0] mem_array [0:MAX_ENTRIES-1][0:NUM_WORDS-1]`
-2. **初始化方式**：在`initial`块中使用`$value$plusargs`获取文件路径，`$readmemh`加载数据
-3. **数据格式**：所有数据统一为32位word，每行多个word（数量与BlackBox第二维匹配）
-4. **打包格式**：SubgridMetaMem使用`[31:16]=triStart, [15:0]=triCount`的打包格式
+## Code Organization
 
-##### 2. 内存导出工具 (csrc/)
-**修改目的**：从C++数据结构导出.mem文件，供Vivado仿真使用。
+### Directory Structure
 
-**新增/修改的文件**：
-- `src/utils/MemExport.cpp` (新增) - 内存导出实现
-- `include/Mem.h` (修改) - 添加导出函数声明和外部变量声明
-- `src/utils/Mem.cpp` (修改) - 移动compact数组到全局作用域，添加辅助函数
-- `main.cpp` (修改) - 添加导出调用
+```
+src/main/scala/
+├── SimTOP.scala              # Main simulation top-level
+├── FpgaTop.scala             # FPGA deployment top-level
+├── SdfTop.scala              # SDF-only top-level
+├── BVHTop.scala              # BVH-only top-level
+├── FpgaRayDirCalc.scala      # Ray direction calculator
+├── SDF/                      # SDF traversal (6 files)
+├── BVH/                      # BVH traversal (3 files)
+├── DDA/                      # DDA traversal (6 files)
+│   └── Trace/                # Triangle intersection (5 files)
+├── Render/                   # Rendering pipeline (3 files)
+└── raytrace_utils/           # Utilities library
+    ├── fudian/               # Floating-point units (9 files)
+    └── fudian/utils/         # FPU helpers (3 files)
 
-**导出的.mem文件**：
-- `triangle_mem.mem` - 14203个compact triangles (每地址36个float)
-- `normal_mem.mem` - 14203个compact normals (每地址3个float)
-- `bvh_mem.mem` - BVH节点 (每地址8个word)
-- `sdf_global_mem.mem` - 全局SDF数据
-- `sdf_local_mem.mem` - 局部SDF数据
-- `subgrid_meta_mem.mem` - 子网格元数据 (打包格式)
-
-**关键修复**：
-1. 使用compact后的triangles和normals（14203个）而非原始的9500个
-2. SubgridMetaMem使用打包格式：`((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF)`
-3. 所有外部变量从匿名命名空间移到全局作用域
-
-##### 3. 配置文件
-- `.gitignore` (修改) - 添加`!src/main/resources/*.sv`允许BlackBox文件纳入版本控制
-
-#### 格式匹配验证
-
-所有BlackBox的内存数组定义与MemExport.cpp导出格式严格匹配：
-
-| 模块 | BlackBox数组维度 | 每行Words | Word大小 | 导出格式 | 状态 |
-|------|----------------|----------|---------|---------|------|
-| TriangleMem | `[MAX][36]` | 36 | 32-bit | 36 hex/行 | ✅ |
-| NormalMem | `[MAX][3]` | 3 | 32-bit | 3 hex/行 | ✅ |
-| BVHMem | `[MAX][8]` | 8 | 32-bit | 8 hex/行 | ✅ |
-| SubgridMeta | `[MAX]` (packed) | 1 | 32-bit | 1 hex/行 | ✅ |
-| SdfMem(sim) | `[MAX]` | 1 | 32-bit | 1 hex/行 | ⚠️ 简化版 |
-
-#### Vivado仿真使用方法
-
-**步骤1：生成.mem文件**
-```bash
-cd csrc
-make run  # 运行Verilator仿真，会自动导出所有.mem文件到 ./vivado_mem/
+csrc/
+├── main.cpp                  # Verilator simulation entry
+├── main_fpga.cpp             # FPGA mode entry
+├── Makefile                  # Build system
+├── include/                  # C++ headers (11 files)
+└── src/utils/                # C++ utilities (11 files)
 ```
 
-**步骤2：在Vivado仿真中配置+plusargs**
+---
+
+## Key Modules Reference
+
+### Top-Level Modules
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `SimTop` | `SimTOP.scala` | Main simulation entry point |
+| `FpgaTop` | `FpgaTop.scala` | FPGA deployment abstraction |
+| `SdfTop` | `SdfTop.scala` | SDF-only traversal |
+| `BVHTop` | `BVHTop.scala` | BVH-only traversal |
+
+### Processing Elements
+
+| PE | Location | Function |
+|----|----------|----------|
+| `SdfPE` | `SDF/SdfPE.scala` | SDF field evaluation |
+| `BvhPE` | `BVH/BvhPE.scala` | BVH node traversal |
+| `TriPE` | `DDA/Trace/TriPE.scala` | Triangle intersection |
+| `RenderPE` | `Render/RenderPE.scala` | Pixel shading |
+
+### Utility Library (`raytrace_utils/`)
+
+| Module | Purpose |
+|--------|---------|
+| `Bundles.scala` | Chisel Bundle definitions (Ray, AABB, Triangle, etc.) |
+| `Config.scala` | Global configuration parameters |
+| `AABB.scala` | Ray-AABB intersection (3-axis parallel) |
+| `vector.scala` | 3D vector operations (dot, cross, add, sub) |
+| `CommitQueue.scala` | Result commit and ordering |
+| `BVHStack.scala` | BVH traversal stack |
+| `FRQ.scala` | Fixed-rate queue |
+| `FDIV.scala` | Division wrapper |
+
+### Floating-Point Units (`raytrace_utils/fudian/`)
+
+| Unit | Latency | Description |
+|------|---------|-------------|
+| `FMUL` | 3 cycles | Single-precision multiply |
+| `FADD` | 4 cycles | Single-precision add/sub |
+| `FDIV` | 8 cycles | Single-precision divide |
+| `FSQRT` | 8 cycles | Single-precision square root |
+| `FCMP` | 1 cycle | Comparison (LT, GT, EQ) |
+| `FPToFP` | 2 cycles | Format conversion |
+| `FPToInt` | 1 cycle | Float to integer |
+| `IntToFP` | 1 cycle | Integer to float |
+| `FCMA` | 5 cycles | Fused multiply-add |
+
+---
+
+## Build & Test Workflow
+
+### Generate Verilog
+
+```bash
+# All variants
+sbt "runMain SimTopGen"
+
+# FPGA only
+sbt "runMain FpgaTopGen"
+```
+
+Output: `build/fpga/FpgaTop.sv`, `build/sim/SimTop.sv`, etc.
+
+### Run Verilator Simulation
+
+```bash
+cd csrc
+make run           # Default mode (noblackbox)
+make MODE=fpga run # FPGA mode
+```
+
+Simulation automatically exports memory files to `vivado_mem/` for Vivado simulation.
+
+### Run Unit Tests
+
+```bash
+sbt test
+```
+
+Tests: `AABBTest.scala`, `DivTest.scala`, `VectorTest.scala`
+
+---
+
+## Memory System
+
+### Vivado BlackBox Files (`src/main/resources/`)
+
+| BlackBox | Format | Words/Entry |
+|----------|--------|-------------|
+| `TriangleMemBlackBox.sv` | Triangle geometry | 36 floats |
+| `NormalMemBlackBox.sv` | Normal vectors | 3 floats |
+| `BVHMemBlackBox.sv` | BVH nodes | 8 words |
+| `SubgridMetaMemBlackBox.sv` | Subgrid metadata | 1 packed word |
+| `SdfMemBlackBox_simulation.sv` | SDF data | 1 word (simplified) |
+
+### Memory Export (`csrc/src/utils/MemExport.cpp`)
+
+Automatically exports `.mem` files to `csrc/vivado_mem/`:
+- `triangle_mem.mem` - 14203 compact triangles
+- `normal_mem.mem` - 14203 normals
+- `bvh_mem.mem` - BVH hierarchy
+- `sdf_global_mem.mem` - Global SDF (16³)
+- `sdf_local_mem.mem` - Local SDF (4³ per cell)
+- `subgrid_meta_mem.mem` - Subgrid metadata (packed)
+
+### Data Format
+
+- All floats: IEEE 754 single-precision (32-bit)
+- `.mem` format: Hex values with `@address` headers
+- Packed format (SubgridMeta): `[31:16]=triStart, [15:0]=triCount`
+
+---
+
+## Vivado Simulation Setup
+
+### 1. Generate Memory Files
+
+```bash
+cd csrc
+make run  # Auto-exports to vivado_mem/
+```
+
+### 2. Configure Plusargs
+
+In Vivado Simulation Settings → xsim.simulate.custom_options:
+
 ```
 +TRI_MEM_FILE=./vivado_mem/triangle_mem.mem
 +NORMAL_MEM_FILE=./vivado_mem/normal_mem.mem
@@ -80,93 +184,125 @@ make run  # 运行Verilator仿真，会自动导出所有.mem文件到 ./vivado_
 +SUBGRID_META_MEM_FILE=./vivado_mem/subgrid_meta_mem.mem
 ```
 
-**步骤3：在Vivado GUI中设置**
-1. Flow Navigator → Simulation Settings
-2. xsim.simulate.custom_options
-3. 添加上述+plusargs参数（用空格分隔）
+---
 
-#### 注意事项
+## Development Conventions
 
-1. **DPI-C接口保持不变**：所有DPI-C相关代码（用于Verilator仿真）未被修改，保持原有功能
-2. **SdfMemBlackBox.sv保留原版**：因SDF内存结构复杂（多URAM banks），原版保留用于综合，新增简化版`SdfMemBlackBox_simulation.sv`仅用于仿真
-3. **Compact数据源**：导出的是经过subgrid layout优化后的compact triangles/normals（14203个），而非原始数据（9500个）
-4. **仿真验证**：仿真启动时会打印内存加载信息，如`[TriangleMem] Loading triangle memory from ...`
+### Chisel Code Style
 
-#### 测试验证
+1. **Bundle Definitions**: All interface bundles in `raytrace_utils/Bundles.scala`
+2. **Module Structure**: Use `Module(new ...)` pattern
+3. **Decoupled Interfaces**: Standard ready/valid handshakes
+4. **Pipelining**: Explicit stage boundaries
+5. **Configuration**: Use `raytrace_utils/Config.scala` for parameters
 
-运行`make run`后应看到：
-```
-[MemExport] Exported 14203 triangles to ./vivado_mem/triangle_mem.mem (3551 addresses)
-[MemExport] Exported 14203 normals to ./vivado_mem/normal_mem.mem
-```
+### Floating-Point Handling
 
-Vivado仿真应看到：
-```
-[TriangleMem] Loading triangle memory from ./vivado_mem/triangle_mem.mem
-[NormalMem] Loading normal memory from ./vivado_mem/normal_mem.mem
-```
+1. **IEEE 754 Semantics**: All FP units follow IEEE 754 single-precision
+2. **Precision**: FP32 throughout the pipeline
+3. **Exception Handling**: NaN, Inf, subnormal support in fudian library
+4. **Conversion**: Use `FPToFP` for width/precision changes
+
+### Memory Interface Design
+
+1. **DPI-C for Verilator**: Direct C++ memory access in simulation
+2. **BlackBox for Vivado**: `$readmemh` initialization from `.mem` files
+3. **Address Alignment**: Word-addressable (32-bit)
+4. **Bank Organization**: Multi-bank for parallel access (SDF)
+
+### Testing Guidelines
+
+1. **ChiselTest**: Use `chisel3.testers.BasicTester` for unit tests
+2. **Golden Model**: Reference implementation in `csrc/src/utils/golden_model.cpp`
+3. **Differential Testing**: Compare hardware vs. golden model results
+4. **Tolerance**: 1e-4 for floating-point comparisons
 
 ---
 
-## 项目架构
+## Common Tasks
 
-### 仿真流程
+### Add a New Module
 
-1. **Verilator仿真**：使用DPI-C接口直接读取C++内存数据结构
-2. **Vivado仿真**：使用`$readmemh`从.mem文件加载数据到行为级内存模型
+1. Create file in appropriate directory (`SDF/`, `BVH/`, `DDA/`, etc.)
+2. Import required bundles from `raytrace_utils/Bundles.scala`
+3. Use `Module(new ...)` wrapper
+4. Add to top-level in `SimTOP.scala` or `FpgaTop.scala`
+5. Update this documentation
 
-### 关键数据结构
+### Modify Configuration
 
-- **原始数据**：9500个triangles（从OBJ模型加载）
-- **Compact数据**：14203个triangles（经subgrid layout优化后，按subgrid重复存储三角形）
-- **SDF数据**：global_sdf (16³) + local_sdf (多个active cells × 4³)
+Edit `raytrace_utils/Config.scala` for hardware parameters, or `csrc/include/GlobalConfig.h` for simulation parameters.
 
-### 模块层次
+### Add Unit Test
 
-```
-SimTop (顶层)
-├── InitStage (初始化)
-├── SdfStage (SDF遍历)
-│   ├── SdfPE
-│   └── SdfMemDPI (使用SdfMemBlackBox)
-├── DDA Stage (DDA遍历)
-│   ├── TraceStage
-│   ├── TriPE
-│   └── TriMemDPI (使用TriangleMemBlackBox)
-├── BVHStage (BVH遍历)
-│   ├── BvhPE
-│   └── BVHMenDPI (使用BVHMemBlackBox)
-└── RenderStage (渲染)
-    ├── RenderPE
-    └── NormalMemDPI (使用NormalMemBlackBox)
-```
+1. Create test file in `src/test/scala/`
+2. Extend `BasicTester` or use `ChiselScalatestTester`
+3. Run with `sbt test`
+
+### Debug Simulation
+
+1. Enable VCD: Set `kEnableVcd = true` in `GlobalConfig.h`
+2. Run simulation: `make run`
+3. View waveform: `gtkwave raytrace.vcd`
 
 ---
 
-## 开发约定
+## Architecture Quick Reference
 
-### 内存导出格式规范
+### Pipeline Stages
 
-1. 所有浮点数使用IEEE 754单精度格式（32位）
-2. 使用`u32ToHex(floatToRawU32(value))`转换为8位十六进制
-3. .mem文件格式：
-   ```
-   @00000000
-   3F800000 40000000 40400000 ...
-   @00000001
-   ...
-   ```
-4. 每行word数量必须与BlackBox内存数组第二维大小一致
+```
+InitStage → SdfStage → BVHStage → DDAStage → RenderStage → CommitQueue
+```
 
-### BlackBox开发规范
+Each stage operates as an independent pipeline with ready/valid handshakes.
 
-1. 使用`$value$plusargs`获取.mem文件路径
-2. 在`initial`块中使用`$readmemh`加载
-3. 内存大小使用`localparam`定义，便于调整
-4. 加载成功后打印确认信息
+### Key Algorithms
 
-### 代码组织
+| Algorithm | Location | Description |
+|-----------|----------|-------------|
+| SDF Traversal | `SDF/SdfPE.scala` | Step ray by SDF distance |
+| BVH Traversal | `BVH/BvhPE.scala` | Hierarchical AABB testing |
+| DDA Traversal | `DDA/DDA.scala` | Uniform grid stepping |
+| Triangle Intersect | `DDA/Trace/TriangleIntersector.scala` | Möller-Trumbore |
+| Ray-AABB Intersect | `raytrace_utils/AABB.scala` | 3-axis parallel test |
 
-- Verilator专用代码：`csrc/`目录，使用DPI-C接口
-- Vivado仿真专用代码：`src/main/resources/`目录，使用`$readmemh`
-- 可共享的Chisel硬件描述：`src/main/scala/`目录
+### Data Structures (Bundles)
+
+See `raytrace_utils/Bundles.scala` for:
+- `Ray` - Ray origin, direction, tMin, tMax
+- `AABB` - Min/max bounds
+- `Triangle` - Three vertices
+- `TriangleBlock` - Batched triangles
+- `HitRecord` - Intersection results
+
+---
+
+## Troubleshooting
+
+### Build Errors
+
+- **Verilog not generated**: Check `build.sbt` and generator object names
+- **Missing BlackBox**: Ensure `.sv` file in `src/main/resources/`
+- **Module not found**: Verify import paths and package declarations
+
+### Simulation Errors
+
+- **DPI-C link failure**: Check `csrc/Makefile` dependencies
+- **Memory load failure**: Verify `.mem` files in `vivado_mem/`
+- **Timeout**: Increase `kMaxWaitCycles` in `GlobalConfig.h`
+
+### Correctness Issues
+
+- **Wrong intersection results**: Compare with golden model
+- **Pipeline stalls**: Check ready/valid handshakes
+- **Memory corruption**: Verify address alignment and bank conflicts
+
+---
+
+## Related Documentation
+
+- **Project Overview**: `README.md`
+- **FPGA Deployment**: `FPGA.md`
+- **C++ Framework**: `csrc/README.md`
+- **Test Architecture**: `csrc/ARCHITECTURE.md`
