@@ -146,7 +146,7 @@ case class FloatConfig(
                         fmulLatency: Int = 8,
                         faddLatency: Int = 7,
                         fcmpLatency: Int = 2,
-                        fptointLatency: Int = 6,
+                        fptointLatency: Int = 1,
                         fdivLatency: Int = 29,
                         fsqrtLatency: Int = GlobalConfig.fsqrtLatency,
                         useFloatIP: Boolean = GlobalConfig.useFloatIP,

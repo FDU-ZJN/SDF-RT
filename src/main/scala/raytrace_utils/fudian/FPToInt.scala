@@ -1,12 +1,19 @@
 package raytrace_utils.fudian
-
 import chisel3._
 import chisel3.util._
 import raytrace_utils.FloatConfig
 import raytrace_utils.GlobalConfig
 import raytrace_utils.PipeUtils
 import raytrace_utils.fudian.utils.ShiftRightJam
-
+object HardfloatConsts {
+  val round_near_even   = 0.U(3.W)
+  val round_minMag      = 1.U(3.W)
+  val round_min         = 2.U(3.W)
+  val round_max         = 3.U(3.W)
+  val round_near_maxMag = 4.U(3.W)
+  val round_odd         = 6.U(3.W)
+}
+import HardfloatConsts._
 /**
   *  op: 00 => f -> wu
   *      01 => f -> w
@@ -27,14 +34,6 @@ class FPToInt(
     val fflags = Output(UInt(5.W))
   })
 
-  if (useFloatIP) {
-    val bb = Module(new Fptoint)
-    bb.io.aclk := clock
-    bb.io.s_axis_a_tdata := io.a
-    bb.io.s_axis_a_tvalid := true.B
-    io.result := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U(64.W))
-    io.fflags := 0.U
-  } else {
     val is_signed_int = io.op(0)
     val is_long_int = io.op(1)
 
@@ -46,9 +45,6 @@ class FPToInt(
       FloatPoint.expBias(expWidth).U +& Mux(is_long_int, 63.U, 31.U)
     val exp_of = raw_a.exp > max_int_exp
 
-    /*
-        Left Shift Path
-     */
     val lpath_shamt = raw_a.exp - (FloatPoint.expBias(expWidth) + precision - 1).U
     val lpath_max_shamt = 63 - (precision - 1)
     val lpath_max_shmat_width = lpath_max_shamt.U.getWidth
@@ -127,11 +123,12 @@ class FPToInt(
     )
     val fflagsRaw = Cat(iv, false.B, false.B, false.B, ix)
 
-    io.result := PipeUtils.pipeData(resultRaw, latency)
-    io.fflags := PipeUtils.pipeData(fflagsRaw, latency)
-  }
+    io.result := PipeUtils.pipeData(resultRaw, 1)
+    io.fflags := PipeUtils.pipeData(fflagsRaw, 1)
 
 }
+
+
 
 class Fptoint extends BlackBox with HasBlackBoxResource {
   val io = IO(new Bundle() {

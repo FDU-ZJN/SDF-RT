@@ -23,8 +23,8 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_b_tvalid := true.B
 
     // result bits: [0]=lt, [1]=eq, [2]=le
-    io.lt := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(0)
-    io.eq := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(1)
+    io.lt := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(1)
+    io.eq := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(0)
     io.le := io.lt||io.eq
     io.fflags := 0.U
   } else {
