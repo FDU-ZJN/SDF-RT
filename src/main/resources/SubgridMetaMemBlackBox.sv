@@ -3,7 +3,7 @@ module SubgridMetaMemResourceBB #(
   parameter int GLOBALRES = 8,
   parameter int SUBRES = 1,
   parameter int LATENCY = 2,
-  parameter int MAX_ENTRIES = 65536  // Default depth: 2^16 subgrids
+  parameter int MAX_ENTRIES = 512 
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -17,11 +17,8 @@ module SubgridMetaMemResourceBB #(
 localparam int Global_ADDR_WIDTH = $clog2(GLOBALRES)*3;
 localparam int SUB_ADDR_WIDTH = $clog2(SUBRES)*3;
 localparam int DRAM_ADDR_WIDTH = Global_ADDR_WIDTH+SUB_ADDR_WIDTH;
+localparam int MEM_ADDR_WIDTH = (MAX_ENTRIES <= 1) ? 1 : $clog2(MAX_ENTRIES);
 logic [LATENCY-1:0]    valid_pipe;
-
-// Memory storage for $readmemh initialization
-// Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
-// This allows $readmemh to load both values from a single 32-bit word
 
 reg [31:0] subgrid_meta_mem [0:MAX_ENTRIES-1];
 reg mem_loaded = 1'b0;
@@ -94,8 +91,10 @@ generate
     logic [15:0] triStart_pipe [LATENCY-1:0];
     logic [15:0] triCount_pipe [LATENCY-1:0];
     logic [31:0] extended_addr;
+    logic [MEM_ADDR_WIDTH-1:0] mem_idx;
 
     assign extended_addr = {{(32-Global_ADDR_WIDTH){1'b0}}, globalIdx[Global_ADDR_WIDTH-1:0]};
+    assign mem_idx = extended_addr[MEM_ADDR_WIDTH-1:0];
 
     always_ff @(posedge clk) begin
       if (reset) begin
@@ -112,8 +111,8 @@ generate
         valid_pipe[0] <= en;
         if (en) begin
           if (mem_loaded && (extended_addr < MAX_ENTRIES)) begin
-            triStart_pipe[0] <= subgrid_meta_mem[extended_addr[15:0]][31:16];
-            triCount_pipe[0] <= subgrid_meta_mem[extended_addr[15:0]][15:0];
+            triStart_pipe[0] <= subgrid_meta_mem[mem_idx][31:16];
+            triCount_pipe[0] <= subgrid_meta_mem[mem_idx][15:0];
           end else begin
             triStart_pipe[0] <= '0;
             triCount_pipe[0] <= '0;

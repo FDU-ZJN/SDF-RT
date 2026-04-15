@@ -2,6 +2,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import SDF.SdfMemWriteIO
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
@@ -35,6 +36,9 @@ class FpgaTop(
     val frame_count      = Output(UInt(32.W))
     val validation_error = Output(Bool())
     val stall_detected   = Output(Bool())
+    
+    // SDF memory write port for PS initialization
+    val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
   val simTop     = Module(new SimTop)
@@ -59,11 +63,16 @@ class FpgaTop(
   simTop.io.setup_grid_min := setupGridMinReg
   simTop.io.setup_grid_max := setupGridMaxReg
   io.setup_ready           := !setupReg
+  
+  // Connect SDF memory write port
+  simTop.io.sdf_mem_wr <> io.sdf_mem_wr
 
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)
 
-  val totalPixels   = (width * height).U(32.W)
+  val pixelCountW   = log2Ceil(width * height + 1)
+  val totalPixels   = (width * height).U(pixelCountW.W)
+  val totalPixels1  = (width * height - 1).U(pixelCountW.W)
   val frameCountReg = RegInit(0.U(32.W))
   io.frame_count := frameCountReg
 
@@ -73,14 +82,24 @@ class FpgaTop(
   val frameDonePulse = WireInit(false.B)
   io.frame_done := frameDonePulse
 
-  val issuedCount  = RegInit(0.U(32.W))
-  val retiredCount = RegInit(0.U(32.W))
+  val issuedCount  = RegInit(0.U(pixelCountW.W))
+  val retiredCount = RegInit(0.U(pixelCountW.W))
   val rayIssueFire = WireDefault(false.B)
 
   val validationError = RegInit(false.B)   // Fix 8
   io.validation_error := validationError
 
-  val enqFire = Wire(Bool())
+  val enqFire = WireDefault(false.B)
+
+  // Optimize: terminal flag avoids retiredCount+1 on the state-transition path
+  val retireFireReg = RegInit(false.B)
+  when(state === idle) {
+    retireFireReg := false.B
+  }.otherwise {
+    retireFireReg := enqFire
+  }
+
+  val retiredCountWillFinish = retireFireReg && (retiredCount === totalPixels1)
 
   switch(state) {
     is(idle) {
@@ -95,8 +114,7 @@ class FpgaTop(
       when(rayIssueFire) {
         issuedCount := issuedCount + 1.U
       }
-      // retiredCount 在 pixelQueue 节自增（Fix 3）
-      when(retiredCount >= totalPixels) {
+      when(retiredCountWillFinish) {
         state := frameComplete
       }
     }
@@ -139,12 +157,9 @@ class FpgaTop(
   val rayFifoFree         = rayDirFifoDepth.U(rayReserveW.W) - rayFifoCountExt
   val canReserveRayOutput = rayFifoFree > rayDirPipeInflight
 
-  val issuePixelCounter = RegInit(0.U(32.W))
-  when(state === idle) {
-    issuePixelCounter := 0.U
-  }
-  val issuePixelX = issuePixelCounter % width.U
-  val issuePixelY = issuePixelCounter / width.U
+  // Optimize: Direct register maintenance for issuePixelX/Y to avoid modulo/division ops
+  val issuePixelX = RegInit(0.U(16.W))
+  val issuePixelY = RegInit(0.U(16.W))
 
   val canFireRay =
     (state === rendering) &&
@@ -152,14 +167,39 @@ class FpgaTop(
       (issuedCount < totalPixels) &&
       canReserveRayOutput
 
-  rayIssueFire           := canFireRay
-  rayDirCalc.io.in_valid := canFireRay
-  rayDirCalc.io.pixel_x  := issuePixelX
-  rayDirCalc.io.pixel_y  := issuePixelY
-
-  when(canFireRay) {
-    issuePixelCounter := issuePixelCounter + 1.U
+  when(state === idle) {
+    issuePixelX := 0.U
+    issuePixelY := 0.U
+  }.elsewhen(canFireRay) {
+    when(issuePixelX === (width - 1).U) {
+      issuePixelX := 0.U
+      issuePixelY := issuePixelY + 1.U
+    }.otherwise {
+      issuePixelX := issuePixelX + 1.U
+    }
   }
+
+  rayIssueFire           := canFireRay
+
+  val rayDirInValidReg = RegInit(false.B)
+  val rayDirPixelXReg   = RegInit(0.U(16.W))
+  val rayDirPixelYReg   = RegInit(0.U(16.W))
+
+  when(state === idle) {
+    rayDirInValidReg := false.B
+    rayDirPixelXReg   := 0.U
+    rayDirPixelYReg   := 0.U
+  }.otherwise {
+    rayDirInValidReg := canFireRay
+    when(canFireRay) {
+      rayDirPixelXReg := issuePixelX
+      rayDirPixelYReg := issuePixelY
+    }
+  }
+
+  rayDirCalc.io.in_valid := rayDirInValidReg
+  rayDirCalc.io.pixel_x  := rayDirPixelXReg
+  rayDirCalc.io.pixel_y  := rayDirPixelYReg
 
   // RayDirCalc → rayDirFifo
   rayDirCalc.io.out_ready         := rayDirFifo.io.enq.ready
@@ -193,20 +233,27 @@ class FpgaTop(
 
   val pixelQueue = Module(new Queue(new PixelBundle, pixelQueueDepth))
 
-  // Fix 6: idle 时重置结果坐标计数器
-  val resultCounter = RegInit(0.U(32.W))
+  // Optimize: direct result X/Y registers to avoid modulo/division on critical path
+  val resultX = RegInit(0.U(16.W))
+  val resultY = RegInit(0.U(16.W))
+
   when(state === idle) {
-    resultCounter := 0.U
+    resultX := 0.U
+    resultY := 0.U
+  }.elsewhen(enqFire) {
+    when(resultX === (width - 1).U) {
+      resultX := 0.U
+      resultY := resultY + 1.U
+    }.otherwise {
+      resultX := resultX + 1.U
+    }
   }
-  val resultX = resultCounter % width.U
-  val resultY = resultCounter / width.U
 
   // Fix 3: enqFire = 真实握手成功（valid && ready 同时为真）
   enqFire := simTop.io.out_valid && pixelQueue.io.enq.ready
 
-  when(enqFire) {
-    resultCounter := resultCounter + 1.U
-    retiredCount  := retiredCount + 1.U   // Fix 3
+  when(retireFireReg) {
+    retiredCount := retiredCount + 1.U   // Fix 3
   }
 
   pixelQueue.io.enq.valid        := simTop.io.out_valid
@@ -237,9 +284,6 @@ class FpgaTop(
     validationError := true.B
   }
 
-  // =========================================================================
-  // 停滞检测（Fix 7: idle 时重置）
-  // =========================================================================
   val stallCounter = RegInit(0.U(16.W))
   val progressMade = canFireRay || enqFire
 
@@ -280,7 +324,7 @@ object FpgaTopGen extends App {
 
   def generateFpgaTopVerilog(targetDir: String = "build/fpga",withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
-    GlobalConfig.withUseBlackBox(true) {
+    GlobalConfig.withMemImplMode(2) {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {
         emitVerilog(
           new FpgaTop(

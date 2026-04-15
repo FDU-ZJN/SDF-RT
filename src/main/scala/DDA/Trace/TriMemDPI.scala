@@ -119,6 +119,36 @@ private class TriangleMemResourceBB(
   addResource("/TriangleMemBlackBox.sv")
 }
 
+private class TriangleMemIpBB(
+  val c: TriPeConfig,
+  val latency: Int = GlobalConfig.triMemDpiLatency
+) extends BlackBox(
+      Map(
+        "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
+        "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
+        "LATENCY" -> latency,
+        "NUM_PES" -> GlobalConfig.triMemNumPEs,
+        "MAX_ENTRIES" -> GlobalConfig.triMemDepth
+      )
+    )
+    with HasBlackBoxResource {
+  override def desiredName: String = "TriangleMem"
+  private val totalBits = GlobalConfig.triMemDataWidth
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
+    val req_valid = Input(Bool())
+    val req_mask = Input(UInt(c.numPEs.W))
+    val data = Output(UInt(totalBits.W))
+    val valid = Output(Bool())
+    val valid_mask = Output(UInt(c.numPEs.W))
+    val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
+    val req_ready = Output(Bool())
+  })
+  addResource("/TriangleMem.sv")
+}
+
 class TriangleMemDPI(
   val c: TriPeConfig,
   val latency: Int = GlobalConfig.triMemDpiLatency
@@ -137,30 +167,43 @@ class TriangleMemDPI(
     val req_ready = Output(Bool())
   })
 
-  if (GlobalConfig.useBlackBox) {
-    val impl = Module(new TriangleMemResourceBB(c, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.addr := io.addr
-    impl.io.req_valid := io.req_valid
-    impl.io.req_mask := io.req_mask
-    io.data := impl.io.data
-    io.valid := impl.io.valid
-    io.valid_mask := impl.io.valid_mask
-    io.addr_q := impl.io.addr_q
-    io.req_ready := impl.io.req_ready
-  } else {
-    val impl = Module(new TriangleMemDPICore(c, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.addr := io.addr
-    impl.io.req_valid := io.req_valid
-    impl.io.req_mask := io.req_mask
-    io.data := impl.io.data
-    io.valid := impl.io.valid
-    io.valid_mask := impl.io.valid_mask
-    io.addr_q := impl.io.addr_q
-    io.req_ready := impl.io.req_ready
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val impl = Module(new TriangleMemDPICore(c, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.req_valid := io.req_valid
+      impl.io.req_mask := io.req_mask
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.valid_mask := impl.io.valid_mask
+      io.addr_q := impl.io.addr_q
+      io.req_ready := impl.io.req_ready
+    case 1 =>
+      val impl = Module(new TriangleMemResourceBB(c, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.req_valid := io.req_valid
+      impl.io.req_mask := io.req_mask
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.valid_mask := impl.io.valid_mask
+      io.addr_q := impl.io.addr_q
+      io.req_ready := impl.io.req_ready
+    case 2 =>
+      val impl = Module(new TriangleMemIpBB(c, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.req_valid := io.req_valid
+      impl.io.req_mask := io.req_mask
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.valid_mask := impl.io.valid_mask
+      io.addr_q := impl.io.addr_q
+      io.req_ready := impl.io.req_ready
   }
 }
 

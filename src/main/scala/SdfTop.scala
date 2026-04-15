@@ -1,4 +1,4 @@
-import SDF.{SdfMemDPI, SdfPE}
+import SDF.{SdfMemDPI, SdfMemWriteIO, SdfPE}
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
@@ -11,6 +11,9 @@ class SdfTop extends Module {
 
     val in = Flipped(Decoupled(new SdfRayReq(c.cfg, c.addrWidth)))
     val out = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
+    
+    // SDF memory write port for PS initialization
+    val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
   val sdfPe = Module(new SdfPE(c))
@@ -32,5 +35,8 @@ class SdfTop extends Module {
 
   sdfPe.io.sdf_mem_resp.valid := sdfMem.io.valid
   sdfPe.io.sdf_mem_resp.bits := sdfMem.io.data
+  
+  // Connect write port
+  sdfMem.io.wr <> io.sdf_mem_wr
 }
 

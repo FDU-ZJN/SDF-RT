@@ -4,32 +4,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils.fudian._
 
-/**
-  * RayDirCalc - Hardware floating-point ray direction calculator
-  *
-  * Computes ray direction for pixel (x, y) matching the C++ makeRayDir function:
-  *   u = (2.0*x - width) / height          → (2*x - width) * (1/height)
-  *   v = -(2.0*y - height) / height        → (2*y - height) * (1/height)
-  *   rdX = u, rdY = v, rdZ = -1.8
-  *   sumSq = rdX² + rdY² + rdZ²
-  *   invLen = 1 / sqrt(sumSq)              → FSQRT 行为仿真单元
-  *   dir = (rdX * invLen, rdY * invLen, rdZ * invLen)
-  *
-  * 除法采用倒数相乘方案: a/b = a * (1/b), 其中 1/height 为编译时常数.
-  *
-  * Pipeline stages (cumulative latency):
-  *   S0  IntToFP(x,y)                0  →   0
-  *   S1  FMUL(2*x, 2*y)              8  →   8
-  *   S2  FADD(2x-w, 2y-h)            7  →  15
-  *   S3  FMUL(uNum*invH, vNum*invH)  8  →  23
-  *   S4  FMUL(u², v²)                8  →  31
-  *   S5  FADD(u²+v²)                 7  →  38
-  *   S6  FADD(sumSq = u²+v²+z²)      7  →  45
-  *   S7  FSQRT(invLen = 1/sqrt)  cfg.fsqrtLatency cycles
-  *   S8  FMUL(dir * invLen)          8  →  82
-  *
-  * Total latency: 4*fmul + 3*fadd + fsqrt
-  */
+
 class RayDirCalc(
   cfg: FloatConfig = FloatConfig.FP32,
   width: Int = GlobalConfig.frameWidth,
@@ -68,9 +43,6 @@ class RayDirCalc(
   // Pipeline always accepts
   io.in_ready := true.B
 
-  // =========================================================================
-  // S0: IntToFP — convert pixel coordinates to float (combinatorial)
-  // =========================================================================
   val intToFP_x = Module(new IntToFP(cfg.expWidth, cfg.precision))
   intToFP_x.io.int  := Cat(0.U(48.W), io.pixel_x)
   intToFP_x.io.sign := false.B

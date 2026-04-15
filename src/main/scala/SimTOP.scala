@@ -1,6 +1,6 @@
 import DDA.DDA
 import Render.RenderStage
-import SDF.{InitStage, SetupUnit, SdfStage}
+import SDF.{InitStage, SetupUnit, SdfStage, SdfMemWriteIO}
 import chisel3._
 import chisel3.util._
 import java.nio.charset.StandardCharsets
@@ -23,6 +23,9 @@ class SimTop extends Module {
     val out_rgb = Output(new Vec3(c.cfg))
     val out_id = Output(UInt(c.addrWidth.W))
     val out_valid = Output(Bool())
+    
+    // SDF memory write port for PS initialization
+    val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
@@ -48,6 +51,7 @@ class SimTop extends Module {
 
   sdfStage.io.grid_min := setupUnit.io.gridMin
   sdfStage.io.inv_voxel := setupUnit.io.invVoxel
+  sdfStage.io.sdf_mem_wr <> io.sdf_mem_wr
 
   // Conservative admission control for InitStage input:
   // assume all in-flight rays may become SDF-hit and need Init->SDF queue space.
@@ -163,8 +167,8 @@ object SimTopGen extends App {
     }
   }
 
-  def generateSimTopVerilog(useBlackBox: Boolean, useFloatIP: Boolean, targetDir: String): Unit = {
-    GlobalConfig.withUseBlackBox(useBlackBox) {
+  def generateSimTopVerilog(memImplMode: Int, useFloatIP: Boolean, targetDir: String): Unit = {
+    GlobalConfig.withMemImplMode(memImplMode) {
       GlobalConfig.withUseFloatIP(useFloatIP) {
         emitVerilog(new SimTop, Array("--target-dir", targetDir))
       }
@@ -174,11 +178,9 @@ object SimTopGen extends App {
   }
 
   // Emit both variants into build/ subdirectories.
-  // noblackbox: pure SV for Verilator simulation (useFloatIP = false)
-  // useblackbox: BlackBox memory + float IP for FPGA (useFloatIP = true)
-  generateSimTopVerilog(useBlackBox = false, useFloatIP = false, "build/noblackbox")
-  generateSimTopVerilog(useBlackBox = true,  useFloatIP = false,  "build/useblackbox")
-  generateSimTopVerilog(useBlackBox = true,  useFloatIP = true,  "build/fpga_sim")
+  // memImplMode: 0=DPI-C, 1=readmemh BlackBox, 2=IP-style memory modules
+  generateSimTopVerilog(memImplMode = 0, useFloatIP = false, "build/noblackbox")
+  generateSimTopVerilog(memImplMode = 1, useFloatIP = false, "build/useblackbox")
   
   // Generate FPGA_TOP for FPGA deployment
   FpgaTopGen.generateFpgaTopVerilog("build/fpga")

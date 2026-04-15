@@ -19,6 +19,9 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val out_reverseTraversal = Output(Bool())
     val out_ray = Output(new Ray(cfg))
     val out_valid = Output(Bool())
+    
+    // SDF memory write port for PS initialization
+    val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
   val scheduler = Module(new SdfSchedulerUnit(cfg, addrWidth, peCfg.maxSteps))
@@ -42,6 +45,9 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   sdfPE.io.sdf_mem_req.ready := true.B
   sdfPE.io.sdf_mem_resp.valid := sdfMem.io.valid
   sdfPE.io.sdf_mem_resp.bits := sdfMem.io.data
+  
+  // Connect write port
+  sdfMem.io.wr <> io.sdf_mem_wr
 
   io.out_rgb := scheduler.io.out_rgb
   io.out_meta := scheduler.io.out_meta

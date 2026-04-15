@@ -11,18 +11,30 @@ object GlobalConfig {
   val frameHeight = 400
   val pixelQueueDepth = 4
   val rayDirFifoDepth = 16
-
-
   // ============================================================
   // BlackBox vs DPI mode switch (memory modules)
   // ============================================================
-  private var useBlackBoxState = false
-  def useBlackBox: Boolean = useBlackBoxState
-  def setUseBlackBox(value: Boolean): Unit = { useBlackBoxState = value }
-  def withUseBlackBox[T](value: Boolean)(body: => T): T = {
+  // 0: DPI-C memory
+  // 1: readmemh BlackBox memory
+  // 2: synthesized/IP-style memory modules
+  private var useBlackBoxState = 0
+  def memImplMode: Int = useBlackBoxState
+  def setMemImplMode(value: Int): Unit = {
+    require(value >= 0 && value <= 2, s"memImplMode must be 0/1/2, got $value")
+    useBlackBoxState = value
+  }
+  def withMemImplMode[T](value: Int)(body: => T): T = {
+    require(value >= 0 && value <= 2, s"memImplMode must be 0/1/2, got $value")
     val prev = useBlackBoxState
     useBlackBoxState = value
     try body finally useBlackBoxState = prev
+  }
+
+  // Backward-compatible boolean API: false -> mode 0, true -> mode 1
+  def useBlackBox: Boolean = useBlackBoxState != 0
+  def setUseBlackBox(value: Boolean): Unit = setMemImplMode(if (value) 1 else 0)
+  def withUseBlackBox[T](value: Boolean)(body: => T): T = {
+    withMemImplMode(if (value) 1 else 0)(body)
   }
 
   // ============================================================
@@ -59,7 +71,7 @@ object GlobalConfig {
   // ============================================================
   // Memory latency (pipeline depth for DPI / BlackBox)
   // ============================================================
-  val normalMemDpiLatency = 2
+  val normalMemDpiLatency = 4
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 2
   val subgridMemDpiLatency = 2
@@ -68,13 +80,15 @@ object GlobalConfig {
   // ============================================================
   // Grid resolutions
   // ============================================================
+  val Trinum = 14204
   // SDF PE grid
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
+  val LocalCell = 1998
   // DDA grid
   val GlobalDdaRes = 8
   val SubDdaRes = 1
-
+  val DdaRes= GlobalDdaRes*SubDdaRes
   // ============================================================
   // Memory address widths (key interfaces)
   // ============================================================
@@ -127,18 +141,15 @@ object GlobalConfig {
   val sdfHitAdvance = 1e-3f
   val sdfHitBackoffN = 1
 
-  // DDA parameters
+
   val ddaMaxSteps = 8
 
-  // ============================================================
-  // Memory depths (MAX_ENTRIES equivalents)
-  // ============================================================
-  val triMemDepth = 4096
-  val normalMemDepth = 16384
-  val subgridMetaMemDepth = 512
-  val sdfGlobalMemDepth = 4096     // 2^12 global SDF entries
-  val sdfLocalMemDepth = 65536   // 2^20 local SDF entries
-  val bvhMemDepth = 65536          // 2^16 BVH nodes
+  val triMemDepth = Trinum/4
+  val normalMemDepth = Trinum
+  val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
+  val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
+  val sdfLocalMemDepth = LocalCell
+  val bvhMemDepth = 65536          // nouse
 }
 case class FloatConfig(
                         expWidth: Int,

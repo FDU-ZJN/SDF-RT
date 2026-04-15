@@ -101,6 +101,31 @@ private class NormalMemResourceBB(
   addResource("/NormalMemBlackBox.sv")
 }
 
+private class NormalMemIpBB(
+  val addrWidth: Int = GlobalConfig.normalMemAddrWidth,
+  val latency: Int = GlobalConfig.normalMemDpiLatency
+) extends BlackBox(
+      Map(
+        "ADDR_WIDTH" -> GlobalConfig.normalMemAddrWidth,
+        "DATA_WIDTH" -> GlobalConfig.normalMemDataWidth,
+        "LATENCY" -> latency,
+        "MAX_ENTRIES" -> GlobalConfig.normalMemDepth
+      )
+    )
+    with HasBlackBoxResource {
+  override def desiredName: String = "NormalMem"
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val addr = Input(UInt(GlobalConfig.normalMemAddrWidth.W))
+    val en = Input(Bool())
+    val data = Output(UInt(GlobalConfig.normalMemDataWidth.W))
+    val valid = Output(Bool())
+    val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
+  })
+  addResource("/NormalMem.sv")
+}
+
 class NormalMemDPI(
   val addrWidth: Int = GlobalConfig.normalMemAddrWidth,
   val latency: Int = GlobalConfig.normalMemDpiLatency
@@ -116,24 +141,34 @@ class NormalMemDPI(
     val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
   })
 
-  if (GlobalConfig.useBlackBox) {
-    val impl = Module(new NormalMemResourceBB(addrWidth, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.addr := io.addr
-    impl.io.en := io.en
-    io.data := impl.io.data
-    io.valid := impl.io.valid
-    io.addr_q := impl.io.addr_q
-  } else {
-    val impl = Module(new NormalMemDPICore(addrWidth, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.addr := io.addr
-    impl.io.en := io.en
-    io.data := impl.io.data
-    io.valid := impl.io.valid
-    io.addr_q := impl.io.addr_q
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val impl = Module(new NormalMemDPICore(addrWidth, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.addr_q := impl.io.addr_q
+    case 1 =>
+      val impl = Module(new NormalMemResourceBB(addrWidth, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.addr_q := impl.io.addr_q
+    case 2 =>
+      val impl = Module(new NormalMemIpBB(addrWidth, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.addr := io.addr
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      io.addr_q := impl.io.addr_q
   }
 }
 

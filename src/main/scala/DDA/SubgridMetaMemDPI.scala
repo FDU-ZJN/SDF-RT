@@ -101,6 +101,35 @@ private class SubgridMetaMemResourceBB(
   addResource("/SubgridMetaMemBlackBox.sv")
 }
 
+private class SubgridMetaMemIpBB(
+  addrWidth: Int = GlobalConfig.subgridMetaMemAddrWidth,
+  GlobalRes: Int = GlobalConfig.GlobalDdaRes,
+  SubRes: Int = GlobalConfig.SubDdaRes,
+  Latency: Int = GlobalConfig.subgridMemDpiLatency
+) extends BlackBox(
+      Map(
+        "ADDR_WIDTH" -> GlobalConfig.subgridMetaMemAddrWidth,
+        "GLOBALRES" -> GlobalRes,
+        "SUBRES" -> SubRes,
+        "LATENCY" -> Latency,
+        "MAX_ENTRIES" -> GlobalConfig.subgridMetaMemDepth
+      )
+    )
+    with HasBlackBoxResource {
+  override def desiredName: String = "SubgridMetaMem"
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val globalIdx = Input(UInt(GlobalConfig.subgridMetaMemAddrWidth.W))
+    val subIdx = Input(UInt(GlobalConfig.subgridMetaMemAddrWidth.W))
+    val en = Input(Bool())
+    val triStart = Output(UInt(GlobalConfig.subgridMetaMemTriStartWidth.W))
+    val triCount = Output(UInt(GlobalConfig.subgridMetaMemTriCountWidth.W))
+    val valid = Output(Bool())
+  })
+  addResource("/SubgridMetaMem.sv")
+}
+
 class SubgridMetaMemDPI(
   addrWidth: Int = GlobalConfig.subgridMetaMemAddrWidth,
   latency: Int = GlobalConfig.subgridMemDpiLatency
@@ -116,26 +145,37 @@ class SubgridMetaMemDPI(
     val valid = Output(Bool())
   })
 
-  if (GlobalConfig.useBlackBox) {
-    val impl = Module(new SubgridMetaMemResourceBB(addrWidth, GlobalConfig.GlobalDdaRes, GlobalConfig.SubDdaRes, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.globalIdx := io.globalIdx
-    impl.io.subIdx := io.subIdx
-    impl.io.en := io.en
-    io.triStart := impl.io.triStart
-    io.triCount := impl.io.triCount
-    io.valid := impl.io.valid
-  } else {
-    val impl = Module(new SubgridMetaMemDPICore(addrWidth, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.globalIdx := io.globalIdx
-    impl.io.subIdx := io.subIdx
-    impl.io.en := io.en
-    io.triStart := impl.io.triStart
-    io.triCount := impl.io.triCount
-    io.valid := impl.io.valid
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val impl = Module(new SubgridMetaMemDPICore(addrWidth, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.subIdx := io.subIdx
+      impl.io.en := io.en
+      io.triStart := impl.io.triStart
+      io.triCount := impl.io.triCount
+      io.valid := impl.io.valid
+    case 1 =>
+      val impl = Module(new SubgridMetaMemResourceBB(addrWidth, GlobalConfig.GlobalDdaRes, GlobalConfig.SubDdaRes, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.subIdx := io.subIdx
+      impl.io.en := io.en
+      io.triStart := impl.io.triStart
+      io.triCount := impl.io.triCount
+      io.valid := impl.io.valid
+    case 2 =>
+      val impl = Module(new SubgridMetaMemIpBB(addrWidth, GlobalConfig.GlobalDdaRes, GlobalConfig.SubDdaRes, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.subIdx := io.subIdx
+      impl.io.en := io.en
+      io.triStart := impl.io.triStart
+      io.triCount := impl.io.triCount
+      io.valid := impl.io.valid
   }
 }
 
