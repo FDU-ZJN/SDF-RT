@@ -73,7 +73,7 @@ object GlobalConfig {
   // ============================================================
   val normalMemDpiLatency = 4
   val triMemDpiLatency = 2
-  val sdfMemDpiLatency = 2
+  val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 29
 

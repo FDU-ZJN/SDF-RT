@@ -2,7 +2,7 @@ module SdfMem #(
   parameter int ADDR_WIDTH       = 32,
   parameter int DATA_WIDTH       = 32,
   parameter int GLOBAL_ADDR_BITS = 12,
-  parameter int LATENCY          = 2,
+  parameter int LATENCY          = 3,
   parameter int GLOBAL_SDF_SIZE  = 4096,    // 16*16*16
   parameter int LOCAL_CELL_COUNT = 2048,
   parameter int LOCAL_PER_CELL   = 64,      // 4*4*4
@@ -29,7 +29,8 @@ module SdfMem #(
   // =========================================================================
   // 常量
   // =========================================================================
-  localparam int FIXED_LATENCY     = 2;
+  localparam int FIXED_LATENCY     = 3;
+  localparam int URAM_READ_LATENCY = FIXED_LATENCY - 1;
   localparam int MAX_GLOBAL        = 4096;    // 16^3
   localparam int MAX_LOCAL         = 131072;  // 2048 * 64
 
@@ -49,6 +50,12 @@ module SdfMem #(
   logic [LOCAL_ADDR_W-1:0] local_wr_cell_q;
   logic [5:0]  local_wr_lane_q;
   logic [31:0] wr_data_q;
+  logic [ADDR_WIDTH-1:0] globalIdx_s0;
+  logic [ADDR_WIDTH-1:0] localIdx_s0;
+  logic                  en_s0;
+  logic [ADDR_WIDTH-1:0] globalIdx_s1;
+  logic [ADDR_WIDTH-1:0] localIdx_s1;
+  logic                  en_s1;
 
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -56,6 +63,12 @@ module SdfMem #(
       local_wr_active_q  <= 1'b0;
       global_wr_addr_q   <= '0;
       wr_data_q          <= '0;
+      globalIdx_s0       <= '0;
+      localIdx_s0        <= '0;
+      en_s0              <= 1'b0;
+      globalIdx_s1       <= '0;
+      localIdx_s1        <= '0;
+      en_s1              <= 1'b0;
     end else begin
       global_wr_active_q <= wr_en && (wr_addr[31:12] == 20'h0);
       local_wr_active_q  <= wr_en && (wr_addr[31:12] != 20'h0);
@@ -63,6 +76,12 @@ module SdfMem #(
       local_wr_cell_q    <= wr_addr[18:8];
       local_wr_lane_q    <= wr_addr[7:2];
       wr_data_q          <= wr_data;
+      globalIdx_s0       <= globalIdx;
+      localIdx_s0        <= localIdx;
+      en_s0              <= en;
+      globalIdx_s1       <= globalIdx_s0;
+      localIdx_s1        <= localIdx_s0;
+      en_s1              <= en_s0;
     end
   end
 
@@ -72,11 +91,12 @@ module SdfMem #(
   logic                        has_local;
   logic [10:0]                 cell_idx;
 
-  assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:0];
+  assign mapping_addr = globalIdx_s0[GLOBAL_ADDR_BITS-1:0];
 
   local_idx_mem local_idx_mem_inst (
-    .a  (mapping_addr),
-    .spo(mapping_entry)
+    .clka (clk),
+    .addra(mapping_addr),
+    .douta(mapping_entry)
   );
 
   assign has_local = mapping_entry[15];
@@ -86,17 +106,17 @@ module SdfMem #(
   logic [LOCAL_ADDR_W-1:0]   local_rd_cell_addr;
   logic [5:0]                local_rd_lane;
 
-  assign global_rd_addr = globalIdx[11:0];
+  assign global_rd_addr = globalIdx_s1[11:0];
   assign local_rd_cell_addr = cell_idx;
-  assign local_rd_lane      = localIdx[5:0];
+  assign local_rd_lane      = localIdx_s1[5:0];
 
   logic global_in_range;
   logic local_in_range;
 
-  assign global_in_range = (globalIdx < MAX_GLOBAL);
+  assign global_in_range = (globalIdx_s1 < MAX_GLOBAL);
   assign local_in_range  = has_local
                          && (cell_idx  < LOCAL_CELL_COUNT)
-                         && (localIdx  < LOCAL_PER_CELL);
+                         && (localIdx_s1  < LOCAL_PER_CELL);
 
 
   logic [11:0]              global_uram_addr;
@@ -112,7 +132,7 @@ module SdfMem #(
     .MEMORY_SIZE        (GLOBAL_DEPTH * GLOBAL_DATA_W),
     .READ_DATA_WIDTH_A  (GLOBAL_DATA_W),
     .WRITE_DATA_WIDTH_A (GLOBAL_DATA_W),
-    .READ_LATENCY_A     (FIXED_LATENCY),
+    .READ_LATENCY_A     (URAM_READ_LATENCY),
     .WRITE_MODE_A       ("read_first"),
     .MEMORY_PRIMITIVE   ("ultra")
   ) global_uram_inst (
@@ -156,7 +176,7 @@ module SdfMem #(
     .READ_DATA_WIDTH_A  (LOCAL_DATA_W),
     .WRITE_DATA_WIDTH_A (LOCAL_DATA_W),
     .BYTE_WRITE_WIDTH_A (8),
-    .READ_LATENCY_A     (FIXED_LATENCY),
+    .READ_LATENCY_A     (URAM_READ_LATENCY),
     .WRITE_MODE_A       ("read_first"),
     .MEMORY_PRIMITIVE   ("ultra")
   ) local_uram_inst (
@@ -193,7 +213,7 @@ module SdfMem #(
       end
     end else begin
       // Stage 0
-      valid_pipe[0]     <= en;
+      valid_pipe[0]     <= en_s1;
       has_local_pipe[0] <= has_local;
       global_ok_pipe[0] <= global_in_range;
       local_ok_pipe[0]  <= local_in_range;

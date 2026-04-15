@@ -322,9 +322,9 @@ object FpgaTopGen extends App {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withUseFloatIP:Boolean=true): Unit = {
+  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=0,withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
-    GlobalConfig.withMemImplMode(2) {
+    GlobalConfig.withMemImplMode(withMemImplMode) {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {
         emitVerilog(
           new FpgaTop(
@@ -341,6 +341,6 @@ object FpgaTopGen extends App {
     println(s"FPGA_TOP generated in $targetDir")
   }
 
-  generateFpgaTopVerilog(targetDir = "build/vivado")
+  generateFpgaTopVerilog(targetDir = "build/vivado",withMemImplMode=2)
   generateFpgaTopVerilog(withUseFloatIP = false)
 }

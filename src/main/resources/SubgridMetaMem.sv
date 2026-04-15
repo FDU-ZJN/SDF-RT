@@ -46,10 +46,10 @@ module SubgridMetaMem #(
 
   assign addr = lookup_addr[BRAM_ADDR_WIDTH-1:0];
 
-  dda_mem subgridmem_inst (
-    .clka(clk),
-    .addra(addr),
-    .douta(data)
+  subgrid_mem subgridmem_inst (
+    .clk(clk),
+    .a(addr),
+    .qspo(data)
   );
 
   always_ff @(posedge clk) begin
