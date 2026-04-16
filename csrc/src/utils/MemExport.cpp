@@ -372,11 +372,12 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs) {
     for (size_t baseIdx = 0; baseIdx < tri_store.size(); baseIdx += triBatchSize) {
         std::string hexLine;
         
-        for (int lane = 0; lane < triBatchSize; ++lane) {
+        // 倒序拼接以匹配Verilog的字节序：COE最左侧对应BRAM最高位
+        for (int lane = triBatchSize - 1; lane >= 0; --lane) {
             const size_t triIdx = baseIdx + lane;
             if (triIdx >= tri_store.size()) {
                 // Pad with zeros (9 floats = 288 bits per triangle)
-                for (int f = 0; f < 9; ++f) {
+                for (int f = 8; f >= 0; --f) {
                     hexLine += "00000000";
                 }
             } else {
@@ -387,7 +388,7 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs) {
                     tri.v2[0], tri.v2[1], tri.v2[2]
                 };
 
-                for (int f = 0; f < 9; ++f) {
+                for (int f = 8; f >= 0; --f) {
                     hexLine += u32ToHex(floatToRawU32(values[f]));
                 }
             }
@@ -429,9 +430,10 @@ void export_normal_mem_coe(const std::string& filename) {
     for (size_t idx = 0; idx < normal_store.size(); ++idx) {
         const std::array<float, 3>& n = normal_store[idx];
 
-        std::string hexLine = u32ToHex(floatToRawU32(n[0])) +
+        // 倒序拼接以匹配Verilog的字节序：COE最左侧对应BRAM最高位
+        std::string hexLine = u32ToHex(floatToRawU32(n[2])) +
                              u32ToHex(floatToRawU32(n[1])) +
-                             u32ToHex(floatToRawU32(n[2]));
+                             u32ToHex(floatToRawU32(n[0]));
 
         out << hexLine << (idx + 1 == normal_store.size() ? "" : ",") << std::endl;
     }

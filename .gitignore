@@ -4,6 +4,10 @@
 *.bin
 *.vcd
 *.wlf
+*.mem
+*.coe
+*.ppm
+*.obj
 # 允许 resources 目录下的 .sv 文件
 !src/main/resources/*.sv
 target/

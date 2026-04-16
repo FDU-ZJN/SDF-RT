@@ -20,7 +20,7 @@ module SdfMem #(
   //                          其中 cell = wr_addr[18:8], lane = wr_addr[7:2]
   input  logic                   wr_en,
   input  logic [31:0]            wr_addr,
-  input  logic [31:0]            wr_data,
+  input  logic [2047:0]          wr_data,  // 2048位宽写入，整cell写入Local
   // 读输出
   output logic [DATA_WIDTH-1:0]  data,
   output logic                   valid
@@ -49,13 +49,10 @@ module SdfMem #(
   logic [11:0] global_wr_addr_q;
   logic [LOCAL_ADDR_W-1:0] local_wr_cell_q;
   logic [5:0]  local_wr_lane_q;
-  logic [31:0] wr_data_q;
+  logic [2047:0] wr_data_q;
   logic [ADDR_WIDTH-1:0] globalIdx_s0;
   logic [ADDR_WIDTH-1:0] localIdx_s0;
   logic                  en_s0;
-  logic [ADDR_WIDTH-1:0] globalIdx_s1;
-  logic [ADDR_WIDTH-1:0] localIdx_s1;
-  logic                  en_s1;
 
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -66,9 +63,6 @@ module SdfMem #(
       globalIdx_s0       <= '0;
       localIdx_s0        <= '0;
       en_s0              <= 1'b0;
-      globalIdx_s1       <= '0;
-      localIdx_s1        <= '0;
-      en_s1              <= 1'b0;
     end else begin
       global_wr_active_q <= wr_en && (wr_addr[31:12] == 20'h0);
       local_wr_active_q  <= wr_en && (wr_addr[31:12] != 20'h0);
@@ -79,9 +73,6 @@ module SdfMem #(
       globalIdx_s0       <= globalIdx;
       localIdx_s0        <= localIdx;
       en_s0              <= en;
-      globalIdx_s1       <= globalIdx_s0;
-      localIdx_s1        <= localIdx_s0;
-      en_s1              <= en_s0;
     end
   end
 
@@ -91,7 +82,7 @@ module SdfMem #(
   logic                        has_local;
   logic [10:0]                 cell_idx;
 
-  assign mapping_addr = globalIdx_s0[GLOBAL_ADDR_BITS-1:0];
+  assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:0];
 
   local_idx_mem local_idx_mem_inst (
     .clka (clk),
@@ -106,17 +97,17 @@ module SdfMem #(
   logic [LOCAL_ADDR_W-1:0]   local_rd_cell_addr;
   logic [5:0]                local_rd_lane;
 
-  assign global_rd_addr = globalIdx_s1[11:0];
+  assign global_rd_addr = globalIdx_s0[11:0];
   assign local_rd_cell_addr = cell_idx;
-  assign local_rd_lane      = localIdx_s1[5:0];
+  assign local_rd_lane      = localIdx_s0[5:0];
 
   logic global_in_range;
   logic local_in_range;
 
-  assign global_in_range = (globalIdx_s1 < MAX_GLOBAL);
+  assign global_in_range = (globalIdx_s0 < MAX_GLOBAL);
   assign local_in_range  = has_local
                          && (cell_idx  < LOCAL_CELL_COUNT)
-                         && (localIdx_s1  < LOCAL_PER_CELL);
+                         && (localIdx_s0  < LOCAL_PER_CELL);
 
 
   logic [11:0]              global_uram_addr;
@@ -141,7 +132,7 @@ module SdfMem #(
     .ena            (1'b1),
     .regcea         (1'b1),
     .addra          (global_uram_addr),
-    .dina           (wr_data_q),
+    .dina           (wr_data_q[31:0]), // Global只写入低32位
     .wea            (global_we),
     .injectsbiterra (1'b0),
     .injectdbiterra (1'b0),
@@ -158,17 +149,13 @@ module SdfMem #(
   logic [LOCAL_DATA_W-1:0]    local_dout;
 
   assign local_uram_addr = local_wr_active_q ? local_wr_cell_q : local_rd_cell_addr;
-  // BYTE_WRITE_WIDTH_A = 8 时，wea 每一位控制一个 byte
-  // 将选中的 32-bit lane 复制为 4 个 byte 写使能
   always_comb begin
     local_we = '0;
     if (local_wr_active_q) begin
-      for (int b = 0; b < 4; b++) begin
-        local_we[local_wr_lane_q * 4 + b] = 1'b1;
-      end
+      local_we = '1;
     end
   end
-  assign local_dina      = {LOCAL_PER_CELL{wr_data_q}};
+  assign local_dina      = wr_data_q; // 直接使用2048位输入
 
   xpm_memory_spram #(
     .ADDR_WIDTH_A       (LOCAL_ADDR_W),
@@ -197,33 +184,38 @@ module SdfMem #(
 
 
   logic [FIXED_LATENCY-1:0] valid_pipe;
-  logic [FIXED_LATENCY-1:0] has_local_pipe;
-  logic [FIXED_LATENCY-1:0] global_ok_pipe;
-  logic [FIXED_LATENCY-1:0] local_ok_pipe;
-  logic [5:0]               local_lane_pipe [FIXED_LATENCY-1:0];
+  logic [URAM_READ_LATENCY-1:0] use_local_pipe;
+  logic [URAM_READ_LATENCY-1:0] global_ok_pipe;
+  logic [URAM_READ_LATENCY-1:0] local_ok_pipe;
+  logic [5:0]                   local_lane_pipe [URAM_READ_LATENCY-1:0];
 
   always_ff @(posedge clk) begin
     if (reset) begin
       valid_pipe     <= '0;
-      has_local_pipe <= '0;
+      use_local_pipe <= '0;
       global_ok_pipe <= '0;
       local_ok_pipe  <= '0;
-      for (int p = 0; p < FIXED_LATENCY; p++) begin
+      for (int p = 0; p < URAM_READ_LATENCY; p++) begin
         local_lane_pipe[p] <= '0;
       end
     end else begin
-      // Stage 0
-      valid_pipe[0]     <= en_s1;
-      has_local_pipe[0] <= has_local;
-      global_ok_pipe[0] <= global_in_range;
-      local_ok_pipe[0]  <= local_in_range;
-      local_lane_pipe[0] <= local_rd_lane;
-      // Stage 1..N
+      // Stage 0: request enters the module.
+      valid_pipe[0] <= en;
       for (int p = 1; p < FIXED_LATENCY; p++) begin
-        valid_pipe[p]     <= valid_pipe[p-1];
-        has_local_pipe[p] <= has_local_pipe[p-1];
-        global_ok_pipe[p] <= global_ok_pipe[p-1];
-        local_ok_pipe[p]  <= local_ok_pipe[p-1];
+        valid_pipe[p] <= valid_pipe[p-1];
+      end
+
+      // Stage 1: mapping result selects global/local path.
+      use_local_pipe[0]  <= has_local;
+      global_ok_pipe[0]  <= global_in_range;
+      local_ok_pipe[0]   <= local_in_range;
+      local_lane_pipe[0] <= local_rd_lane;
+
+      // Stage 2..3: align selectors with the 2-cycle URAM response.
+      for (int p = 1; p < URAM_READ_LATENCY; p++) begin
+        use_local_pipe[p]  <= use_local_pipe[p-1];
+        global_ok_pipe[p]  <= global_ok_pipe[p-1];
+        local_ok_pipe[p]   <= local_ok_pipe[p-1];
         local_lane_pipe[p] <= local_lane_pipe[p-1];
       end
     end
@@ -232,22 +224,15 @@ module SdfMem #(
   // =========================================================================
   // 输出选择
   // =========================================================================
+  assign valid = valid_pipe[FIXED_LATENCY-1];
   always_comb begin
-    data  = '0;
-    valid = 1'b0;
-
-    if (valid_pipe[FIXED_LATENCY-1]) begin
-      if (has_local_pipe[FIXED_LATENCY-1]) begin
-        if (local_ok_pipe[FIXED_LATENCY-1]) begin
-          data  = local_dout[local_lane_pipe[FIXED_LATENCY-1] * 32 +: 32];
-          valid = 1'b1;
-        end
-      end else begin
-        if (global_ok_pipe[FIXED_LATENCY-1]) begin
-          data  = global_dout;
-          valid = 1'b1;
-        end
+    data = '0;
+    if (use_local_pipe[URAM_READ_LATENCY-1]) begin
+      if (local_ok_pipe[URAM_READ_LATENCY-1]) begin
+        data = local_dout[local_lane_pipe[URAM_READ_LATENCY-1] * 32 +: 32];
       end
+    end else if (global_ok_pipe[URAM_READ_LATENCY-1]) begin
+      data = global_dout;
     end
   end
 

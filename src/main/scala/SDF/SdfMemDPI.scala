@@ -7,8 +7,8 @@ import raytrace_utils.GlobalConfig
 
 class SdfMemWriteIO extends Bundle {
   val wr_en   = Output(Bool())
-  val wr_addr = Output(UInt(32.W))  // Full 32-bit address (auto-decoded)
-  val wr_data = Output(UInt(32.W))  // Single FP32 value
+  val wr_addr = Output(UInt(32.W))    // Full 32-bit address (auto-decoded)
+  val wr_data = Output(UInt(2048.W))  // 2048-bit wide: full cell write for Local
 }
 
 private class SdfMemDPICore(
@@ -31,7 +31,7 @@ private class SdfMemDPICore(
     // Simplified write port (unused in DPI mode)
     val wr_en   = Input(Bool())
     val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
+    val wr_data = Input(UInt(2048.W))
   })
 
   private val svCode =
@@ -48,7 +48,7 @@ private class SdfMemDPICore(
        |  output valid,
        |  input wr_en,
        |  input  [31:0] wr_addr,
-       |  input  [31:0] wr_data
+       |  input  [2047:0] wr_data
        |);
        |  int dpi_data;
        |  reg [${dataWidth - 1}:0] data_pipe[0:${latency - 1}];
@@ -105,7 +105,7 @@ private class SdfMemResourceBB(
     val valid = Output(Bool())
     val wr_en   = Input(Bool())
     val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
+    val wr_data = Input(UInt(2048.W))
   })
   addResource("/SdfMemBlackBox.sv")
 }
@@ -133,7 +133,7 @@ private class SdfMemIpBB(
     val valid = Output(Bool())
     val wr_en   = Input(Bool())
     val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
+    val wr_data = Input(UInt(2048.W))
   })
   addResource("/SdfMem.sv")
 }

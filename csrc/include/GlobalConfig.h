@@ -39,7 +39,7 @@ inline constexpr const char* kVcdPath = "raytrace.vcd";
 #endif
 
 // Debug configuration (edit here directly, no CLI parsing).
-inline constexpr bool kEnableVcd = false;
+inline constexpr bool kEnableVcd = true;
 inline constexpr bool kVcdWindowByPixel = false;
 inline constexpr int kVcdStartPixelX = 150;
 inline constexpr int kVcdStartPixelY = 163;

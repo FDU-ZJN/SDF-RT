@@ -7,8 +7,8 @@ object GlobalConfig {
   // ============================================================
   // FPGA top / frame config
   // ============================================================
-  val frameWidth = 400
-  val frameHeight = 400
+  val frameWidth = 100
+  val frameHeight = 100
   val pixelQueueDepth = 4
   val rayDirFifoDepth = 16
   // ============================================================
@@ -74,7 +74,7 @@ object GlobalConfig {
   val normalMemDpiLatency = 4
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 3
-  val subgridMemDpiLatency = 2
+  val subgridMemDpiLatency = 1
   val fsqrtLatency = 29
 
   // ============================================================
@@ -84,7 +84,7 @@ object GlobalConfig {
   // SDF PE grid
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
-  val LocalCell = 1998
+  val LocalCell = 2048
   // DDA grid
   val GlobalDdaRes = 8
   val SubDdaRes = 1
@@ -155,7 +155,7 @@ case class FloatConfig(
                         expWidth: Int,
                         precision: Int,
                         fmulLatency: Int = 8,
-                        faddLatency: Int = 7,
+                        faddLatency: Int = 8,
                         fcmpLatency: Int = 2,
                         fptointLatency: Int = 1,
                         fdivLatency: Int = 29,

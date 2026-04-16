@@ -322,7 +322,7 @@ object FpgaTopGen extends App {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=0,withUseFloatIP:Boolean=true): Unit = {
+  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=1,withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
     GlobalConfig.withMemImplMode(withMemImplMode) {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {

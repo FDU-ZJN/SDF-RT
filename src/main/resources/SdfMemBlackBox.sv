@@ -2,30 +2,32 @@ module SdfMemResourceBB #(
   parameter int ADDR_WIDTH       = 32,
   parameter int DATA_WIDTH       = 32,
   parameter int GLOBAL_ADDR_BITS = 12,
-  parameter int LATENCY          = 2,
-  parameter int GLOBAL_SDF_SIZE  = 4096,
+  parameter int LATENCY          = 3,
+  parameter int GLOBAL_SDF_SIZE  = 4096,    // 16*16*16
   parameter int LOCAL_CELL_COUNT = 2048,
-  parameter int LOCAL_PER_CELL   = 64,
-  parameter int LOCAL_SDF_SIZE   = LOCAL_CELL_COUNT * LOCAL_PER_CELL
+  parameter int LOCAL_PER_CELL   = 64,      // 4*4*4
+  parameter int LOCAL_SDF_SIZE   = LOCAL_CELL_COUNT * LOCAL_PER_CELL  // 131072
+
 ) (
   input  logic                   clk,
   input  logic                   reset,
   input  logic [ADDR_WIDTH-1:0]  globalIdx,
   input  logic [ADDR_WIDTH-1:0]  localIdx,
   input  logic                   en,
+  output logic [DATA_WIDTH-1:0]  data,
+  output logic                   valid,
   input  logic                   wr_en,
   input  logic [31:0]            wr_addr,
-  input  logic [31:0]            wr_data,
-  output logic [DATA_WIDTH-1:0]  data,
-  output logic                   valid
+  input  logic [2047:0]          wr_data  // 2048位宽写入，整cell写入Local
+  // 读输出
 );
   // Simplified memory storage for simulation
   localparam int MAX_GLOBAL_ENTRIES = 4096;  // 2^12
-  localparam int MAX_LOCAL_CELLS = 2048;
+  localparam int MAX_LOCAL_ENTRIES = 131072; // 1998 * 64 + padding = ~127872
   localparam int MAX_MAPPING_ENTRIES = 4096; // Global SDF size
 
   reg [31:0] sdf_global_mem [0:MAX_GLOBAL_ENTRIES-1];
-  reg [2047:0] sdf_local_mem [0:MAX_LOCAL_CELLS-1];  // 64 FP32 values per cell
+  reg [31:0] sdf_local_mem [0:MAX_LOCAL_ENTRIES-1];
   reg [15:0] sdf_local_mapping [0:MAX_MAPPING_ENTRIES-1]; // [15]=valid, [10:0]=cell_idx
 
   reg global_mem_loaded = 1'b0;
@@ -68,30 +70,6 @@ module SdfMemResourceBB #(
     end
   end
 
-  // Write handling (auto-decoded by address range)
-  always_ff @(posedge clk) begin
-    if (reset) begin
-      // No action on reset for write
-    end else begin
-      // Global SDF write: addr[31:12] == 0 → addr[11:0] indexes global memory
-      if (wr_en && (wr_addr[31:12] == 12'h0)) begin
-        sdf_global_mem[wr_addr[11:0]] <= wr_data;
-      end
-
-      // Local SDF write: addr[31:12] != 0 → addr[16:6]=cell_idx, addr[5:0]=offset
-      if (wr_en && (wr_addr[31:12] != 12'h0)) begin
-        logic [10:0] cell_idx;
-        logic [5:0]  offset;
-        cell_idx = wr_addr[16:6];
-        offset = wr_addr[5:0];
-        if (cell_idx < MAX_LOCAL_CELLS) begin
-          // Update one of 64 values in the 2048-bit word
-          sdf_local_mem[cell_idx] <= (sdf_local_mem[cell_idx] & ~(32'hFFFFFFFF << (offset * 32))) | (wr_data << (offset * 32));
-        end
-      end
-    end
-  end
-
   // Pipeline stage 1: read memory and compute result
   logic [DATA_WIDTH-1:0] data_s1;
   logic                  valid_s1;
@@ -123,9 +101,8 @@ module SdfMemResourceBB #(
         end
       end
       else if (local_mem_loaded && has_local) begin
-        if (cell_idx < MAX_LOCAL_CELLS && localIdx < LOCAL_PER_CELL) begin
-          // Select one of 64 values from 2048-bit word
-          data_s1 <= sdf_local_mem[cell_idx][localIdx * 32 +: 32];
+        if (local_linear_addr < MAX_LOCAL_ENTRIES) begin
+          data_s1 <= sdf_local_mem[local_linear_addr];
           valid_s1 <= 1'b1;
         end else begin
           data_s1 <= '0;
@@ -159,4 +136,3 @@ module SdfMemResourceBB #(
   assign valid = valid_s2;
 
 endmodule
-
