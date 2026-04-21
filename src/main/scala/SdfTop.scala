@@ -25,7 +25,6 @@ class SdfTop extends Module {
   sdfPe.io.out <> io.out
   sdfPe.io.out_hit.ready := true.B
 
-  // SdfPE 采用固定 1-cycle 内存响应假设，顶层将其绑定到 DPI 存储模型。
   sdfPe.io.sdf_mem_req.ready := true.B
   sdfMem.io.clk := clock
   sdfMem.io.reset := reset

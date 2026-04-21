@@ -17,7 +17,7 @@ class BVHTop extends Module {
     val ray_in = Input(new Ray(c.cfg))
     val ray_valid = Input(Bool())
     val out_ready = Output(Bool())
-    val out_rgb = Output(new Vec3(c.cfg))
+    val out_rgb8 = Output(UInt(24.W))
     val out_valid = Output(Bool())
     val out_id = Output(UInt(c.addrWidth.W))
   })
@@ -64,9 +64,7 @@ class BVHTop extends Module {
   missResult.meta  := bvhStage.io.done_meta
   missResult.hit   := false.B
   missResult.hitId := 0.U
-  missResult.rgb.x := 0.U
-  missResult.rgb.y := 0.U
-  missResult.rgb.z := 0.U
+  missResult.rgb8 := 0.U
   missQueue.io.enq.valid := bvhStage.io.no_leaf_done
   missQueue.io.enq.bits  := missResult
   assert(!(bvhStage.io.no_leaf_done && !missQueue.io.enq.ready), "Miss Queue Overflow!")
@@ -76,7 +74,7 @@ class BVHTop extends Module {
   commitQueue.io.writeback3.bits := 0.U.asTypeOf(new RenderResult(c.cfg, c.addrWidth))
 
   commitQueue.io.out.ready := true.B
-  io.out_rgb := commitQueue.io.out.bits.rgb
+  io.out_rgb8 := commitQueue.io.out.bits.rgb8
   io.out_valid := commitQueue.io.out.valid
   io.out_id := commitQueue.io.out.bits.hitId
 }

@@ -308,9 +308,10 @@ int main(int argc, char** argv) {
 
         if (dut->io_out_valid) {
             const RayWorkItem& item = workItems[retired];
-            const uint8_t r = colorToByte(dut->io_out_rgb_x);
-            const uint8_t g = colorToByte(dut->io_out_rgb_y);
-            const uint8_t b = colorToByte(dut->io_out_rgb_z);
+            const uint32_t rgb8 = dut->io_out_rgb8;
+            const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
+            const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
+            const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
             const size_t idx = (static_cast<size_t>(item.py) * kWidth + item.px) * 3;
             image[idx + 0] = r;
             image[idx + 1] = g;

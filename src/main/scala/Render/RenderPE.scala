@@ -1,5 +1,4 @@
 package Render
-
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
@@ -7,77 +6,103 @@ import raytrace_utils.fudian._
 
 class RenderPE(cfg: FloatConfig) extends Module {
   val io = IO(new Bundle {
-    val in_meta   = Input(new RayMeta(cfg.addrWidth))
-    val hit_id    = Input(UInt(cfg.addrWidth.W))
-    val in_hit    = Input(Bool())
-    val in_normal = Input(new Vec3(cfg))
-    val in_valid  = Input(Bool())
-
+    val in_meta    = Input(new RayMeta(cfg.addrWidth))
+    val hit_id     = Input(UInt(cfg.addrWidth.W))
+    val in_hit     = Input(Bool())
+    val in_normal  = Input(new Vec3(cfg))
+    val in_valid   = Input(Bool())
     val out_result = Output(new RenderResult(cfg, cfg.addrWidth))
     val out_valid  = Output(Bool())
   })
 
-  // 浮点常量定义 (IEEE 754)
-  val val_0_15 = "h3E19999A".U // 0.15f
-  val val_0_0  = "h00000000".U // 0.0f
-  val val_1_0  = "h3F800000".U // 1.0f
-  val yellowR = val_1_0
-  val yellowG = val_1_0
-  val yellowB = val_0_0
-  val color_coeffs = VecInit("h3F333333".U, "h3F4CCCCD".U, "h3F666666".U) // 0.7, 0.8, 0.9
+  val val_0_0  = "h00000000".U
+  val val_0_15 = "h3E19999A".U   // 0.15f
+  val val_1_0  = "h3F800000".U   // 1.0f
+  val yellowR  = val_1_0
+  val yellowG  = val_1_0
+  val yellowB  = val_0_0
+  val color_coeffs = VecInit("h3F333333".U, "h3F4CCCCD".U, "h3F666666".U)
 
-  // --- 阶段 1: 渲染计算 ---
-  // 1. Dot Product: diff = dot(normal, light)
+  // ── Stage 1: dot(normal, lightDir) ──────────────────────────────────────
   val dotUnit = Module(new DotProductUnit(cfg))
-  dotUnit.io.a := io.in_normal
-  dotUnit.io.b := "h3F3504F3".U.asTypeOf(new Vec3(cfg)) // 示例光照向量
+  dotUnit.io.a  := io.in_normal
+  dotUnit.io.b  := "h3F3504F3".U.asTypeOf(new Vec3(cfg))
   dotUnit.io.rm := 0.U
 
-  // 2. Max(dot, 0.0)
+  // ── Stage 2: clamp dot 到 [0, +inf) ─────────────────────────────────────
   val cmpDot = Module(new FCMP(cfg))
-  cmpDot.io.a := dotUnit.io.res
-  cmpDot.io.b := val_0_0
-  cmpDot.io.signaling:=false.B
+  cmpDot.io.a        := dotUnit.io.res
+  cmpDot.io.b        := val_0_0
+  cmpDot.io.signaling := false.B
+
   val dotAligned = PipeUtils.pipeData(dotUnit.io.res, cfg.fcmpLatency)
   val diff = Mux(cmpDot.io.lt, val_0_0, dotAligned)
 
-  // 3. Add Ambient: (diff + 0.15)
+  // ── Stage 3: ambient + diffuse ───────────────────────────────────────────
   val fadd = Module(new FADD(cfg))
-  fadd.io.a := diff
-  fadd.io.b := val_0_15
+  fadd.io.a  := diff
+  fadd.io.b  := val_0_15
   fadd.io.rm := 0.U
 
-  // 4. Multiply Color: (diff + 0.15) * Coeff
+  // ── Stage 4: × color coefficients ───────────────────────────────────────
   val muls = Seq.fill(3)(Module(new FMUL(cfg)))
   for (i <- 0 until 3) {
-    muls(i).io.a := fadd.io.res
-    muls(i).io.b := color_coeffs(i)
+    muls(i).io.a  := fadd.io.res
+    muls(i).io.b  := color_coeffs(i)
     muls(i).io.rm := 0.U
   }
 
-  // 5. Clamp: min(max(color, 0.0), 1.0)
+  // ── Stage 5: clamp 每通道到 [0, 1] ──────────────────────────────────────
+  // cmpMax: a=1.0, b=mul_result → lt = (1.0 < mul_result) 即 result > 1.0
   val clampedRGB = muls.map { mul =>
     val cmpMax = Module(new FCMP(cfg))
-    cmpMax.io.a := val_1_0
-    cmpMax.io.b := mul.io.result
-    cmpMax.io.signaling:= false.B
+    cmpMax.io.a        := val_1_0
+    cmpMax.io.b        := mul.io.result
+    cmpMax.io.signaling := false.B
     val mulAligned = PipeUtils.pipeData(mul.io.result, cfg.fcmpLatency)
     Mux(cmpMax.io.lt, val_1_0, mulAligned)
   }
 
-  // --- 阶段 3: 流水线同步 ---
-  // 总延迟 = 点积前比较 + 点积 + 加法 + 乘法后比较
-  val totalLatency = cfg.fcmpLatency + cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fcmpLatency
-  val hit_sync = PipeUtils.pipeData(io.in_hit, totalLatency)
+  // ── 控制信号同步（对齐到 clampedRGB 输出拍） ─────────────────────────────
+  // 流水级：fdot + fcmp(≥0) + fadd + fmul + fcmp(≤1)
+  val totalLatency = cfg.fdotLatency + cfg.fcmpLatency +
+                     cfg.faddLatency + cfg.fmulLatency + cfg.fcmpLatency
+  val hit_sync   = PipeUtils.pipeData(io.in_hit,   totalLatency)
   val valid_sync = PipeUtils.pipeData(io.in_valid, totalLatency)
-  val id_sync = PipeUtils.pipeData(io.hit_id, totalLatency)
-  val meta_sync = PipeUtils.pipeData(io.in_meta, totalLatency)
+  val id_sync    = PipeUtils.pipeData(io.hit_id,   totalLatency)
+  val meta_sync  = PipeUtils.pipeData(io.in_meta,  totalLatency)
 
-  io.out_result.meta := meta_sync
-  io.out_result.hit := hit_sync
+  // ── 选色：命中用光照色，miss 用黄色 ─────────────────────────────────────
+  val finalRGB = Seq(
+    Mux(hit_sync, clampedRGB(0), yellowR),
+    Mux(hit_sync, clampedRGB(1), yellowG),
+    Mux(hit_sync, clampedRGB(2), yellowB)
+  )
+  def floatTo8bit(fp: UInt): UInt = {
+    val exp  = fp(30, 23)
+    val frac = Cat(1.U(1.W), fp(22, 0))   // 24bit，含隐含 1
+
+    Mux(
+      fp === val_1_0,                      // 精确 1.0 → 255
+      255.U(8.W),
+      Mux(
+        exp === 0.U,                       // 零或 denorm → 0
+        0.U(8.W),
+        // 正常范围 (0,1)：exp ∈ [1,126]
+        // shift = 142 - exp，范围 [16, 141]，右移后低8位即为结果
+        // 142 - exp：exp≤126 时无符号安全（142>126）
+        (frac >> (142.U - exp))(7, 0)
+      )
+    )
+  }
+
+  val r8 = floatTo8bit(finalRGB(0))
+  val g8 = floatTo8bit(finalRGB(1))
+  val b8 = floatTo8bit(finalRGB(2))
+
+  io.out_result.meta  := meta_sync
+  io.out_result.hit   := hit_sync
   io.out_result.hitId := id_sync
-  io.out_result.rgb.x := Mux(hit_sync, clampedRGB(0), yellowR)
-  io.out_result.rgb.y := Mux(hit_sync, clampedRGB(1), yellowG)
-  io.out_result.rgb.z := Mux(hit_sync, clampedRGB(2), yellowB)
-  io.out_valid := valid_sync
+  io.out_result.rgb8  := Cat(r8, g8, b8)
+  io.out_valid        := valid_sync
 }

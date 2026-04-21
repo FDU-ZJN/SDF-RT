@@ -9,6 +9,7 @@ A high-performance, parallel ray tracing accelerator implemented in Chisel/Scala
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
+- [Top-Level Integration](#top-level-integration)
 - [Directory Structure](#directory-structure)
 - [Core Modules](#core-modules)
   - [SDF Traversal](#1-sdf-traversal)
@@ -75,6 +76,34 @@ SDF-RT is a hardware ray tracing accelerator designed for real-time rendering ap
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Top-Level Integration
+
+The FPGA deployment path uses two top-level layers that serve different roles:
+
+1. `src/main/scala/FpgaTop.scala`
+   - The Chisel top-level that generates rays, runs `SimTop`, and emits a decoupled pixel stream.
+   - Generated RTL is written to `build/vivado/FpgaTop.sv` for Vivado and `build/fpga/FpgaTop.sv` for Verilator-oriented flows.
+2. `build/vivado/fpga_top.v`
+   - The Vivado-facing Verilog wrapper that instantiates `FpgaTop`, attaches `axi_top` (`axi_bram_ctrl`), and exposes setup / frame control / pixel state through AXI BRAM reads and writes.
+   - `vivado/src/fpga_top.v` is kept in sync for IP packaging via `component.xml`.
+
+### Source of Truth
+
+- `build/vivado/FpgaTop.sv`: generated FPGA core used by the Vivado project
+- `build/vivado/fpga_top.v`: AXI wrapper used by `vivado/sdf-rt.xpr`
+- `vivado/src/fpga_top.v`: synchronized copy for packaged-IP metadata
+
+### Pixel Readback Paths
+
+- Direct simulation path:
+  - `csrc/main_fpga.cpp` drives `FpgaTop` ports such as `io_pixel_valid`, `io_pixel_x`, `io_pixel_y`, and `io_pixel_rgb8`.
+- AXI-integrated FPGA path:
+  - software reads pixel state through `axi_bram_ctrl`
+  - wrapper logic places pixel data on `bram_rddata`
+  - `axi_bram_ctrl` returns it on `s_axi_rdata`
 
 ---
 
@@ -375,7 +404,7 @@ sbt test
 
 ### FpgaTop Architecture
 
-`FpgaTop` provides a simplified abstraction layer for FPGA deployment:
+`FpgaTop` provides the compute-side abstraction layer for FPGA deployment:
 
 ```
 FpgaTop
@@ -386,13 +415,19 @@ FpgaTop
 └── PixelQueue (output buffer, configurable depth)
 ```
 
+For a complete FPGA build, this core is wrapped by `fpga_top.v`, which converts AXI BRAM transactions into:
+- setup-register writes
+- SDF memory writes
+- pixel / status register reads through `s_axi_rdata`
+
 ### Interface Summary
 
 | Interface | Signals | Description |
 |-----------|---------|-------------|
 | **Setup** | `setup_valid`, `setup_origin`, `setup_grid_min/max`, `setup_ready` | Camera/scene configuration |
 | **Frame Control** | `frame_start`, `frame_done`, `busy`, `frame_count` | Frame lifecycle management |
-| **Pixel Output** | `pixel_valid/ready`, `pixel_x/y`, `pixel_rgb`, `pixel_hit_id` | Decoupled pixel data stream |
+| **Pixel Output** | `pixel_valid/ready`, `pixel_x/y`, `pixel_rgb8`, `pixel_hit_id` | Decoupled stream on the Chisel core |
+| **AXI Wrapper** | `s_axi_*`, `bram_rddata` | Register-style setup and pixel/status polling through AXI BRAM |
 
 ### Quick Start
 

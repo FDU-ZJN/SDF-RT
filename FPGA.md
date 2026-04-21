@@ -8,6 +8,7 @@ This guide covers FPGA deployment and simulation for the SDF-RT ray tracing acce
 
 - [Overview](#overview)
 - [Architecture](#architecture)
+- [Wrapper Layers](#wrapper-layers)
 - [Simulation Modes](#simulation-modes)
 - [Quick Start](#quick-start)
 - [Interface Reference](#interface-reference)
@@ -22,7 +23,7 @@ This guide covers FPGA deployment and simulation for the SDF-RT ray tracing acce
 
 ## Overview
 
-`FpgaTop` is the top-level module designed for FPGA deployment. It provides a simplified interface that:
+`FpgaTop` is the compute-side top-level module designed for FPGA deployment. It provides a simplified interface that:
 
 1. **Configures** camera and scene parameters via the setup interface
 2. **Automatically generates** rays for each pixel (raster-scan order)
@@ -32,6 +33,8 @@ This guide covers FPGA deployment and simulation for the SDF-RT ray tracing acce
 6. **Saves rendered output** as a PPM image file (in simulation)
 
 The internal pipeline handles all ray tracing computation automatically, including SDF traversal, BVH acceleration, DDA grid traversal, and triangle intersection.
+
+For the Vivado project, this core is wrapped by `fpga_top.v`, which attaches `axi_top` (`axi_bram_ctrl`) and exposes setup, frame control, SDF memory writes, and pixel/status polling through AXI BRAM transactions.
 
 ---
 
@@ -61,6 +64,30 @@ FpgaTop
 5. **Pipeline Processing**: Rays flow through SDF → BVH → DDA → Render stages
 6. **Pixel Output**: Completed pixels stream out via decoupled interface
 7. **Frame Done**: Pulse output when all pixels are complete
+
+---
+
+## Wrapper Layers
+
+The FPGA deployment flow uses three RTL layers:
+
+| Layer | File | Responsibility |
+|------|------|----------------|
+| Chisel source | `src/main/scala/FpgaTop.scala` | Core FPGA behavior: setup, frame FSM, ray generation, pixel queue |
+| Generated core RTL | `build/vivado/FpgaTop.sv` | Vivado-consumed SystemVerilog emitted from Chisel |
+| Vivado AXI wrapper | `build/vivado/fpga_top.v` | Bridges AXI BRAM accesses to setup registers, SDF writes, and pixel/status reads |
+
+`vivado/src/fpga_top.v` is a synchronized copy of the Vivado AXI wrapper used by packaged-IP metadata (`component.xml`). The active Vivado project (`vivado/sdf-rt.xpr`) references the files under `build/vivado/`.
+
+### Readback Path
+
+In the AXI-integrated design, pixel data is not returned over a separate AXI-stream interface. Instead:
+
+1. `FpgaTop` produces `io_pixel_valid`, `io_pixel_x`, `io_pixel_y`, `io_pixel_rgb8`, and `io_pixel_hit_id`
+2. `fpga_top.v` multiplexes those fields onto `bram_rddata`
+3. `axi_bram_ctrl` returns that value on `s_axi_rdata`
+
+This is the path software should use when polling pixels from PS.
 
 ---
 
@@ -97,7 +124,9 @@ sbt "runMain FpgaTopGen"
 sbt "runMain SimTopGen"
 ```
 
-Generated file: `build/fpga/FpgaTop.sv`
+Generated files:
+- `build/vivado/FpgaTop.sv` for Vivado integration
+- `build/fpga/FpgaTop.sv` for Verilator-oriented FPGA-mode simulation artifacts
 
 ### 2. Compile Simulator
 
@@ -178,9 +207,7 @@ eog render_fpga_400x400.ppm
 | `pixel_ready` | Input | 1 | Downstream ready to accept |
 | `pixel_x` | Output | 16 | Pixel X coordinate |
 | `pixel_y` | Output | 16 | Pixel Y coordinate |
-| `pixel_r` | Output | FP32 | Red channel (float) |
-| `pixel_g` | Output | FP32 | Green channel (float) |
-| `pixel_b` | Output | FP32 | Blue channel (float) |
+| `pixel_rgb8` | Output | 24 | Packed RGB888 color |
 | `pixel_hit_id` | Output | addrWidth | Hit object ID |
 
 **Protocol:**
@@ -188,6 +215,48 @@ eog render_fpga_400x400.ppm
 - Data transfers when both `pixel_valid == 1` AND `pixel_ready == 1`
 - Pixels may not arrive in strict raster-scan order (reorder using `pixel_x/y`)
 - Backpressure supported via `pixel_ready` signal
+
+This interface is the native `FpgaTop` core interface. The Vivado wrapper converts it into AXI-readable state rather than preserving it as a top-level stream.
+
+---
+
+### AXI BRAM Wrapper Interface
+
+`build/vivado/fpga_top.v` presents an AXI4 slave backed by `axi_bram_ctrl`. Reads and writes are decoded as either:
+- setup / status register accesses in the high-address setup window
+- SDF memory writes everywhere else
+
+The AXI read response is returned through `s_axi_rdata`, sourced from `bram_rddata`.
+
+### AXI Register Map
+
+The wrapper keeps 16 words in the setup/status window. Words `0-9` are configuration registers; words `10-15` are readback/status registers.
+
+| Word | Access | Description |
+|------|--------|-------------|
+| `0` | W/R | Control register; writing bit 0 pulses `setup_valid` |
+| `1` | W/R | `setup_origin_x` |
+| `2` | W/R | `setup_origin_y` |
+| `3` | W/R | `setup_origin_z` |
+| `4` | W/R | `setup_grid_min_x` |
+| `5` | W/R | `setup_grid_min_y` |
+| `6` | W/R | `setup_grid_min_z` |
+| `7` | W/R | `setup_grid_max_x` |
+| `8` | W/R | `setup_grid_max_y` |
+| `9` | W/R | `setup_grid_max_z` |
+| `10` | R | Pixel RGB888 in `rdata[23:0]` |
+| `11` | R | Pixel coordinate packed as `{pixel_y[15:0], pixel_x[15:0]}` |
+| `12` | W/R | Frame control/status; writing bit 0 pulses `frame_start`, reading bit 0 returns `frame_done` |
+| `13` | R | `frame_count` |
+| `14` | R | `pixel_valid` in bit 0 |
+| `15` | R | `pixel_hit_id` |
+
+### AXI Access Notes
+
+- Setup writes are recognized only when the AXI BRAM address lands in the setup window.
+- Non-setup writes are forwarded to `io_sdf_mem_wr_*`.
+- Pixel readback is polled: software reads words `10-15` via AXI, and the wrapper feeds those values into `bram_rddata`, which `axi_bram_ctrl` returns on `s_axi_rdata`.
+- The pixel-coordinate register is 32-bit wide. Low 16 bits are `pixel_x`; high 16 bits are `pixel_y`.
 
 ---
 
@@ -256,11 +325,16 @@ frame_start = 0
 // 7. Wait for frame completion
 wait(frame_done == 1)
 
-// 8. Read output pixels (continuously during rendering)
-while (pixel_valid == 1) {
-  pixel_ready = 1
-  read(pixel_x, pixel_y, pixel_r, pixel_g, pixel_b, pixel_hit_id)
-}
+// 8. Poll output state through AXI reads
+rgb8   = read_reg(10)
+coord  = read_reg(11)
+done   = read_reg(12) & 0x1
+count  = read_reg(13)
+valid  = read_reg(14) & 0x1
+hit_id = read_reg(15)
+
+pixel_x = coord & 0xFFFF
+pixel_y = (coord >> 16) & 0xFFFF
 ```
 
 ---

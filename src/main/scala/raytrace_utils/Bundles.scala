@@ -52,7 +52,7 @@ class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) ext
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
   val hitId = UInt(addrWidth.W)
-  val rgb = new Vec3(cfg)
+  val rgb8 = UInt(24.W)
 }
 
 class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {

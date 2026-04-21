@@ -18,8 +18,7 @@ module SdfMemResourceBB #(
   output logic                   valid,
   input  logic                   wr_en,
   input  logic [31:0]            wr_addr,
-  input  logic [2047:0]          wr_data  // 2048位宽写入，整cell写入Local
-  // 读输出
+  input  logic [2047:0]            wr_data  // 32位宽写入，单条目写入
 );
   // Simplified memory storage for simulation
   localparam int MAX_GLOBAL_ENTRIES = 4096;  // 2^12
@@ -70,20 +69,25 @@ module SdfMemResourceBB #(
     end
   end
 
-  // Pipeline stage 1: read memory and compute result
-  logic [DATA_WIDTH-1:0] data_s1;
-  logic                  valid_s1;
+  // First stage: combinational read
+  logic [DATA_WIDTH-1:0] data_s0;
+  logic                  valid_s0;
 
-  always_ff @(posedge clk) begin
-    if (reset) begin
-      data_s1 <= '0;
-      valid_s1 <= 1'b0;
-    end else if (en) begin
-      logic [15:0] mapping_entry;
-      logic        has_local;
-      logic [10:0] cell_idx;
-      logic [31:0] local_linear_addr;
+  always_comb begin
+    logic [15:0] mapping_entry;
+    logic        has_local;
+    logic [10:0] cell_idx;
+    logic [31:0] local_linear_addr;
 
+    // Default assignments to avoid latches
+    mapping_entry     = 16'h0;
+    has_local         = 1'b0;
+    cell_idx          = 11'h0;
+    local_linear_addr = 32'h0;
+    data_s0           = '0;
+    valid_s0          = 1'b0;
+
+    if (en) begin
       mapping_entry = mapping_loaded ? sdf_local_mapping[globalIdx[GLOBAL_ADDR_BITS-1:0]] : 16'h0;
       has_local     = mapping_entry[15];
       cell_idx      = mapping_entry[10:0];
@@ -93,46 +97,47 @@ module SdfMemResourceBB #(
 
       if (global_mem_loaded && !has_local) begin
         if (globalIdx < MAX_GLOBAL_ENTRIES) begin
-          data_s1 <= sdf_global_mem[globalIdx];
-          valid_s1 <= 1'b1;
-        end else begin
-          data_s1 <= '0;
-          valid_s1 <= 1'b0;
+          data_s0 = sdf_global_mem[globalIdx];
+          valid_s0 = 1'b1;
         end
       end
       else if (local_mem_loaded && has_local) begin
         if (local_linear_addr < MAX_LOCAL_ENTRIES) begin
-          data_s1 <= sdf_local_mem[local_linear_addr];
-          valid_s1 <= 1'b1;
-        end else begin
-          data_s1 <= '0;
-          valid_s1 <= 1'b0;
+          data_s0 = sdf_local_mem[local_linear_addr];
+          valid_s0 = 1'b1;
         end
-      end else begin
-        data_s1 <= '0;
-        valid_s1 <= 1'b0;
       end
-    end else begin
-      data_s1 <= '0;
-      valid_s1 <= 1'b0;
     end
   end
 
-  // Pipeline stage 2: additional delay to match LATENCY parameter
-  logic [DATA_WIDTH-1:0] data_s2;
-  logic                  valid_s2;
+  // Generate pipeline stages based on LATENCY parameter
+  generate
+    if (LATENCY == 0) begin : gen_latency_0
+      assign data  = data_s0;
+      assign valid = valid_s0;
+    end else begin : gen_latency_pipe
+      logic [DATA_WIDTH-1:0] data_pipe [0:LATENCY-1];
+      logic                  valid_pipe [0:LATENCY-1];
 
-  always_ff @(posedge clk) begin
-    if (reset) begin
-      data_s2 <= '0;
-      valid_s2 <= 1'b0;
-    end else begin
-      data_s2  <= data_s1;
-      valid_s2 <= valid_s1;
+      always_ff @(posedge clk) begin
+        if (reset) begin
+          for (int i = 0; i < LATENCY; i++) begin
+            data_pipe[i] <= '0;
+            valid_pipe[i] <= 1'b0;
+          end
+        end else begin
+          data_pipe[0] <= data_s0;
+          valid_pipe[0] <= valid_s0;
+          for (int i = 1; i < LATENCY; i++) begin
+            data_pipe[i] <= data_pipe[i-1];
+            valid_pipe[i] <= valid_pipe[i-1];
+          end
+        end
+      end
+
+      assign data  = data_pipe[LATENCY-1];
+      assign valid = valid_pipe[LATENCY-1];
     end
-  end
-
-  assign data  = data_s2;
-  assign valid = valid_s2;
+  endgenerate
 
 endmodule

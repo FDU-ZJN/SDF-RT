@@ -8,7 +8,7 @@ import raytrace_utils.GlobalConfig
 class SdfMemWriteIO extends Bundle {
   val wr_en   = Output(Bool())
   val wr_addr = Output(UInt(32.W))    // Full 32-bit address (auto-decoded)
-  val wr_data = Output(UInt(2048.W))  // 2048-bit wide: full cell write for Local
+  val wr_data = Output(UInt(32.W))    // 32-bit wide: single entry write
 }
 
 private class SdfMemDPICore(
@@ -133,7 +133,7 @@ private class SdfMemIpBB(
     val valid = Output(Bool())
     val wr_en   = Input(Bool())
     val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(2048.W))
+    val wr_data = Input(UInt(32.W))
   })
   addResource("/SdfMem.sv")
 }

@@ -6,15 +6,8 @@ import raytrace_utils.fudian._
 // Global pipe utility functions with explicit initialization values
 object PipeUtils {
   def pipeData[T <: Data](x: T, n: Int): T = {
-    if (n > 0) {
-      var stage = x
-      for (_ <- 0 until n) {
-        val reg = RegInit(0.U.asTypeOf(chiselTypeOf(x)))
-        reg := stage
-        stage = reg
-      }
-      stage
-    } else x
+    if (n > 0) ShiftRegister(x, n)
+    else x
   }
 
   def pipeUInt(x: UInt, n: Int, init: UInt = 0.U): UInt = {

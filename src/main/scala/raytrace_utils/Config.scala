@@ -4,19 +4,12 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
-  // ============================================================
-  // FPGA top / frame config
-  // ============================================================
-  val frameWidth = 100
-  val frameHeight = 100
-  val pixelQueueDepth = 4
+
+  val frameWidth = 400
+  val frameHeight = 400
+  val pixelQueueDepth = 1024
   val rayDirFifoDepth = 16
-  // ============================================================
-  // BlackBox vs DPI mode switch (memory modules)
-  // ============================================================
-  // 0: DPI-C memory
-  // 1: readmemh BlackBox memory
-  // 2: synthesized/IP-style memory modules
+
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
   def setMemImplMode(value: Int): Unit = {

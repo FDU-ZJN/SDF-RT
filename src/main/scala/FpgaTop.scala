@@ -28,7 +28,7 @@ class FpgaTop(
     val pixel_ready      = Input(Bool())
     val pixel_x          = Output(UInt(16.W))
     val pixel_y          = Output(UInt(16.W))
-    val pixel_rgb        = Output(new Vec3(c.cfg))
+    val pixel_rgb8       = Output(UInt(24.W))
     val pixel_hit_id     = Output(UInt(c.addrWidth.W))
 
     val frame_done       = Output(Bool())
@@ -36,7 +36,7 @@ class FpgaTop(
     val frame_count      = Output(UInt(32.W))
     val validation_error = Output(Bool())
     val stall_detected   = Output(Bool())
-    
+
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
@@ -227,7 +227,7 @@ class FpgaTop(
   class PixelBundle extends Bundle {
     val x      = UInt(16.W)
     val y      = UInt(16.W)
-    val rgb    = new Vec3(c.cfg)
+    val rgb8   = UInt(24.W)
     val hit_id = UInt(c.addrWidth.W)
   }
 
@@ -259,7 +259,7 @@ class FpgaTop(
   pixelQueue.io.enq.valid        := simTop.io.out_valid
   pixelQueue.io.enq.bits.x      := resultX
   pixelQueue.io.enq.bits.y      := resultY
-  pixelQueue.io.enq.bits.rgb    := simTop.io.out_rgb
+  pixelQueue.io.enq.bits.rgb8   := simTop.io.out_rgb8
   pixelQueue.io.enq.bits.hit_id := simTop.io.out_id
   pixelQueue.io.deq.ready       := io.pixel_ready
 
@@ -271,12 +271,10 @@ class FpgaTop(
   io.pixel_valid  := pixelQueue.io.deq.valid
   io.pixel_x      := pixelQueue.io.deq.bits.x
   io.pixel_y      := pixelQueue.io.deq.bits.y
-  io.pixel_rgb    := pixelQueue.io.deq.bits.rgb
+  io.pixel_rgb8   := pixelQueue.io.deq.bits.rgb8
   io.pixel_hit_id := pixelQueue.io.deq.bits.hit_id
 
-  // =========================================================================
-  // 合法性检查
-  // =========================================================================
+
   val underflow = retiredCount > issuedCount
   val overflow  = issuedCount > totalPixels
 

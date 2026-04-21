@@ -196,10 +196,11 @@ int main(int argc, char** argv) {
         
         // Collect pixel data if available
         if (dut->io_pixel_valid) {
-            const uint8_t r = colorToByte(dut->io_pixel_rgb_x);
-            const uint8_t g = colorToByte(dut->io_pixel_rgb_y);
-            const uint8_t b = colorToByte(dut->io_pixel_rgb_z);
-            
+            const uint32_t rgb8 = dut->io_pixel_rgb8;
+            const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
+            const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
+            const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
+
             const uint16_t px = dut->io_pixel_x;
             const uint16_t py = dut->io_pixel_y;
             

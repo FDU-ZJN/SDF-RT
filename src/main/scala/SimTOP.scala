@@ -20,10 +20,10 @@ class SimTop extends Module {
     val rd_in = Input(new Vec3(c.cfg))
     val rd_valid = Input(Bool())
     val out_ready = Output(Bool())
-    val out_rgb = Output(new Vec3(c.cfg))
+    val out_rgb8 = Output(UInt(24.W))
     val out_id = Output(UInt(c.addrWidth.W))
     val out_valid = Output(Bool())
-    
+
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
@@ -114,10 +114,6 @@ class SimTop extends Module {
   renderStage.io.in.bits.hitT := ddaStage.io.out.bits.hitT
   ddaStage.io.out.ready := renderStage.io.in.ready
 
-  val zeroFp = 0.U(c.cfg.totalWidth.W)
-  val oneFp = java.lang.Float.floatToRawIntBits(1.0f).U(c.cfg.totalWidth.W)
-  val deepBlueFp = java.lang.Float.floatToRawIntBits(0.5f).U(c.cfg.totalWidth.W)
-
   commitQueue.io.writeback.valid := renderStage.io.out.valid
   commitQueue.io.writeback.bits := renderStage.io.out.bits
   renderStage.io.out.ready := commitQueue.io.writeback.ready
@@ -126,9 +122,7 @@ class SimTop extends Module {
   wb2.meta := initStage.io.to_bypass.bits.meta
   wb2.hit := false.B
   wb2.hitId := 0.U
-  wb2.rgb.x := zeroFp
-  wb2.rgb.y := oneFp
-  wb2.rgb.z := zeroFp
+  wb2.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
   commitQueue.io.writeback2.valid := initStage.io.to_bypass.valid
   commitQueue.io.writeback2.bits := wb2
   initStage.io.to_bypass.ready := commitQueue.io.writeback2.ready
@@ -137,16 +131,14 @@ class SimTop extends Module {
   wb3.meta := sdfStage.io.out_meta
   wb3.hit := false.B
   wb3.hitId := 0.U
-  wb3.rgb.x := zeroFp
-  wb3.rgb.y := zeroFp
-  wb3.rgb.z := deepBlueFp
+  wb3.rgb8 := Cat(0.U(8.W), 0.U(8.W), 128.U(8.W))
   commitQueue.io.writeback3.valid := sdfStage.io.out_valid && !sdfStage.io.out_hit
   commitQueue.io.writeback3.bits := wb3
 
   commitQueue.io.out.ready := true.B
 
   io.out_ready := conservativeInitReady
-  io.out_rgb := commitQueue.io.out.bits.rgb
+  io.out_rgb8 := commitQueue.io.out.bits.rgb8
   io.out_id := commitQueue.io.out.bits.hitId
   io.out_valid := commitQueue.io.out.valid
 }

@@ -15,12 +15,12 @@ module SdfMem #(
   input  logic [ADDR_WIDTH-1:0]  localIdx,   // cell 内偏移 [0, 63]
   input  logic                   en,
   // 写端口
-  //   wr_addr[31:12] == 0  → Global SDF, wr_addr[11:0]  = 条目地址
-  //   wr_addr[31:12] != 0  → Local  SDF, wr_addr[18:0]  = cell+lane
-  //                          其中 cell = wr_addr[18:8], lane = wr_addr[7:2]
+  //   wr_addr[31:19] == 0  → Global SDF, wr_addr[11:0]  = 条目地址
+  //   wr_addr[31:19] != 0  → Local  SDF, wr_addr[17:0]  = cell+lane
+  //                          其中 cell = wr_addr[17:6], lane = wr_addr[5:0]
   input  logic                   wr_en,
   input  logic [31:0]            wr_addr,
-  input  logic [2047:0]          wr_data,  // 2048位宽写入，整cell写入Local
+  input  logic [31:0]            wr_data,  // 32位宽写入，单条目写入
   // 读输出
   output logic [DATA_WIDTH-1:0]  data,
   output logic                   valid
@@ -33,6 +33,9 @@ module SdfMem #(
   localparam int URAM_READ_LATENCY = FIXED_LATENCY - 1;
   localparam int MAX_GLOBAL        = 4096;    // 16^3
   localparam int MAX_LOCAL         = 131072;  // 2048 * 64
+  localparam int GLOBAL_BASE_ADDR  = 0;
+  localparam int LOCAL_BASE_ADDR   = GLOBAL_SDF_SIZE;
+  localparam int LOCAL_END_ADDR    = LOCAL_BASE_ADDR + LOCAL_SDF_SIZE;
 
   // Global URAM: 4096 深 × 32 bit
   localparam int GLOBAL_DEPTH      = 4096;
@@ -49,26 +52,38 @@ module SdfMem #(
   logic [11:0] global_wr_addr_q;
   logic [LOCAL_ADDR_W-1:0] local_wr_cell_q;
   logic [5:0]  local_wr_lane_q;
-  logic [2047:0] wr_data_q;
+  logic [31:0] wr_data_q;
+  logic        global_wr_active_d;
+  logic        local_wr_active_d;
+  logic [31:0] local_wr_offset_d;
   logic [ADDR_WIDTH-1:0] globalIdx_s0;
   logic [ADDR_WIDTH-1:0] localIdx_s0;
   logic                  en_s0;
+
+  assign global_wr_active_d = wr_en && (wr_addr >= GLOBAL_BASE_ADDR) && (wr_addr < GLOBAL_SDF_SIZE);
+  assign local_wr_active_d  = wr_en && (wr_addr >= LOCAL_BASE_ADDR) && (wr_addr < LOCAL_END_ADDR);
+  assign local_wr_offset_d  = wr_addr - LOCAL_BASE_ADDR;
 
   always_ff @(posedge clk) begin
     if (reset) begin
       global_wr_active_q <= 1'b0;
       local_wr_active_q  <= 1'b0;
       global_wr_addr_q   <= '0;
+      local_wr_cell_q    <= '0;
+      local_wr_lane_q    <= '0;
       wr_data_q          <= '0;
       globalIdx_s0       <= '0;
       localIdx_s0        <= '0;
       en_s0              <= 1'b0;
     end else begin
-      global_wr_active_q <= wr_en && (wr_addr[31:12] == 20'h0);
-      local_wr_active_q  <= wr_en && (wr_addr[31:12] != 20'h0);
+      // wr_addr uses 32-bit word units throughout FpgaTop/SdfMem.
+      //   Global SDF: word 0x00000 ~ 0x00FFF  (4096 entries)
+      //   Local  SDF: word 0x01000 ~ 0x20FFF  (2048 cells * 64 lanes)
+      global_wr_active_q <= global_wr_active_d;
+      local_wr_active_q  <= local_wr_active_d;
       global_wr_addr_q   <= wr_addr[11:0];
-      local_wr_cell_q    <= wr_addr[18:8];
-      local_wr_lane_q    <= wr_addr[7:2];
+      local_wr_cell_q    <= local_wr_offset_d[16:6];
+      local_wr_lane_q    <= local_wr_offset_d[5:0];
       wr_data_q          <= wr_data;
       globalIdx_s0       <= globalIdx;
       localIdx_s0        <= localIdx;
@@ -85,9 +100,9 @@ module SdfMem #(
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:0];
 
   local_idx_mem local_idx_mem_inst (
-    .clka (clk),
-    .addra(mapping_addr),
-    .douta(mapping_entry)
+    .clk (clk),
+    .a(mapping_addr),
+    .qspo(mapping_entry)
   );
 
   assign has_local = mapping_entry[15];
@@ -152,10 +167,15 @@ module SdfMem #(
   always_comb begin
     local_we = '0;
     if (local_wr_active_q) begin
-      local_we = '1;
+      // 只写lane对应的4个字节
+      local_we[local_wr_lane_q * 4 +: 4] = 4'b1111;
     end
   end
-  assign local_dina      = wr_data_q; // 直接使用2048位输入
+  always_comb begin
+    local_dina = '0;
+    // 把32位写入数据放到对应的位置
+    local_dina[local_wr_lane_q * 32 +: 32] = wr_data_q;
+  end
 
   xpm_memory_spram #(
     .ADDR_WIDTH_A       (LOCAL_ADDR_W),

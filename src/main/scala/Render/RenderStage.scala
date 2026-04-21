@@ -9,7 +9,6 @@ class RenderStage(cfg: FloatConfig) extends Module {
     val in = Flipped(Decoupled(new TraceResult(cfg, cfg.addrWidth)))
     val out = Decoupled(new RenderResult(cfg, cfg.addrWidth))
   })
-  // 1. 实例化核心计算单元 (PE)
   val pe = Module(new RenderPE(cfg))
   val memLatency = GlobalConfig.normalMemDpiLatency
   val mem = Module(new NormalMemDPI(cfg.addrWidth, latency = memLatency))
@@ -25,7 +24,6 @@ class RenderStage(cfg: FloatConfig) extends Module {
   val launchId = PipeUtils.pipeData(io.in.bits.hitId, memLatency)
   val launchMeta = PipeUtils.pipeData(io.in.bits.meta, memLatency)
 
-  // Request only when input is accepted, so control/data timing stays cycle-aligned.
   mem.io.addr := Mux(io.in.bits.hit, io.in.bits.hitId, 0.U)
   mem.io.en := inFire
 
@@ -33,8 +31,6 @@ class RenderStage(cfg: FloatConfig) extends Module {
   pe.io.hit_id := launchId
   pe.io.in_hit := launchHit
 
-  // B. 处理内存返回的数据并送回 PE
-  // NormalMemDPI 返回的是 96 位原始数据，我们需要将其解包为 Vec3 浮点向量
   val normal_from_mem = Wire(new Vec3(cfg))
   normal_from_mem.x := mem.io.data(31, 0)
   normal_from_mem.y := mem.io.data(63, 32)
