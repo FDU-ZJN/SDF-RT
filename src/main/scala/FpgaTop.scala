@@ -81,10 +81,15 @@ class FpgaTop(
   io.frame_done := frameDonePulse
 
   val rayDirFifoDepth = GlobalConfig.rayDirFifoDepth
-  val issuedCount  = RegInit(0.U(pixelCountW.W))
+  val rayTrackW = log2Ceil(width * height + rayDirFifoDepth + 1)
+  val issuedCount = RegInit(0.U(pixelCountW.W))
   val retiredCount = RegInit(0.U(pixelCountW.W))
+  val rayStartedCount = RegInit(0.U(rayTrackW.W))
+  val rayQueuedCount = RegInit(0.U(rayTrackW.W))
+  val raySentCount = RegInit(0.U(rayTrackW.W))
   val rayIssueFire = WireDefault(false.B)
-  val bootstrapLaunches = RegInit(0.U(log2Ceil(rayDirFifoDepth + 1).W))
+  val rayDirEnqFire = WireDefault(false.B)
+  val simTopFire = WireDefault(false.B)
 
   val validationError = RegInit(false.B)   // Fix 8
   io.validation_error := validationError
@@ -103,18 +108,26 @@ class FpgaTop(
 
   switch(state) {
     is(idle) {
-      issuedCount     := 0.U
-      retiredCount    := 0.U
-      bootstrapLaunches := 0.U
+      issuedCount      := 0.U
+      retiredCount     := 0.U
+      rayStartedCount  := 0.U
+      rayQueuedCount   := 0.U
+      raySentCount     := 0.U
       validationError := false.B   // Fix 8
       when(frameStartPulse && !setupReg) {
-        bootstrapLaunches := Mux(totalPixels < rayDirFifoDepth.U, totalPixels, rayDirFifoDepth.U)
         state := rendering
       }
     }
     is(rendering) {
       when(rayIssueFire) {
         issuedCount := issuedCount + 1.U
+        rayStartedCount := rayStartedCount + 1.U
+      }
+      when(rayDirEnqFire) {
+        rayQueuedCount := rayQueuedCount + 1.U
+      }
+      when(simTopFire) {
+        raySentCount := raySentCount + 1.U
       }
       when(retiredCountWillFinish) {
         state := frameComplete
@@ -136,18 +149,19 @@ class FpgaTop(
   }
 
   val rayDirFifo = Module(new Queue(new RayDirBundle, entries = rayDirFifoDepth))
-  val simTopFire = rayDirFifo.io.deq.valid && simTop.io.out_ready
+  simTopFire := rayDirFifo.io.deq.valid && simTop.io.out_ready
+  val rayOutstandingToSimTop = rayStartedCount - raySentCount
+  val fifoOccupancy = rayQueuedCount - raySentCount
+  val pipelinePending = rayStartedCount - rayQueuedCount
+  val canLaunchRay =
+    (rayOutstandingToSimTop < rayDirFifoDepth.U) || simTopFire
   val shouldLaunchRay =
     (state === rendering) &&
       rayDirCalc.io.in_ready &&
       (issuedCount < totalPixels) &&
-      ((bootstrapLaunches =/= 0.U) || simTopFire)
+      canLaunchRay
 
   rayIssueFire := shouldLaunchRay
-
-  when(state === rendering && rayIssueFire && (bootstrapLaunches =/= 0.U)) {
-    bootstrapLaunches := bootstrapLaunches - 1.U
-  }
 
   rayDirCalc.io.clear := (state === idle)
   rayDirCalc.io.in_valid := rayIssueFire
@@ -158,13 +172,26 @@ class FpgaTop(
   rayDirFifo.io.enq.bits.dir_x   := rayDirCalc.io.dir_x
   rayDirFifo.io.enq.bits.dir_y   := rayDirCalc.io.dir_y
   rayDirFifo.io.enq.bits.dir_z   := rayDirCalc.io.dir_z
+  rayDirEnqFire := rayDirCalc.io.out_valid && rayDirFifo.io.enq.ready
 
   assert(
     !(rayDirCalc.io.out_valid && !rayDirFifo.io.enq.ready),
     "[FpgaTop] BUG: rayDirFifo overflow!"
   )
+  assert(
+    fifoOccupancy <= rayDirFifoDepth.U,
+    "[FpgaTop] BUG: rayDirFifo occupancy tracking exceeded depth"
+  )
+  assert(
+    rayOutstandingToSimTop <= rayDirFifoDepth.U,
+    "[FpgaTop] BUG: ray launch window exceeded fifo depth"
+  )
+  assert(
+    pipelinePending <= rayDirFifoDepth.U,
+    "[FpgaTop] BUG: too many rays are pending before rayDirFifo"
+  )
 
-  rayDirFifo.io.deq.ready := simTopFire
+  rayDirFifo.io.deq.ready := simTop.io.out_ready
 
   simTop.io.rd_valid := simTopFire
   simTop.io.rd_in.x  := rayDirFifo.io.deq.bits.dir_x
