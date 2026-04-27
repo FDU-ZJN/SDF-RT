@@ -45,9 +45,17 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val ray_meta_reg: RayMeta = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
   private val block_offset: UInt = RegInit(0.U(16.W))
   private val batch_active: Bool = RegInit(false.B)
+  private val batch_in_progress: Bool = RegInit(false.B)
   private val no_more_batches: Bool = RegInit(false.B)
+  private val done_pulse_reg: Bool = RegInit(false.B)
 
-  private val s_IDLE :: s_BUSY :: s_FINISHING :: Nil = Enum(3)
+  private val pe_best_t: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(
+    0x7F7FFFFF.U(c.cfg.totalWidth.W)
+  )))
+  private val pe_best_id: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(0.U(c.addrWidth.W))))
+  private val pe_has_hit: Vec[Bool] = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
+
+  private val s_IDLE :: s_BUSY :: Nil = Enum(2)
   private val state: UInt = RegInit(s_IDLE)
 
   when(state === s_IDLE && io.ray_valid) {
@@ -60,16 +68,21 @@ class TriPE(val c: TriPeConfig) extends Module {
     no_more_batches := true.B
   }
 
-  batch_queue.io.deq.ready := !batch_active && (state === s_BUSY)
+  batch_queue.io.deq.ready := !batch_in_progress && (state === s_BUSY)
 
   when(batch_queue.io.deq.fire) {
     current_batch := batch_queue.io.deq.bits
     block_offset := 0.U
     batch_active := true.B
+    batch_in_progress := true.B
+    for (i <- 0 until c.numPEs) {
+      pe_best_t(i) := 0x7F7FFFFF.U
+      pe_best_id(i) := 0.U
+      pe_has_hit(i) := false.B
+    }
   }
 
   private val shiftAmt: Int = log2Up(c.numPEs)
-  private val blockSize: Int = c.numPEs  // 4
 
   // Align base_addr to block boundary (multiple of 4)
   private val alignedBase: UInt = (current_batch.base_addr >> shiftAmt).asUInt << shiftAmt.U
@@ -109,21 +122,6 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
 
-  private val pe_best_t: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(
-    0x7F7FFFFF.U(c.cfg.totalWidth.W)
-  )))
-  private val pe_best_id: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(0.U(c.addrWidth.W))))
-  private val pe_has_hit: Vec[Bool] = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
-
-  // 新 ray 清空历史 best
-  when(state === s_IDLE && io.ray_valid) {
-    for (i <- 0 until c.numPEs) {
-      pe_best_t(i) := 0x7F7FFFFF.U
-      pe_best_id(i) := 0.U
-      pe_has_hit(i) := false.B
-    }
-  }
-
   private val ray_reg: Ray = pipeUInt(io.ray_in.asUInt, 1, 0.U).asTypeOf(new Ray(c.cfg))
 
   io.mem_resp.ready := true.B
@@ -159,20 +157,27 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val incoming_count: UInt = PopCount(io.mem_resp.bits.mask.asUInt)
   private val outgoing_count: UInt = PopCount(pes.map(_.io.out_valid))
-
-  inflight_cnt :=
+  private val inflight_next =
     inflight_cnt +
       Mux(io.mem_resp.fire, incoming_count, 0.U) -
       outgoing_count
+  private val batch_done_now =
+    batch_in_progress &&
+      !batch_active &&
+      (inflight_next === 0.U)
+
+  inflight_cnt := inflight_next
+  done_pulse_reg := false.B
+
+  when(batch_done_now) {
+    batch_in_progress := false.B
+    done_pulse_reg := true.B
+  }
 
   when(state === s_BUSY &&
     no_more_batches &&
     !batch_queue.io.deq.valid &&
-    !batch_active) {
-    state := s_FINISHING
-  }
-
-  when(state === s_FINISHING && inflight_cnt === 0.U) {
+    !batch_in_progress) {
     state := s_IDLE
   }
 
@@ -206,7 +211,5 @@ class TriPE(val c: TriPeConfig) extends Module {
   io.t_best := global_best_t
   io.out_meta := ray_meta_reg
 
-  private val done_pulse: Bool = pipeBool(state === s_FINISHING, 1, false.B) && (state === s_IDLE)
-
-  io.out_done := done_pulse
+  io.out_done := done_pulse_reg
 }
