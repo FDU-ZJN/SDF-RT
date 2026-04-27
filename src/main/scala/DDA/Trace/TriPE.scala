@@ -16,6 +16,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val tri_batch_in: TriBatch = Input(new TriBatch(c.addrWidth))
     val tri_batch_valid: Bool = Input(Bool())
     val end_exec: Bool = Input(Bool())
+    val flush: Bool = Input(Bool())
 
     val mem_req: DecoupledIO[UInt] = Decoupled(UInt(c.addrWidth.W))
     val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))  // per-lane valid mask
@@ -34,9 +35,10 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 1. 任务调度
   // ============================================================
 
-  private val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth))
+  private val batch_queue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth, hasFlush = true))
   batch_queue.io.enq.bits := io.tri_batch_in
-  batch_queue.io.enq.valid := io.tri_batch_valid
+  batch_queue.io.enq.valid := io.tri_batch_valid && !io.flush
+  batch_queue.io.flush.get := io.flush
   when(batch_queue.io.enq.valid) {
     assert(batch_queue.io.enq.ready, "TriPE batch_queue overflow")
   }
@@ -48,6 +50,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val batch_in_progress: Bool = RegInit(false.B)
   private val no_more_batches: Bool = RegInit(false.B)
   private val done_pulse_reg: Bool = RegInit(false.B)
+  private val active_epoch: Bool = RegInit(false.B)
+  private val result_capture_pending: Bool = RegInit(false.B)
+  private val result_hit_reg: Bool = RegInit(false.B)
+  private val result_id_reg: UInt = RegInit(0.U(c.addrWidth.W))
+  private val result_t_reg: UInt = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
+  private val result_meta_reg: RayMeta = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
 
   private val pe_best_t: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(
     0x7F7FFFFF.U(c.cfg.totalWidth.W)
@@ -58,19 +66,39 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val s_IDLE :: s_BUSY :: Nil = Enum(2)
   private val state: UInt = RegInit(s_IDLE)
 
-  when(state === s_IDLE && io.ray_valid) {
+  when(io.flush) {
+    current_batch := 0.U.asTypeOf(new TriBatch(c.addrWidth))
+    block_offset := 0.U
+    batch_active := false.B
+    batch_in_progress := false.B
+    no_more_batches := false.B
+    done_pulse_reg := false.B
+    result_capture_pending := false.B
+    result_hit_reg := false.B
+    result_id_reg := 0.U
+    result_t_reg := 0x7F7FFFFF.U
+    result_meta_reg := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+    active_epoch := !active_epoch
+    state := s_IDLE
+    for (i <- 0 until c.numPEs) {
+      pe_best_t(i) := 0x7F7FFFFF.U
+      pe_best_id(i) := 0.U
+      pe_has_hit(i) := false.B
+    }
+  }.elsewhen(state === s_IDLE && io.ray_valid) {
     state := s_BUSY
     ray_meta_reg := io.ray_meta
     no_more_batches := false.B
   }
 
-  when(io.end_exec) {
+  when(io.end_exec && !io.flush) {
     no_more_batches := true.B
   }
 
-  batch_queue.io.deq.ready := !batch_in_progress && (state === s_BUSY)
+  batch_queue.io.deq.ready :=
+    (!batch_in_progress && !result_capture_pending && !done_pulse_reg && (state === s_BUSY)) || io.flush
 
-  when(batch_queue.io.deq.fire) {
+  when(batch_queue.io.deq.fire && !io.flush) {
     current_batch := batch_queue.io.deq.bits
     block_offset := 0.U
     batch_active := true.B
@@ -103,12 +131,12 @@ class TriPE(val c: TriPeConfig) extends Module {
     Cat(masks.reverse)
   }
 
-  io.mem_req.valid := batch_active
+  io.mem_req.valid := batch_active && !io.flush
   io.mem_req.bits := alignedAddr
-  io.mem_req_mask.valid := batch_active
+  io.mem_req_mask.valid := batch_active && !io.flush
   io.mem_req_mask.bits := reqMask
 
-  when(io.mem_req.fire) {
+  when(io.mem_req.fire && !io.flush) {
     block_offset := block_offset + 1.U
 
     when(block_offset === totalBlocks - 1.U) {
@@ -126,13 +154,51 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   io.mem_resp.ready := true.B
 
+  // TriangleMemDPI already models the fixed request-to-valid latency with a
+  // shift-register of `latency` stages, so the live-tag pipe must use the same
+  // depth. Using `+1` here would shift the response window one cycle too late
+  // and drop valid triangle blocks.
+  private val memReqPipeLen = GlobalConfig.triMemDpiLatency
+  private val mem_req_live_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  private val mem_req_epoch_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  when(io.flush) {
+    for (i <- 0 until memReqPipeLen) {
+      mem_req_live_pipe(i) := false.B
+      mem_req_epoch_pipe(i) := false.B
+    }
+  }.otherwise {
+    mem_req_live_pipe(0) := io.mem_req.fire
+    mem_req_epoch_pipe(0) := Mux(io.mem_req.fire, active_epoch, false.B)
+    for (i <- 1 until memReqPipeLen) {
+      mem_req_live_pipe(i) := mem_req_live_pipe(i - 1)
+      mem_req_epoch_pipe(i) := mem_req_epoch_pipe(i - 1)
+    }
+  }
+  private val mem_req_live = mem_req_live_pipe(memReqPipeLen - 1)
+  private val mem_req_epoch = mem_req_epoch_pipe(memReqPipeLen - 1)
+  private val mem_resp_live =
+    io.mem_resp.fire &&
+      mem_req_live &&
+      (mem_req_epoch === active_epoch) &&
+      !io.flush
+  private val triLatency = {
+    val latMUL = c.cfg.fmulLatency
+    val latADD = c.cfg.faddLatency
+    val latDIV = c.cfg.fdivLatency
+    val latCP = latMUL + latADD
+    val latDP = latMUL + latADD + latADD
+    val stageCLatency = latADD + latCP + latDP
+    val stageDAlignLatency = math.max(latDIV, latDP)
+    stageCLatency + stageDAlignLatency + latMUL + latADD + c.cfg.fcmpLatency
+  }
+
   for (i <- 0 until c.numPEs) {
 
     pes(i).io.ray := ray_reg
     pes(i).io.tri := io.mem_resp.bits.tris(i)
 
     pes(i).io.in_valid :=
-      io.mem_resp.fire && io.mem_resp.bits.mask(i)
+      mem_resp_live && io.mem_resp.bits.mask(i)
 
     // 本地比较
     val fcmp = Module(new FCMP(c.cfg))
@@ -159,25 +225,31 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val outgoing_count: UInt = PopCount(pes.map(_.io.out_valid))
   private val inflight_next =
     inflight_cnt +
-      Mux(io.mem_resp.fire, incoming_count, 0.U) -
+      Mux(mem_resp_live, incoming_count, 0.U) -
       outgoing_count
   private val batch_done_now =
     batch_in_progress &&
       !batch_active &&
       (inflight_next === 0.U)
 
-  inflight_cnt := inflight_next
-  done_pulse_reg := false.B
+  when(io.flush) {
+    inflight_cnt := 0.U
+    done_pulse_reg := false.B
+  }.otherwise {
+    inflight_cnt := inflight_next
+    done_pulse_reg := false.B
+  }
 
-  when(batch_done_now) {
+  when(batch_done_now && !io.flush) {
     batch_in_progress := false.B
-    done_pulse_reg := true.B
+    result_capture_pending := true.B
   }
 
   when(state === s_BUSY &&
     no_more_batches &&
     !batch_queue.io.deq.valid &&
-    !batch_in_progress) {
+    !batch_in_progress &&
+    !io.flush) {
     state := s_IDLE
   }
 
@@ -203,13 +275,22 @@ class TriPE(val c: TriPeConfig) extends Module {
   // 5. 输出
   // ============================================================
 
+  when(result_capture_pending && !io.flush) {
+    result_capture_pending := false.B
+    result_hit_reg := global_has_hit
+    result_id_reg := global_best_id
+    result_t_reg := global_best_t
+    result_meta_reg := ray_meta_reg
+    done_pulse_reg := true.B
+  }
+
   io.start_ready := state === s_IDLE
   io.output_ready := batch_queue.io.enq.ready
 
-  io.out_best_hit := global_has_hit
-  io.hit_id := global_best_id
-  io.t_best := global_best_t
-  io.out_meta := ray_meta_reg
+  io.out_best_hit := result_hit_reg
+  io.hit_id := result_id_reg
+  io.t_best := result_t_reg
+  io.out_meta := result_meta_reg
 
   io.out_done := done_pulse_reg
 }
