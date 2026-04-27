@@ -194,25 +194,25 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
         
-        // Collect pixel data if available
+        // Collect pixel data in stream order. Do not reorder by pixel_x/pixel_y.
         if (dut->io_pixel_valid) {
+            if (pixelCount >= framePixels) {
+                std::cerr << "\nError: received more pixels than expected (" << framePixels << ")." << endl;
+                delete dut;
+                return 5;
+            }
+
             const uint32_t rgb8 = dut->io_pixel_rgb8;
             const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
             const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
             const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
 
-            const uint16_t px = dut->io_pixel_x;
-            const uint16_t py = dut->io_pixel_y;
-            
-            // Bounds check
-            if (px < kWidth && py < kHeight) {
-                const size_t idx = (static_cast<size_t>(py) * kWidth + px) * 3;
-                image[idx + 0] = r;
-                image[idx + 1] = g;
-                image[idx + 2] = b;
-                pixelCount++;
-            }
-            
+            const size_t idx = pixelCount * 3;
+            image[idx + 0] = r;
+            image[idx + 1] = g;
+            image[idx + 2] = b;
+            pixelCount++;
+
             stallCycles = 0;
         }
         

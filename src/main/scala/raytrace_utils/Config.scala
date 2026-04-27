@@ -5,10 +5,10 @@ import chisel3.util.log2Ceil
 
 object GlobalConfig {
 
-  val frameWidth = 400
-  val frameHeight = 400
+  val frameWidth = 640
+  val frameHeight = 480
   val pixelQueueDepth = 1024
-  val rayDirFifoDepth = 16
+  val rayDirFifoDepth = 128
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
@@ -46,15 +46,15 @@ object GlobalConfig {
   // ============================================================
   // Queue depths (centralized)
   // ============================================================
-  val commitQueueDepth = 32
+  val commitQueueDepth = 64
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 16
-  val sdfWorkQueueDepth = 16
-  val sdfRetryQueueDepth = 16
+  val sdfWorkQueueDepth = 32
+  val sdfRetryQueueDepth = 32
   val sdfFinalQueueDepth = 8
-  val simInitToSdfQueueDepth = 16
-  val simSdfHitQueueDepth = 32
+  val simInitToSdfQueueDepth = 32
+  val simSdfHitQueueDepth = 64
 
   // Unused / reserved for future
   val bvhReqQueueDepth = 16
@@ -129,7 +129,7 @@ object GlobalConfig {
   val sdfThreshold1 = 0.01f
   val sdfThreshold2 = 0.02f
   val sdfThreshold3 = 0.04f
-  val sdfStepScale = 0.7f
+  val sdfStepScale = 0.6f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f
   val sdfHitBackoffN = 1
@@ -151,7 +151,7 @@ case class FloatConfig(
                         faddLatency: Int = 8,
                         fcmpLatency: Int = 2,
                         fptointLatency: Int = 1,
-                        fdivLatency: Int = 29,
+                        fdivLatency: Int = 10,
                         fsqrtLatency: Int = GlobalConfig.fsqrtLatency,
                         useFloatIP: Boolean = GlobalConfig.useFloatIP,
                       ) {

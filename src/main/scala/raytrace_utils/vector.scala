@@ -6,6 +6,7 @@ import raytrace_utils.fudian._
 // Global pipe utility functions with explicit initialization values
 object PipeUtils {
   def pipeData[T <: Data](x: T, n: Int): T = {
+    require(n >= 0, s"pipeData delay must be >= 0, got $n")
     if (n > 0) ShiftRegister(x, n)
     else x
   }
@@ -97,4 +98,3 @@ class CrossProductUnit(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   // 合并所有轴产生的异常标志
   io.fflags := fx | fy | fz
 }
-

@@ -11,17 +11,14 @@ class RayDirCalc(
   height: Int = GlobalConfig.frameHeight
 ) extends Module {
   val io = IO(new Bundle {
+    val clear     = Input(Bool())
     val in_valid  = Input(Bool())
     val in_ready  = Output(Bool())
-    val pixel_x   = Input(UInt(16.W))
-    val pixel_y   = Input(UInt(16.W))
     val out_valid = Output(Bool())
     val out_ready = Input(Bool())
     val dir_x     = Output(UInt(cfg.totalWidth.W))
     val dir_y     = Output(UInt(cfg.totalWidth.W))
     val dir_z     = Output(UInt(cfg.totalWidth.W))
-    val out_pixel_x = Output(UInt(16.W))
-    val out_pixel_y = Output(UInt(16.W))
   })
 
   val rm = RNE
@@ -43,14 +40,28 @@ class RayDirCalc(
   // Pipeline always accepts
   io.in_ready := true.B
 
+  val pixelXReg = RegInit(0.U(16.W))
+  val pixelYReg = RegInit(0.U(16.W))
+  when(io.clear) {
+    pixelXReg := 0.U
+    pixelYReg := 0.U
+  }.elsewhen(io.in_valid) {
+    when(pixelXReg === (width - 1).U) {
+      pixelXReg := 0.U
+      pixelYReg := pixelYReg + 1.U
+    }.otherwise {
+      pixelXReg := pixelXReg + 1.U
+    }
+  }
+
   val intToFP_x = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_x.io.int  := Cat(0.U(48.W), io.pixel_x)
+  intToFP_x.io.int  := Cat(0.U(48.W), pixelXReg)
   intToFP_x.io.sign := false.B
   intToFP_x.io.long := false.B
   intToFP_x.io.rm   := rm
 
   val intToFP_y = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_y.io.int  := Cat(0.U(48.W), io.pixel_y)
+  intToFP_y.io.int  := Cat(0.U(48.W), pixelYReg)
   intToFP_y.io.sign := false.B
   intToFP_y.io.long := false.B
   intToFP_y.io.rm   := rm
@@ -189,8 +200,4 @@ class RayDirCalc(
 
   // out_valid tracks in_valid through the pipeline
   io.out_valid := PipeUtils.pipeData(io.in_valid, totalLatency)
-
-  // Pass through pixel coordinates with matching delay
-  io.out_pixel_x := PipeUtils.pipeData(io.pixel_x, totalLatency)
-  io.out_pixel_y := PipeUtils.pipeData(io.pixel_y, totalLatency)
 }
