@@ -60,19 +60,13 @@ object GlobalConfig {
   val bvhReqQueueDepth = 16
   val bvhLeafQueueDepth = 16
   val bvhMissQueueDepth = 8
-
-  // ============================================================
-  // Memory latency (pipeline depth for DPI / BlackBox)
-  // ============================================================
+  
   val normalMemDpiLatency = 4
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 1
-  val fsqrtLatency = 29
+  val fsqrtLatency = 10
 
-  // ============================================================
-  // Grid resolutions
-  // ============================================================
   val Trinum = 14204
   // SDF PE grid
   val GlobalSdfRes = 16
@@ -135,7 +129,7 @@ object GlobalConfig {
   val sdfHitBackoffN = 1
 
 
-  val ddaMaxSteps = 8
+  val ddaMaxSteps = 100
 
   val triMemDepth = Trinum/4
   val normalMemDepth = Trinum
@@ -147,9 +141,9 @@ object GlobalConfig {
 case class FloatConfig(
                         expWidth: Int,
                         precision: Int,
-                        fmulLatency: Int = 8,
-                        faddLatency: Int = 8,
-                        fcmpLatency: Int = 2,
+                        fmulLatency: Int = 4,
+                        faddLatency: Int = 6,
+                        fcmpLatency: Int = 1,
                         fptointLatency: Int = 1,
                         fdivLatency: Int = 10,
                         fsqrtLatency: Int = GlobalConfig.fsqrtLatency,
