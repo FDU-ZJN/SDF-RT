@@ -8,6 +8,8 @@ object GlobalConfig {
   val frameHeight = 480
   val pixelQueueDepth = 1024
   val rayDirFifoDepth = 128
+  val traceNumWorkers = 8
+  val triMemNumBanks = traceNumWorkers
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
@@ -49,6 +51,9 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 64
+  val ddaWorkQueueDepth = 32
+  val ddaRetryQueueDepth = 32
+  val ddaFinalQueueDepth = 8
   val sdfWorkQueueDepth = 32
   val sdfRetryQueueDepth = 32
   val sdfFinalQueueDepth = 8
@@ -80,7 +85,7 @@ object GlobalConfig {
   // ============================================================
   // Triangle memory: address width for compact triangle storage
   val triMemAddrWidth = 32
-  // Triangle data: numPEs * 9 floats per batch
+  // Triangle data width per TriPE request block.
   val triMemNumPEs = 1
   val triMemDataWidth = triMemNumPEs * 9 * 32
 

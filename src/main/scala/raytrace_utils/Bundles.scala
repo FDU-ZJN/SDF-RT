@@ -118,6 +118,23 @@ class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) 
   val reverseTraversal = Bool()
 }
 
+class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val reverseTraversal = Bool()
+  val initialized = Bool()
+  val subX = SInt((addrWidth + 1).W)
+  val subY = SInt((addrWidth + 1).W)
+  val subZ = SInt((addrWidth + 1).W)
+  val iter = UInt(16.W)
+  val tMaxX = UInt(cfg.totalWidth.W)
+  val tMaxY = UInt(cfg.totalWidth.W)
+  val tMaxZ = UInt(cfg.totalWidth.W)
+  val tDeltaX = UInt(cfg.totalWidth.W)
+  val tDeltaY = UInt(cfg.totalWidth.W)
+  val tDeltaZ = UInt(cfg.totalWidth.W)
+}
+
 class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {
   val triStart = UInt(addrWidth.W)
   val triCount = UInt(16.W)
@@ -145,6 +162,19 @@ class DdaTraceJob(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32, maxC
   val meta = new RayMeta(addrWidth)
   val cmdCount = UInt(log2Ceil(maxCmds + 1).W)
   val cmds = Vec(maxCmds, new TriBatch(addrWidth))
+}
+
+class DdaStepResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val ctx = new DdaContext(cfg, addrWidth)
+  val done = Bool()
+  val emitCmd = Bool()
+  val tri = new TriBatch(addrWidth)
+}
+
+class DdaTraceCmdWrite(addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
+  val slotIdx = UInt(GlobalConfig.slotBits.W)
+  val cmdIdx = UInt(log2Ceil(maxCmds).W)
+  val tri = new TriBatch(addrWidth)
 }
 
 class DdaTraceRsp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
