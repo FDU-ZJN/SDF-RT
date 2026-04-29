@@ -10,6 +10,7 @@ object GlobalConfig {
   val rayDirFifoDepth = 128
   val traceNumWorkers = 8
   val triMemNumBanks = traceNumWorkers
+  val ddaNumWorkers = 8
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState

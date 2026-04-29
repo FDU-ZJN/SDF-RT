@@ -173,7 +173,7 @@ class DdaStepResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) ex
 
 class DdaTraceCmdWrite(addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
   val slotIdx = UInt(GlobalConfig.slotBits.W)
-  val cmdIdx = UInt(log2Ceil(maxCmds).W)
+  val cmdIdx = UInt(math.max(1, log2Ceil(maxCmds)).W)
   val tri = new TriBatch(addrWidth)
 }
 
