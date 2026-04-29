@@ -1,12 +1,12 @@
 import BVH.BVHStage
-import DDA.Trace.TraceStage
 import Render.RenderStage
+import Trace.TraceStage
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
 class BVHTop extends Module {
-  val c = TriPeConfig(cfg = FloatConfig.FP32, numPEs = 4)
+  val c = TriPeConfig(cfg = FloatConfig.FP32)
   val bvhC = BvhPeConfig(
     stackDepth = 64,
     reqQueueDepth = GlobalConfig.bvhReqQueueDepth,
@@ -31,7 +31,8 @@ class BVHTop extends Module {
 
   // BVHStage: ray input, root node, hit update
   val bvhStage = Module(new BVHStage(bvhC))
-  val traceStage = Module(new TraceStage())
+  val traceStage = Module(new TraceStage(c))
+  val triBatchQueue = Module(new Queue(new TriBatch(c.addrWidth), GlobalConfig.triBatchQueueDepth, hasFlush = true))
 
   val inputReady = bvhStage.io.start_in.ready && commitQueue.io.alloc.ready
   val inputFire = io.ray_valid && inputReady
@@ -48,8 +49,11 @@ class BVHTop extends Module {
   traceStage.io.issue_in.bits.ray := bvhStage.io.ray_passthrough
   traceStage.io.issue_in.bits.meta := bvhStage.io.done_meta
   traceStage.io.end_exec := bvhStage.io.done
+  traceStage.io.flush := false.B
 
-  bvhStage.io.leaf_out <> traceStage.io.tri_batch_in
+  triBatchQueue.io.enq <> bvhStage.io.leaf_out
+  triBatchQueue.io.flush.get := false.B
+  traceStage.io.tri_batch_in <> triBatchQueue.io.deq
 
   io.out_ready := inputReady
 

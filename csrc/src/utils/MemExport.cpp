@@ -360,14 +360,14 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs) {
 
     // COE file format for Xilinx block RAM
     out << "; Triangle Memory COE File for Vivado" << std::endl;
-    out << "; Format: 1152-bit width (4 triangles x 9 floats x 32 bits)" << std::endl;
+    out << "; Format: numPEs * 9 floats * 32 bits" << std::endl;
     out << "; Total triangles: " << tri_store.size() << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
     out << "memory_initialization_vector=" << std::endl;
 
     const int triBatchSize = numPEs; // 4 triangles per address
     const int bitsPerEntry = 32; // float is 32 bits
-    const int bitsPerAddress = triBatchSize * 9 * bitsPerEntry; // 4 * 9 * 32 = 1152 bits
+    const int bitsPerAddress = triBatchSize * 9 * bitsPerEntry;
 
     for (size_t baseIdx = 0; baseIdx < tri_store.size(); baseIdx += triBatchSize) {
         std::string hexLine;
@@ -593,7 +593,7 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
 
-    export_triangle_mem(output_dir + "/triangle_mem.mem", 4);
+    export_triangle_mem(output_dir + "/triangle_mem.mem", kTriNumPE);
     export_bvh_mem(output_dir + "/bvh_mem.mem");
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
@@ -601,7 +601,7 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_subgrid_meta_mem(output_dir + "/subgrid_meta_mem.mem");
 
     // Export COE files for FPGA BRAM initialization
-    export_triangle_mem_coe(output_dir + "/triangle_mem.coe", 4);
+    export_triangle_mem_coe(output_dir + "/triangle_mem.coe", kTriNumPE);
     export_normal_mem_coe(output_dir + "/normal_mem.coe");
     export_normal_id_mapping_coe(output_dir + "/normal_id_mapping.coe");
     export_sdf_local_mapping_coe(output_dir + "/sdf_local_mapping.coe");

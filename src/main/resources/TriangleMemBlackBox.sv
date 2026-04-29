@@ -1,8 +1,8 @@
 module TriangleMemResourceBB #(
   parameter int ADDR_WIDTH = 32,
-  parameter int DATA_WIDTH = 1152,
+  parameter int DATA_WIDTH = 288,
   parameter int LATENCY = 2,
-  parameter int NUM_PES = 4,
+  parameter int NUM_PES = 1,
   parameter int MAX_ENTRIES = 65536
 ) (
   input  logic                   clk,
@@ -21,13 +21,14 @@ module TriangleMemResourceBB #(
   logic [DATA_WIDTH-1:0]          data_pipe [LATENCY-1:0];
   logic [NUM_PES-1:0]             mask_pipe [LATENCY-1:0];
   integer i;
+  localparam int ADDR_SHIFT = (NUM_PES <= 1) ? 0 : $clog2(NUM_PES);
   logic [ADDR_WIDTH-1:0]          tri_addr;
-    assign tri_addr = addr>>2;  // addr is already aligned
+    assign tri_addr = addr >> ADDR_SHIFT;
 
   assign req_ready = 1'b1;
 
   // Memory storage for $readmemh initialization
-  // DATA_WIDTH bits = 1152 bits = 36 floats (4 PEs * 9 floats/tri)
+  // DATA_WIDTH bits = NUM_PES * 9 * 32 bits
   localparam int NUM_FLOATS = DATA_WIDTH / 32;
 
   reg [31:0] triangle_mem [0:MAX_ENTRIES-1][0:NUM_FLOATS-1];
@@ -85,4 +86,3 @@ module TriangleMemResourceBB #(
   assign addr_q     = addr_pipe[LATENCY-1];
 
 endmodule
-

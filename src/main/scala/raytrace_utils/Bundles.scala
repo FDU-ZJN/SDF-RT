@@ -1,6 +1,7 @@
 package raytrace_utils
 
 import chisel3._
+import chisel3.util.log2Ceil
 
 class Vec3(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val x = UInt(cfg.totalWidth.W)
@@ -137,6 +138,13 @@ class DdaTraceCmd(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exte
   val subY = SInt((addrWidth + 1).W)
   val subZ = SInt((addrWidth + 1).W)
   val iter = UInt(16.W)
+}
+
+class DdaTraceJob(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+  val cmdCount = UInt(log2Ceil(maxCmds + 1).W)
+  val cmds = Vec(maxCmds, new TriBatch(addrWidth))
 }
 
 class DdaTraceRsp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {

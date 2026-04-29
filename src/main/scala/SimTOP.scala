@@ -1,11 +1,14 @@
 import DDA.DDA
 import Render.RenderStage
-import SDF.{InitStage, SetupUnit, SdfStage, SdfMemWriteIO}
+import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
+import Trace.TraceController
 import chisel3._
 import chisel3.util._
+
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 import raytrace_utils._
+
 import scala.io.Source
 
 class SimTop extends Module {
@@ -32,6 +35,8 @@ class SimTop extends Module {
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
+  val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
+  val triBatchQueue = Module(new Queue(new DdaTraceJob(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
@@ -95,6 +100,11 @@ class SimTop extends Module {
 
   ddaStage.io.grid_min := setupUnit.io.gridMin
   ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
+  triBatchQueue.io.enq <> ddaStage.io.trace_job_out
+  when(triBatchQueue.io.enq.valid) {
+    assert(triBatchQueue.io.enq.ready, "SimTop triBatchQueue overflow")
+  }
+  traceController.io.job_in <> triBatchQueue.io.deq
 
   val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), GlobalConfig.simSdfHitQueueDepth))
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
@@ -107,12 +117,7 @@ class SimTop extends Module {
 
   ddaStage.io.in <> sdfHitQ.io.deq
 
-  renderStage.io.in.valid := ddaStage.io.out.valid
-  renderStage.io.in.bits.meta := ddaStage.io.out.bits.meta
-  renderStage.io.in.bits.hit := ddaStage.io.out.bits.hit
-  renderStage.io.in.bits.hitId := ddaStage.io.out.bits.hitId
-  renderStage.io.in.bits.hitT := ddaStage.io.out.bits.hitT
-  ddaStage.io.out.ready := renderStage.io.in.ready
+  renderStage.io.in <> traceController.io.result_out
 
   commitQueue.io.writeback.valid := renderStage.io.out.valid
   commitQueue.io.writeback.bits := renderStage.io.out.bits

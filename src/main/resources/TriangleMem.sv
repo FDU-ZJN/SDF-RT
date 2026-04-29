@@ -1,8 +1,8 @@
 module TriangleMem #(
   parameter int ADDR_WIDTH = 32,
-  parameter int DATA_WIDTH = 1152,
+  parameter int DATA_WIDTH = 288,
   parameter int LATENCY = 2,
-  parameter int NUM_PES = 4,
+  parameter int NUM_PES = 1,
   parameter int MAX_ENTRIES = 3551
 ) (
   input  logic                   clk,
@@ -20,9 +20,10 @@ module TriangleMem #(
   localparam int FIXED_LATENCY = 2;
   localparam int BRAM_ADDR_WIDTH = $clog2(MAX_ENTRIES);
 
+  localparam int ADDR_SHIFT = (NUM_PES <= 1) ? 0 : $clog2(NUM_PES);
   logic [ADDR_WIDTH-1:0] tri_addr;
   logic [BRAM_ADDR_WIDTH-1:0] tri_addr_bram;
-  assign tri_addr = addr >> 2;
+  assign tri_addr = addr >> ADDR_SHIFT;
   assign tri_addr_bram = tri_addr[BRAM_ADDR_WIDTH-1:0];
 
   assign req_ready = 1'b1;

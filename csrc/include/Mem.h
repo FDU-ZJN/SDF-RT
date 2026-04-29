@@ -24,6 +24,8 @@ extern "C" void* svGetArrayPtr(const svOpenArrayHandle);
 extern "C" int svSize(const svOpenArrayHandle, int);
 #endif
 
+constexpr int kTriNumPE = 1;
+
 // Test case structure
 
 struct Triangle {

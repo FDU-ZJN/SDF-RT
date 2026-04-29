@@ -1,6 +1,5 @@
 package DDA
 
-import Trace._
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
@@ -22,7 +21,7 @@ class DDA(
     // Float -> subgrid mapping parameters, same formula as SdfPE.
     val grid_min = Input(new Vec3(cfg))
     val inv_sub_voxel = Input(new Vec3(cfg))
-    val out = Decoupled(new DdaTraversalResult(cfg, addrWidth))
+    val trace_job_out = Decoupled(new DdaTraceJob(cfg, addrWidth, maxTraversalSteps))
   })
 
   private val subShift = log2Ceil(subRes)
@@ -32,8 +31,6 @@ class DDA(
   private val subMask = (subRes - 1).S((addrWidth + 1).W)
   private val totalSub = globalRes * subRes
   private val totalSubS = totalSub.S((addrWidth + 1).W)
-  private val missT = "h7F7FFFFF".U(cfg.totalWidth.W)
-
   private val mapLatency = cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
   private val mapWaitW = math.max(1, log2Ceil(mapLatency + 1))
   private val mapInit = (if (mapLatency > 0) mapLatency - 1 else 0).U(mapWaitW.W)
@@ -62,15 +59,13 @@ class DDA(
   def fpAbs(x: UInt): UInt = Cat(0.U(1.W), x(cfg.totalWidth - 2, 0))
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
-  val trace = Module(new TraceStage(TriPeConfig(cfg = cfg)))
   val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = GlobalConfig.subgridMemDpiLatency))
 
-  val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sIssueTrace :: sStep :: sStepApply :: sDrainTrace :: sDone :: Nil = Enum(10)
+  val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sStep :: sStepApply :: sDone :: Nil = Enum(8)
   val state = RegInit(sIdle)
 
   val rayReg = RegInit(0.U.asTypeOf(new Ray(cfg)))
   val metaReg = RegInit(0.U.asTypeOf(new RayMeta(addrWidth)))
-  val resultReg = RegInit(0.U.asTypeOf(new DdaTraversalResult(cfg, addrWidth)))
   val reverseTraversalReg = RegInit(false.B)
 
   val subX = RegInit(0.S((addrWidth + 1).W))
@@ -91,12 +86,8 @@ class DDA(
 
   val triStartReg = RegInit(0.U(addrWidth.W))
   val triCountReg = RegInit(0.U(16.W))
-  val traceStartedReg = RegInit(false.B)
-  val traversalDoneReg = RegInit(false.B)
-  val traceFlushReg = RegInit(false.B)
-  val traceCountW = log2Ceil(maxTraversalSteps + 2)
-  val traceIssuedCount = RegInit(0.U(traceCountW.W))
-  val traceDoneCount = RegInit(0.U(traceCountW.W))
+  val traceCmdCount = RegInit(0.U(log2Ceil(maxTraversalSteps + 1).W))
+  val traceCmds = Reg(Vec(maxTraversalSteps, new TriBatch(addrWidth)))
 
   val inBounds = subX >= 0.S && subY >= 0.S && subZ >= 0.S &&
     subX < totalSubS && subY < totalSubS && subZ < totalSubS
@@ -340,24 +331,11 @@ class DDA(
   subgridMem.io.subIdx := subLinear
   subgridMem.io.en := state === sFetchMeta
 
-  trace.io.issue_in.valid := false.B
-  trace.io.issue_in.bits.ray := rayReg
-  trace.io.issue_in.bits.meta := metaReg
-  trace.io.tri_batch_in.valid := false.B
-  trace.io.tri_batch_in.bits.base_addr := triStartReg
-  trace.io.tri_batch_in.bits.count := triCountReg
-  trace.io.end_exec := false.B
-  trace.io.flush := traceFlushReg
-  trace.io.result_out.ready := true.B
-  traceFlushReg := false.B
-
-  val traceResultFire = trace.io.result_out.valid && trace.io.result_out.ready
-  val traceResultHit = traceResultFire && trace.io.result_out.bits.hit
-  val traceDoneCountNext = traceDoneCount + Mux(traceResultFire, 1.U, 0.U)
-  val tracePendingAfterResult = traceIssuedCount - traceDoneCountNext
-
-  io.out.valid := state === sDone
-  io.out.bits := resultReg
+  io.trace_job_out.valid := state === sDone
+  io.trace_job_out.bits.ray := rayReg
+  io.trace_job_out.bits.meta := metaReg
+  io.trace_job_out.bits.cmdCount := traceCmdCount
+  io.trace_job_out.bits.cmds := traceCmds
 
   switch(state) {
     is(sIdle) {
@@ -366,10 +344,7 @@ class DDA(
         metaReg := io.in.bits.meta
         reverseTraversalReg := io.in.bits.reverseTraversal
         iter := 0.U
-        traceStartedReg := false.B
-        traversalDoneReg := false.B
-        traceIssuedCount := 0.U
-        traceDoneCount := 0.U
+        traceCmdCount := 0.U
         mapWait := mapInit+1.U
         state := sMapCoord
       }
@@ -403,17 +378,7 @@ class DDA(
 
     is(sFetchMeta) {
       when(!inBounds || iter >= maxTraversalSteps.U) {
-        traversalDoneReg := true.B
-        trace.io.end_exec := traceStartedReg
-        when(tracePendingAfterResult === 0.U) {
-          resultReg.meta := metaReg
-          resultReg.hit := false.B
-          resultReg.hitId := 0.U
-          resultReg.hitT := missT
-          state := sDone
-        }.otherwise {
-          state := sDrainTrace
-        }
+        state := sDone
       }.otherwise {
         state := sWaitMeta
       }
@@ -426,20 +391,11 @@ class DDA(
         when(subgridMem.io.triCount === 0.U) {
           state := sStep
         }.otherwise {
-          state := sIssueTrace
+          traceCmds(traceCmdCount).base_addr := subgridMem.io.triStart
+          traceCmds(traceCmdCount).count := subgridMem.io.triCount
+          traceCmdCount := traceCmdCount + 1.U
+          state := sStep
         }
-      }
-    }
-
-    is(sIssueTrace) {
-      trace.io.issue_in.valid := !traceStartedReg
-      val canIssueFirstTrace = traceStartedReg || trace.io.issue_in.ready
-      trace.io.tri_batch_in.valid := canIssueFirstTrace
-      val traceBatchFire = trace.io.tri_batch_in.fire
-      when(traceBatchFire) {
-        traceStartedReg := true.B
-        traceIssuedCount := traceIssuedCount + 1.U
-        state := sStep
       }
     }
 
@@ -473,37 +429,10 @@ class DDA(
       }
     }
 
-    is(sDrainTrace) {
-      when(tracePendingAfterResult === 0.U) {
-        resultReg.meta := metaReg
-        resultReg.hit := false.B
-        resultReg.hitId := 0.U
-        resultReg.hitT := missT
-        state := sDone
-      }
-    }
-
     is(sDone) {
-      when(io.out.ready) {
+      when(io.trace_job_out.ready) {
         state := sIdle
       }
     }
-  }
-
-  when(traceResultFire) {
-    traceDoneCount := traceDoneCount + 1.U
-  }
-
-  when(traceResultHit) {
-    resultReg.meta := trace.io.result_out.bits.meta
-    resultReg.hit := true.B
-    resultReg.hitId := trace.io.result_out.bits.hitId
-    resultReg.hitT := trace.io.result_out.bits.hitT
-    traceFlushReg := true.B
-    traceStartedReg := false.B
-    traversalDoneReg := false.B
-    traceIssuedCount := 0.U
-    traceDoneCount := 0.U
-    state := sDone
   }
 }

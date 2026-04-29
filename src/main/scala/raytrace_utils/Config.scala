@@ -4,7 +4,6 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
-
   val frameWidth = 640
   val frameHeight = 480
   val pixelQueueDepth = 1024
@@ -49,7 +48,7 @@ object GlobalConfig {
   val commitQueueDepth = 64
   val slotBits = log2Ceil(commitQueueDepth)
 
-  val triBatchQueueDepth = 16
+  val triBatchQueueDepth = 64
   val sdfWorkQueueDepth = 32
   val sdfRetryQueueDepth = 32
   val sdfFinalQueueDepth = 8
@@ -82,15 +81,14 @@ object GlobalConfig {
   // Triangle memory: address width for compact triangle storage
   val triMemAddrWidth = 32
   // Triangle data: numPEs * 9 floats per batch
-  val triMemNumPEs = 4
-  val triMemDataWidth = triMemNumPEs * 9 * 32  // = 1152 bits
+  val triMemNumPEs = 1
+  val triMemDataWidth = triMemNumPEs * 9 * 32
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16
   // Normal data: 3 floats (x, y, z)
   val normalMemDataWidth = 3 * 32  // = 96 bits
 
-  // Subgrid meta memory: combined address = globalIdx[Global_ADDR_WIDTH] + subIdx[SUB_ADDR_WIDTH]
   val subgridMetaMemAddrWidth = 32
   val subgridMetaMemTriStartWidth = 16
   val subgridMetaMemTriCountWidth = 16
@@ -131,7 +129,7 @@ object GlobalConfig {
 
   val ddaMaxSteps = 100
 
-  val triMemDepth = Trinum/4
+  val triMemDepth = (Trinum + triMemNumPEs - 1) / triMemNumPEs
   val normalMemDepth = Trinum
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
