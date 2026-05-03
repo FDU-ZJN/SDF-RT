@@ -10,6 +10,7 @@ class TraceController(
 ) extends Module {
   private val numWorkers = GlobalConfig.traceNumWorkers
   private val cmdCountW = log2Ceil(maxCmds + 1)
+  private val cmdIdxW = math.max(1, log2Ceil(maxCmds))
 
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJob(c.cfg, c.addrWidth, maxCmds)))
@@ -24,7 +25,7 @@ class TraceController(
   val sIdle :: sIssueRay :: sIssueBatch :: sWaitBatch :: Nil = Enum(4)
   val workerState = RegInit(VecInit(Seq.fill(numWorkers)(sIdle)))
   val workerJob = Reg(Vec(numWorkers, new DdaTraceJob(c.cfg, c.addrWidth, maxCmds)))
-  val workerCmdIdx = RegInit(VecInit(Seq.fill(numWorkers)(0.U(cmdCountW.W))))
+  val workerCmdIdx = RegInit(VecInit(Seq.fill(numWorkers)(0.U(cmdIdxW.W))))
   val workerFlushPending = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   val workerResultPending = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   val workerResult = Reg(Vec(numWorkers, new TraceResult(c.cfg, c.addrWidth)))

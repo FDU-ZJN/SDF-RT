@@ -40,8 +40,15 @@ static inline std::string u32ToHex(uint32_t value) {
     return oss.str();
 }
 
+static inline size_t triBankDepthForExport(size_t triCount, int numPEs, int numBanks) {
+    const size_t totalDepth = (triCount + static_cast<size_t>(numPEs) - 1) / static_cast<size_t>(numPEs);
+    const size_t bankDepth = (totalDepth + static_cast<size_t>(numBanks) - 1) / static_cast<size_t>(numBanks);
+    const size_t align = static_cast<size_t>(kTriMemDepthAlign);
+    return ((bankDepth + align - 1) / align) * align;
+}
+
 // Export triangle memory to .mem file
-void export_triangle_mem(const std::string& filename, int numPEs) {
+void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, int bankId) {
     // Use compact triangle layout if available (after subgrid build)
     const auto& tri_store = (subgrid_layout_ready && !triangles_compact.empty()) 
                             ? triangles_compact : triangles;
@@ -53,24 +60,26 @@ void export_triangle_mem(const std::string& filename, int numPEs) {
     }
 
     out << "// Triangle Memory Initialization File" << std::endl;
-    out << "// Format: Each line = 1 address (numPEs triangles, 9 floats each)" << std::endl;
-    out << "// $readmemh format: @address data..." << std::endl;
+    out << "// Format: Each line = 1 bank-local address as one contiguous "
+        << (numPEs * 9 * 32) << "-bit hex word" << std::endl;
+    out << "// Bit layout matches COE/XPM: lane high-to-low, float[8:0] high-to-low" << std::endl;
     out << "// Total triangles: " << tri_store.size() << std::endl;
+    out << "// Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
     out << std::endl;
 
     const int triBatchSize = numPEs;
-    const int floatsPerAddr = triBatchSize * 9; // 9 floats per triangle
+    const size_t bankStride = static_cast<size_t>(numBanks) * static_cast<size_t>(triBatchSize);
+    const size_t alignedDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
 
-    // Note: $readmemh fills multi-dimensional arrays using linear addressing.
-    // For triangle_mem[0:MAX-1][0:NUM_FLOATS-1], @1 means linear offset 1 (element [0][1]),
-    // NOT element [1][0]. So we omit @address and let $readmemh fill sequentially from 0.
-    for (size_t baseIdx = 0; baseIdx < tri_store.size(); baseIdx += triBatchSize) {
-        for (int lane = 0; lane < triBatchSize; ++lane) {
-            const size_t triIdx = baseIdx + lane;
+    for (size_t addrIdx = 0; addrIdx < alignedDepth; ++addrIdx) {
+        const size_t baseIdx = static_cast<size_t>(bankId) + addrIdx * bankStride;
+        std::string hexLine;
+
+        for (int lane = triBatchSize - 1; lane >= 0; --lane) {
+            const size_t triIdx = baseIdx + static_cast<size_t>(lane) * static_cast<size_t>(numBanks);
             if (triIdx >= tri_store.size()) {
-                // Pad with zeros
-                for (int f = 0; f < 9; ++f) {
-                    out << "00000000" << (f == 8 ? "" : " ");
+                for (int f = 8; f >= 0; --f) {
+                    hexLine += "00000000";
                 }
             } else {
                 const Triangle& tri = tri_store[triIdx];
@@ -79,20 +88,20 @@ void export_triangle_mem(const std::string& filename, int numPEs) {
                     tri.v1[0], tri.v1[1], tri.v1[2],
                     tri.v2[0], tri.v2[1], tri.v2[2]
                 };
-                
-                for (int f = 0; f < 9; ++f) {
-                    out << u32ToHex(floatToRawU32(values[f]));
-                    out << " ";
+
+                for (int f = 8; f >= 0; --f) {
+                    hexLine += u32ToHex(floatToRawU32(values[f]));
                 }
             }
         }
-        out << std::endl;
+
+        out << hexLine << std::endl;
     }
 
     out.close();
-    size_t totalAddrs = (tri_store.size() + triBatchSize - 1) / triBatchSize;
     std::cout << "[MemExport] Exported " << tri_store.size()
-              << " triangles to " << filename << " (" << totalAddrs << " addresses)" << std::endl;
+              << " triangles to " << filename << " (" << alignedDepth << " bank addresses, bank "
+              << bankId << "/" << numBanks << ")" << std::endl;
 }
 
 // Export BVH memory to .mem file
@@ -347,7 +356,7 @@ void export_subgrid_meta_mem(const std::string& filename) {
 }
 
 // Export triangle memory to COE file (for Vivado BRAM initialization)
-void export_triangle_mem_coe(const std::string& filename, int numPEs) {
+void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBanks, int bankId) {
     // Use compact triangle layout if available (after subgrid build)
     const auto& tri_store = (subgrid_layout_ready && !triangles_compact.empty())
                             ? triangles_compact : triangles;
@@ -360,23 +369,25 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs) {
 
     // COE file format for Xilinx block RAM
     out << "; Triangle Memory COE File for Vivado" << std::endl;
-    out << "; Format: numPEs * 9 floats * 32 bits" << std::endl;
+    out << "; Format: bank-local numPEs * 9 floats * 32 bits" << std::endl;
     out << "; Total triangles: " << tri_store.size() << std::endl;
+    out << "; Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
     out << "memory_initialization_vector=" << std::endl;
 
-    const int triBatchSize = numPEs; // 4 triangles per address
+    const int triBatchSize = numPEs;
     const int bitsPerEntry = 32; // float is 32 bits
     const int bitsPerAddress = triBatchSize * 9 * bitsPerEntry;
+    const size_t bankStride = static_cast<size_t>(numBanks) * static_cast<size_t>(triBatchSize);
+    const size_t alignedDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
 
-    for (size_t baseIdx = 0; baseIdx < tri_store.size(); baseIdx += triBatchSize) {
+    for (size_t addrIdx = 0; addrIdx < alignedDepth; ++addrIdx) {
+        const size_t baseIdx = static_cast<size_t>(bankId) + addrIdx * bankStride;
         std::string hexLine;
-        
-        // 倒序拼接以匹配Verilog的字节序：COE最左侧对应BRAM最高位
+
         for (int lane = triBatchSize - 1; lane >= 0; --lane) {
-            const size_t triIdx = baseIdx + lane;
+            const size_t triIdx = baseIdx + static_cast<size_t>(lane) * static_cast<size_t>(numBanks);
             if (triIdx >= tri_store.size()) {
-                // Pad with zeros (9 floats = 288 bits per triangle)
                 for (int f = 8; f >= 0; --f) {
                     hexLine += "00000000";
                 }
@@ -394,16 +405,17 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs) {
             }
         }
 
-        out << hexLine << (baseIdx + triBatchSize >= tri_store.size() ? "" : ",") << std::endl;
+        const bool isLast = (addrIdx + 1 == alignedDepth);
+        out << hexLine << (isLast ? "" : ",") << std::endl;
     }
 
     out << ";" << std::endl;
     out.close();
     
-    size_t totalAddrs = (tri_store.size() + triBatchSize - 1) / triBatchSize;
     std::cout << "[MemExport] Exported " << tri_store.size()
-              << " triangles to COE " << filename << " (" << totalAddrs 
-              << " addresses, " << bitsPerAddress << "-bit width)" << std::endl;
+              << " triangles to COE " << filename << " (" << alignedDepth
+              << " bank addresses, bank " << bankId << "/" << numBanks
+              << ", " << bitsPerAddress << "-bit width)" << std::endl;
 }
 
 // Export normal memory to COE file (for Vivado BRAM initialization)
@@ -593,7 +605,9 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
 
-    export_triangle_mem(output_dir + "/triangle_mem.mem", kTriNumPE);
+    for (int bank = 0; bank < kTriNumBanks; ++bank) {
+        export_triangle_mem(output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".mem", kTriNumPE, kTriNumBanks, bank);
+    }
     export_bvh_mem(output_dir + "/bvh_mem.mem");
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
@@ -601,7 +615,9 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_subgrid_meta_mem(output_dir + "/subgrid_meta_mem.mem");
 
     // Export COE files for FPGA BRAM initialization
-    export_triangle_mem_coe(output_dir + "/triangle_mem.coe", kTriNumPE);
+    for (int bank = 0; bank < kTriNumBanks; ++bank) {
+        export_triangle_mem_coe(output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".coe", kTriNumPE, kTriNumBanks, bank);
+    }
     export_normal_mem_coe(output_dir + "/normal_mem.coe");
     export_normal_id_mapping_coe(output_dir + "/normal_id_mapping.coe");
     export_sdf_local_mapping_coe(output_dir + "/sdf_local_mapping.coe");

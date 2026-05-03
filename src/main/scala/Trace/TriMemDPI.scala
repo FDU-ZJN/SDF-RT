@@ -1,12 +1,15 @@
 package Trace
 
 import chisel3._
+import chisel3.experimental.StringParam
 import chisel3.util._
 import raytrace_utils._
 
 private class TriangleMemDPICore(
   val c: TriPeConfig,
-  val latency: Int = GlobalConfig.triMemDpiLatency
+  val latency: Int = GlobalConfig.triMemDpiLatency,
+  val bankId: Int = 0,
+  val numBanks: Int = 1
 ) extends BlackBox with HasBlackBoxInline {
   require(latency >= 1, s"TriangleMemDPI latency must be >= 1, got $latency")
 
@@ -18,6 +21,7 @@ private class TriangleMemDPICore(
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
+    val bank_id = Input(UInt(32.W))
     val addr = Input(UInt(c.addrWidth.W))
     val req_valid = Input(Bool())
     val req_mask = Input(UInt(c.numPEs.W))
@@ -30,11 +34,12 @@ private class TriangleMemDPICore(
 
   val svCode =
     s"""
-       |import "DPI-C" function void tri_mem_read(input int addr, output byte data[]);
+       |import "DPI-C" function void tri_mem_read_bank(input int bank, input int addr, output byte data[]);
        |
        |module TriangleMemDPICore (
        |    input clk,
        |    input reset,
+       |    input [31:0] bank_id,
        |    input [${c.addrWidth - 1}:0] addr,
        |    input req_valid,
        |    input [${c.numPEs - 1}:0] req_mask,
@@ -64,7 +69,7 @@ private class TriangleMemDPICore(
        |        end else begin
        |            valid_pipe[0] <= req_valid;
        |            if (req_valid) begin
-       |                tri_mem_read(addr, raw_buffer);
+       |                tri_mem_read_bank(bank_id, addr, raw_buffer);
        |                addr_pipe[0] <= addr;
        |                mask_pipe[0] <= req_mask[${c.numPEs - 1}:0];
        |                for (int i = 0; i < ${totalBytes}; i = i + 1) begin
@@ -94,12 +99,20 @@ private class TriangleMemDPICore(
 
 private class TriangleMemResourceBB(
   val c: TriPeConfig,
-  val latency: Int = GlobalConfig.triMemDpiLatency
+  val latency: Int = GlobalConfig.triMemDpiLatency,
+  val bankId: Int = 0,
+  val numBanks: Int = 1,
+  val maxEntries: Int = -1
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
         "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
-        "LATENCY" -> latency
+        "LATENCY" -> latency,
+        "NUM_PES" -> GlobalConfig.triMemNumPEs,
+        "BANK_ID" -> bankId,
+        "NUM_BANKS" -> numBanks,
+        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
+        "INIT_FILE" -> StringParam(s"triangle_mem_bank${bankId}.mem")
       )
     )
     with HasBlackBoxResource {
@@ -121,14 +134,20 @@ private class TriangleMemResourceBB(
 
 private class TriangleMemIpBB(
   val c: TriPeConfig,
-  val latency: Int = GlobalConfig.triMemDpiLatency
+  val latency: Int = GlobalConfig.triMemDpiLatency,
+  val bankId: Int = 0,
+  val numBanks: Int = 1,
+  val maxEntries: Int = -1
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
         "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
         "LATENCY" -> latency,
         "NUM_PES" -> GlobalConfig.triMemNumPEs,
-        "MAX_ENTRIES" -> GlobalConfig.triMemDepth
+        "BANK_ID" -> bankId,
+        "NUM_BANKS" -> numBanks,
+        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
+        "INIT_FILE" -> StringParam(s"triangle_mem_bank${bankId}.mem")
       )
     )
     with HasBlackBoxResource {
@@ -151,9 +170,13 @@ private class TriangleMemIpBB(
 
 class TriangleMemDPI(
   val c: TriPeConfig,
-  val latency: Int = GlobalConfig.triMemDpiLatency
+  val latency: Int = GlobalConfig.triMemDpiLatency,
+  val bankId: Int = 0,
+  val numBanks: Int = 1,
+  val maxEntries: Int = -1
 ) extends Module {
   private val totalBits = GlobalConfig.triMemDataWidth
+  private val resolvedMaxEntries = if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
@@ -169,9 +192,10 @@ class TriangleMemDPI(
 
   GlobalConfig.memImplMode match {
     case 0 =>
-      val impl = Module(new TriangleMemDPICore(c, latency))
+      val impl = Module(new TriangleMemDPICore(c, latency, bankId, numBanks))
       impl.io.clk := io.clk
       impl.io.reset := io.reset
+      impl.io.bank_id := bankId.U(32.W)
       impl.io.addr := io.addr
       impl.io.req_valid := io.req_valid
       impl.io.req_mask := io.req_mask
@@ -181,7 +205,7 @@ class TriangleMemDPI(
       io.addr_q := impl.io.addr_q
       io.req_ready := impl.io.req_ready
     case 1 =>
-      val impl = Module(new TriangleMemResourceBB(c, latency))
+      val impl = Module(new TriangleMemResourceBB(c, latency, bankId, numBanks, resolvedMaxEntries))
       impl.io.clk := io.clk
       impl.io.reset := io.reset
       impl.io.addr := io.addr
@@ -193,7 +217,7 @@ class TriangleMemDPI(
       io.addr_q := impl.io.addr_q
       io.req_ready := impl.io.req_ready
     case 2 =>
-      val impl = Module(new TriangleMemIpBB(c, latency))
+      val impl = Module(new TriangleMemIpBB(c, latency, bankId, numBanks, resolvedMaxEntries))
       impl.io.clk := io.clk
       impl.io.reset := io.reset
       impl.io.addr := io.addr
@@ -206,4 +230,3 @@ class TriangleMemDPI(
       io.req_ready := impl.io.req_ready
   }
 }
-

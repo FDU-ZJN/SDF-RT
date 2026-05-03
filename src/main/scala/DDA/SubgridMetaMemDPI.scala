@@ -1,6 +1,7 @@
 package DDA
 
 import chisel3._
+import chisel3.experimental.StringParam
 import chisel3.util.{HasBlackBoxInline, HasBlackBoxResource}
 import raytrace_utils.GlobalConfig
 
@@ -84,7 +85,8 @@ private class SubgridMetaMemResourceBB(
         "ADDR_WIDTH" -> GlobalConfig.subgridMetaMemAddrWidth,
         "GLOBALRES" -> GlobalRes,
         "SUBRES" -> SubRes,
-        "LATENCY" -> Latency
+        "LATENCY" -> Latency,
+        "MAX_ENTRIES" -> GlobalConfig.subgridMetaMemDepth
       )
     )
     with HasBlackBoxResource {
@@ -112,7 +114,8 @@ private class SubgridMetaMemIpBB(
         "GLOBALRES" -> GlobalRes,
         "SUBRES" -> SubRes,
         "LATENCY" -> Latency,
-        "MAX_ENTRIES" -> GlobalConfig.subgridMetaMemDepth
+        "MAX_ENTRIES" -> GlobalConfig.subgridMetaMemDepth,
+        "INIT_FILE" -> StringParam("subgrid_meta_mem.mem")
       )
     )
     with HasBlackBoxResource {
@@ -178,4 +181,3 @@ class SubgridMetaMemDPI(
       io.valid := impl.io.valid
   }
 }
-

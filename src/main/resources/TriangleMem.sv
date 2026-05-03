@@ -3,7 +3,10 @@ module TriangleMem #(
   parameter int DATA_WIDTH = 288,
   parameter int LATENCY = 2,
   parameter int NUM_PES = 1,
-  parameter int MAX_ENTRIES = 3551
+  parameter int BANK_ID = 0,
+  parameter int NUM_BANKS = 1,
+  parameter int MAX_ENTRIES = 1,
+  parameter string INIT_FILE = "triangle_mem_bank0.mem"
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -18,22 +21,14 @@ module TriangleMem #(
 );
 
   localparam int FIXED_LATENCY = 2;
-  localparam int BRAM_ADDR_WIDTH = $clog2(MAX_ENTRIES);
+  localparam int MEM_ADDR_WIDTH = (MAX_ENTRIES <= 1) ? 1 : $clog2(MAX_ENTRIES);
+  localparam int MEM_SIZE_BITS = MAX_ENTRIES * DATA_WIDTH;
 
-  localparam int ADDR_SHIFT = (NUM_PES <= 1) ? 0 : $clog2(NUM_PES);
-  logic [ADDR_WIDTH-1:0] tri_addr;
-  logic [BRAM_ADDR_WIDTH-1:0] tri_addr_bram;
-  assign tri_addr = addr >> ADDR_SHIFT;
-  assign tri_addr_bram = tri_addr[BRAM_ADDR_WIDTH-1:0];
-
-  assign req_ready = 1'b1;
-
-  logic                  valid_pipe [0:FIXED_LATENCY-1];
-  logic [NUM_PES-1:0]    mask_pipe [0:FIXED_LATENCY-1];
-  logic [ADDR_WIDTH-1:0] addr_pipe [0:FIXED_LATENCY-1];
-
-  logic [DATA_WIDTH-1:0] data_raw;
-
+  logic [MEM_ADDR_WIDTH-1:0] mem_addr;
+  logic [DATA_WIDTH-1:0]     data_raw;
+  logic                      valid_pipe [0:FIXED_LATENCY-1];
+  logic [NUM_PES-1:0]        mask_pipe [0:FIXED_LATENCY-1];
+  logic [ADDR_WIDTH-1:0]     addr_pipe [0:FIXED_LATENCY-1];
   integer i;
 
   initial begin
@@ -42,11 +37,38 @@ module TriangleMem #(
     end
   end
 
-  tri_mem trimem_inst (
-    .clka(clk),
-    .addra(tri_addr_bram),
-    .douta(data_raw)
-  );
+  assign mem_addr = addr[MEM_ADDR_WIDTH-1:0];
+  assign req_ready = 1'b1;
+
+xpm_memory_sprom #(
+    .ADDR_WIDTH_A       (MEM_ADDR_WIDTH),
+    .MEMORY_SIZE        (MEM_SIZE_BITS),
+    .MEMORY_PRIMITIVE   ("block"),
+    .MEMORY_INIT_FILE   (INIT_FILE),
+    .MEMORY_INIT_PARAM  (""),
+    .USE_MEM_INIT       (1),
+    .READ_DATA_WIDTH_A  (DATA_WIDTH),
+    .READ_LATENCY_A     (FIXED_LATENCY),
+    .ECC_MODE           ("no_ecc"),
+    .AUTO_SLEEP_TIME    (0),
+    .CASCADE_HEIGHT     (0),
+    .SIM_ASSERT_CHK     (0),
+    .WAKEUP_TIME        ("disable_sleep"),
+    .READ_RESET_VALUE_A ("0"),
+    .RST_MODE_A         ("SYNC")
+) trimem_xpm_inst (
+    .sleep  (1'b0),
+    .clka   (clk),
+    .rsta   (reset),
+    .ena    (req_valid),
+    .regcea (1'b1),
+    .addra  (mem_addr),
+    .injectsbiterra (1'b0),
+    .injectdbiterra (1'b0),
+    .douta  (data_raw),
+    .sbiterra (),
+    .dbiterra ()
+);
 
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -57,8 +79,8 @@ module TriangleMem #(
       end
     end else begin
       valid_pipe[0] <= req_valid;
-      addr_pipe[0]  <= addr;
       mask_pipe[0]  <= req_mask;
+      addr_pipe[0]  <= addr;
 
       for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
         valid_pipe[i] <= valid_pipe[i-1];

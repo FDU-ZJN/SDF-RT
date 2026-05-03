@@ -1,5 +1,5 @@
 import DDA.DDA
-import Render.RenderStage
+import Render.{NormalMemWriteIO, RenderStage}
 import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
 import Trace.TraceController
 import chisel3._
@@ -29,6 +29,7 @@ class SimTop extends Module {
 
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
+    val normal_mem_wr = Flipped(new NormalMemWriteIO)
   })
 
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
@@ -118,6 +119,7 @@ class SimTop extends Module {
   ddaStage.io.in <> sdfHitQ.io.deq
 
   renderStage.io.in <> traceController.io.result_out
+  renderStage.io.normal_mem_wr <> io.normal_mem_wr
 
   commitQueue.io.writeback.valid := renderStage.io.out.valid
   commitQueue.io.writeback.bits := renderStage.io.out.bits

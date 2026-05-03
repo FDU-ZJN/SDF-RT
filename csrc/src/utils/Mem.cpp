@@ -553,6 +553,10 @@ extern "C" __attribute__((weak)) int svSize(const svOpenArrayHandle h, int dim) 
 }
 
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
+    tri_mem_read_bank(0, addr, data);
+}
+
+extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle data) {
     if (data == nullptr) {
         return;
     }
@@ -573,7 +577,7 @@ extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
     const int triCount = totalBytes / kBytesPerTri;
 
     for (int lane = 0; lane < triCount; ++lane) {
-        const int triIdx = addr + lane;
+        const int triIdx = bank + ((addr * triCount) + lane) * kTriNumBanks;
         if (triIdx < 0 || static_cast<size_t>(triIdx) >= tri_store.size()) {
             continue;
         }

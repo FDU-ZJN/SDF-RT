@@ -8,12 +8,14 @@ class RenderStage(cfg: FloatConfig) extends Module {
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new TraceResult(cfg, cfg.addrWidth)))
     val out = Decoupled(new RenderResult(cfg, cfg.addrWidth))
+    val normal_mem_wr = Flipped(new NormalMemWriteIO)
   })
   val pe = Module(new RenderPE(cfg))
   val memLatency = GlobalConfig.normalMemDpiLatency
   val mem = Module(new NormalMemDPI(cfg.addrWidth, latency = memLatency))
   mem.io.clk   := clock
   mem.io.reset := reset
+  mem.io.wr <> io.normal_mem_wr
 
   io.in.ready := true.B
 

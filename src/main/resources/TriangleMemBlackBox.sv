@@ -3,7 +3,9 @@ module TriangleMemResourceBB #(
   parameter int DATA_WIDTH = 288,
   parameter int LATENCY = 2,
   parameter int NUM_PES = 1,
-  parameter int MAX_ENTRIES = 65536
+  parameter int BANK_ID = 0,
+  parameter int NUM_BANKS = 1,
+  parameter int MAX_ENTRIES = 1
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -16,33 +18,36 @@ module TriangleMemResourceBB #(
   output logic [ADDR_WIDTH-1:0]  addr_q,
   output logic                   req_ready
 );
-  logic [LATENCY-1:0]             valid_pipe;
-  logic [ADDR_WIDTH-1:0]          addr_pipe [LATENCY-1:0];
-  logic [DATA_WIDTH-1:0]          data_pipe [LATENCY-1:0];
-  logic [NUM_PES-1:0]             mask_pipe [LATENCY-1:0];
+  logic [LATENCY-1:0]         valid_pipe;
+  logic [ADDR_WIDTH-1:0]      addr_pipe [LATENCY-1:0];
+  logic [DATA_WIDTH-1:0]      data_pipe [LATENCY-1:0];
+  logic [NUM_PES-1:0]         mask_pipe [LATENCY-1:0];
   integer i;
-  localparam int ADDR_SHIFT = (NUM_PES <= 1) ? 0 : $clog2(NUM_PES);
-  logic [ADDR_WIDTH-1:0]          tri_addr;
-    assign tri_addr = addr >> ADDR_SHIFT;
 
   assign req_ready = 1'b1;
 
-  // Memory storage for $readmemh initialization
-  // DATA_WIDTH bits = NUM_PES * 9 * 32 bits
-  localparam int NUM_FLOATS = DATA_WIDTH / 32;
-
-  reg [31:0] triangle_mem [0:MAX_ENTRIES-1][0:NUM_FLOATS-1];
+  reg [DATA_WIDTH-1:0] triangle_mem [0:MAX_ENTRIES-1];
   reg mem_loaded = 1'b0;
 
-  // Initialize memory from file using $readmemh
   initial begin
     string mem_file;
-    if ($value$plusargs("TRI_MEM_FILE=%s", mem_file)) begin
-      $display("[TriangleMem] Loading triangle memory from %s", mem_file);
+    case (BANK_ID)
+      0: mem_loaded = $value$plusargs("TRI_MEM_BANK0_FILE=%s", mem_file);
+      1: mem_loaded = $value$plusargs("TRI_MEM_BANK1_FILE=%s", mem_file);
+      2: mem_loaded = $value$plusargs("TRI_MEM_BANK2_FILE=%s", mem_file);
+      3: mem_loaded = $value$plusargs("TRI_MEM_BANK3_FILE=%s", mem_file);
+      4: mem_loaded = $value$plusargs("TRI_MEM_BANK4_FILE=%s", mem_file);
+      5: mem_loaded = $value$plusargs("TRI_MEM_BANK5_FILE=%s", mem_file);
+      6: mem_loaded = $value$plusargs("TRI_MEM_BANK6_FILE=%s", mem_file);
+      7: mem_loaded = $value$plusargs("TRI_MEM_BANK7_FILE=%s", mem_file);
+      default: mem_loaded = $value$plusargs("TRI_MEM_FILE=%s", mem_file);
+    endcase
+
+    if (mem_loaded) begin
+      $display("[TriangleMem] Loading bank %0d/%0d from %s", BANK_ID, NUM_BANKS, mem_file);
       $readmemh(mem_file, triangle_mem);
-      mem_loaded = 1'b1;
     end else begin
-      $display("[TriangleMem] Warning: TRI_MEM_FILE not specified, using empty memory");
+      $display("[TriangleMem] Warning: no memory file specified for bank %0d", BANK_ID);
     end
   end
 
@@ -55,13 +60,11 @@ module TriangleMemResourceBB #(
         mask_pipe[i] <= '0;
       end
     end else begin
-      valid_pipe[0]  <= req_valid;
-      addr_pipe[0]   <= addr;
+      valid_pipe[0] <= req_valid;
+      addr_pipe[0]  <= addr;
       if (req_valid) begin
-        if (mem_loaded && (tri_addr < MAX_ENTRIES)) begin
-          for (i = 0; i < NUM_FLOATS; i = i + 1) begin
-            data_pipe[0][i*32 +: 32] <= triangle_mem[tri_addr][i];
-          end
+        if (mem_loaded && (addr < MAX_ENTRIES)) begin
+          data_pipe[0] <= triangle_mem[addr];
           mask_pipe[0] <= req_mask;
         end else begin
           data_pipe[0] <= '0;

@@ -2,6 +2,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
+import Render.NormalMemWriteIO
 import SDF.SdfMemWriteIO
 
 import java.nio.charset.StandardCharsets
@@ -37,6 +38,7 @@ class FpgaTop(
 
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
+    val normal_mem_wr = Flipped(new NormalMemWriteIO)
   })
 
   val simTop     = Module(new SimTop)
@@ -64,6 +66,7 @@ class FpgaTop(
   
   // Connect SDF memory write port
   simTop.io.sdf_mem_wr <> io.sdf_mem_wr
+  simTop.io.normal_mem_wr <> io.normal_mem_wr
 
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)

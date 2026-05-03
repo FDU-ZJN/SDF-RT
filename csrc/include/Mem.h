@@ -25,6 +25,8 @@ extern "C" int svSize(const svOpenArrayHandle, int);
 #endif
 
 constexpr int kTriNumPE = 1;
+constexpr int kTriNumBanks = 4;
+constexpr int kTriMemDepthAlign = 512;
 
 // Test case structure
 
@@ -100,10 +102,11 @@ extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_start_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" int subgrid_tri_count_read(unsigned int global_idx, unsigned int local_idx);
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data);
+extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle data);
 extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data);
 
 // Memory export utilities for Vivado simulation with $readmemh
-void export_triangle_mem(const std::string& filename, int numPEs);
+void export_triangle_mem(const std::string& filename, int numPEs, int numBanks = 1, int bankId = 0);
 void export_bvh_mem(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
@@ -112,7 +115,7 @@ void export_subgrid_meta_mem(const std::string& filename);
 void export_all_mems_for_vivado(const std::string& output_dir);
 
 // COE file export for FPGA BRAM initialization
-void export_triangle_mem_coe(const std::string& filename, int numPEs);
+void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBanks = 1, int bankId = 0);
 void export_normal_mem_coe(const std::string& filename);
 void export_normal_id_mapping_coe(const std::string& filename);
 void export_sdf_local_mapping_coe(const std::string& filename);

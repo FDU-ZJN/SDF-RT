@@ -6,11 +6,11 @@ import chisel3.util.log2Ceil
 object GlobalConfig {
   val frameWidth = 640
   val frameHeight = 480
-  val pixelQueueDepth = 1024
-  val rayDirFifoDepth = 128
-  val traceNumWorkers = 8
+  val pixelQueueDepth = 4
+  val rayDirFifoDepth = 32
+  val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
-  val ddaNumWorkers = 8
+  val ddaNumWorkers = 1
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
@@ -52,7 +52,6 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 64
-  val ddaWorkQueueDepth = 32
   val ddaRetryQueueDepth = 32
   val ddaFinalQueueDepth = 8
   val sdfWorkQueueDepth = 32
@@ -69,16 +68,16 @@ object GlobalConfig {
   val normalMemDpiLatency = 4
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 3
-  val subgridMemDpiLatency = 1
+  val subgridMemDpiLatency = 2
   val fsqrtLatency = 10
 
-  val Trinum = 14204
+  val Trinum = 19347
   // SDF PE grid
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
   val LocalCell = 2048
   // DDA grid
-  val GlobalDdaRes = 8
+  val GlobalDdaRes = 16
   val SubDdaRes = 1
   val DdaRes= GlobalDdaRes*SubDdaRes
   // ============================================================
@@ -89,6 +88,7 @@ object GlobalConfig {
   // Triangle data width per TriPE request block.
   val triMemNumPEs = 1
   val triMemDataWidth = triMemNumPEs * 9 * 32
+  val triMemDepthAlign = 512
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16
@@ -133,9 +133,18 @@ object GlobalConfig {
   val sdfHitBackoffN = 1
 
 
-  val ddaMaxSteps = 100
+  val ddaMaxSteps =8
 
-  val triMemDepth = (Trinum + triMemNumPEs - 1) / triMemNumPEs
+  def triMemDepthFor(numBanks: Int, numPEs: Int = triMemNumPEs): Int = {
+    require(numBanks > 0, s"triMem numBanks must be > 0, got $numBanks")
+    require(numPEs > 0, s"triMem numPEs must be > 0, got $numPEs")
+    val totalDepth = (Trinum + numPEs - 1) / numPEs
+    val bankDepth = (totalDepth + numBanks - 1) / numBanks
+    ((bankDepth + triMemDepthAlign - 1) / triMemDepthAlign) * triMemDepthAlign
+  }
+
+  val triMemDepth = triMemDepthFor(1)
+  val triMemBankDepth = triMemDepthFor(triMemNumBanks)
   val normalMemDepth = Trinum
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes

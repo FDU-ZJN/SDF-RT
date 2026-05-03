@@ -50,6 +50,7 @@ class TriangleMemMultiPort(
 ) extends Module {
   require(numPorts > 0, "TriangleMemMultiPort needs at least one port")
   require(numBanks > 0, "TriangleMemMultiPort needs at least one bank")
+  require(isPow2(numBanks), s"TriangleMemMultiPort currently requires numBanks to be power-of-two, got $numBanks")
 
   private val srcW = math.max(1, log2Ceil(numPorts))
   private val bankSelW = math.max(1, log2Ceil(numBanks))
@@ -66,9 +67,11 @@ class TriangleMemMultiPort(
     val resp = Vec(numPorts, Decoupled(new TriangleBlock(c)))
   })
 
-  private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt): TriangleBlock = {
+  private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt, bankId: Int): TriangleBlock = {
     val block = Wire(new TriangleBlock(c))
     val bitsPerTri = 3 * 3 * c.cfg.totalWidth
+    val numBanksU = numBanks.U(GlobalConfig.triMemAddrWidth.W)
+    val bankBase = addrQ * numBanksU + bankId.U(GlobalConfig.triMemAddrWidth.W)
     for (i <- 0 until c.numPEs) {
       val hi = bitsPerTri * (i + 1) - 1
       val lo = bitsPerTri * i
@@ -82,18 +85,26 @@ class TriangleMemMultiPort(
       block.tris(i).v2.x := triBits(223, 192)
       block.tris(i).v2.y := triBits(255, 224)
       block.tris(i).v2.z := triBits(287, 256)
-      block.tris(i).id := addrQ + i.U(GlobalConfig.triMemAddrWidth.W)
+      block.tris(i).id := bankBase + (i.U(GlobalConfig.triMemAddrWidth.W) * numBanksU)
       block.mask(i) := mask(i)
     }
     block
   }
 
-  val banks = Seq.fill(numBanks)(Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency)))
+  val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemDPI(
+    c,
+    latency = GlobalConfig.triMemDpiLatency,
+    bankId = b,
+    numBanks = numBanks,
+    maxEntries = GlobalConfig.triMemBankDepth
+  )))
   val arbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
 
   val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
+  val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
   for (p <- 0 until numPorts) {
     targetedBank(p) := (if (numBanks == 1) 0.U else io.req(p).bits(bankSelW - 1, 0))
+    bankLocalAddr(p) := (if (numBanks == 1) io.req(p).bits else (io.req(p).bits >> bankSelW))
   }
 
   val reqReady = Wire(Vec(numPorts, Bool()))
@@ -105,7 +116,7 @@ class TriangleMemMultiPort(
     for (p <- 0 until numPorts) {
       val targetsBank = targetedBank(p) === b.U
       arbs(b).io.in(p).valid := io.req(p).valid && io.req_mask(p).valid && targetsBank
-      arbs(b).io.in(p).bits.addr := io.req(p).bits
+      arbs(b).io.in(p).bits.addr := bankLocalAddr(p)
       arbs(b).io.in(p).bits.mask := io.req_mask(p).bits
       arbs(b).io.in(p).bits.src := p.U
 
@@ -153,7 +164,7 @@ class TriangleMemMultiPort(
       }
     }
 
-    val bankBlock = decodeBlock(banks(b).io.data, banks(b).io.addr_q, banks(b).io.valid_mask)
+    val bankBlock = decodeBlock(banks(b).io.data, banks(b).io.addr_q, banks(b).io.valid_mask, b)
     when(banks(b).io.valid) {
       respValid(srcPipe.last) := true.B
       respBits(srcPipe.last) := bankBlock
