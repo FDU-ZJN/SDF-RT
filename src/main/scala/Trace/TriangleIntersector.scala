@@ -31,7 +31,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   // stageCLatency = ADD + latCP + latDP
   // stageDAlignLatency = max(DIV, latDP)
   // preCmpLatency = stageCLatency + stageDAlignLatency + MUL + ADD
-  // totalLatency = preCmpLatency + FCMP
+  // totalLatency = preCmpLatency; final uv compare is simple combinational logic.
   //
   // Verification example with:
   // fmul=8, fadd=7, fcmp=2, fptoint=6, fdiv=29
@@ -159,8 +159,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val preCmpLatency = stageCLatency + stageDAlignLatency + latMUL + latADD
   val det_is_zero_pre_cmp = PipeUtils.pipeData(det_is_zero, preCmpLatency - stageCLatency)
 
-  // 总延迟包含最终 uv 比较路径。
-  val totalLatency = preCmpLatency + cfg.fcmpLatency
+  val totalLatency = preCmpLatency
   val out_valid_final = PipeUtils.pipeData(io.in_valid, totalLatency)
   io.id:=PipeUtils.pipeData(io.tri.id, totalLatency)
   io.out_valid := out_valid_final
@@ -170,17 +169,13 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
 
   val u_pos = !u_d26(cfg.totalWidth-1)
   val v_pos = !v_d26(cfg.totalWidth-1)
-  val fcmp_uv = Module(new FCMP(cfg))
-    fcmp_uv.io.a := uv_sum
-    fcmp_uv.io.b := fp_one
-    fcmp_uv.io.signaling := false.B
-    val uv_le_one = fcmp_uv.io.le
-  val det_is_zero_final = PipeUtils.pipeData(det_is_zero_pre_cmp, cfg.fcmpLatency)
-  val u_pos_final = PipeUtils.pipeData(u_pos, cfg.fcmpLatency)
-  val v_pos_final = PipeUtils.pipeData(v_pos, cfg.fcmpLatency)
-  val t_final = PipeUtils.pipeData(t_d26, cfg.fcmpLatency)
-  val u_final = PipeUtils.pipeData(u_d26, cfg.fcmpLatency)
-  val v_final = PipeUtils.pipeData(v_d26, cfg.fcmpLatency)
+  val uv_le_one = SimpleFPCompare.lePositiveConst(uv_sum, fp_one, cfg.totalWidth)
+  val det_is_zero_final = det_is_zero_pre_cmp
+  val u_pos_final = u_pos
+  val v_pos_final = v_pos
+  val t_final = t_d26
+  val u_final = u_d26
+  val v_final = v_d26
 
   io.hit := out_valid_final && !det_is_zero_final && u_pos_final && v_pos_final && uv_le_one
 

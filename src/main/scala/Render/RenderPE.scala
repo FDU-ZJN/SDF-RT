@@ -30,13 +30,7 @@ class RenderPE(cfg: FloatConfig) extends Module {
   dotUnit.io.rm := 0.U
 
   // ── Stage 2: clamp dot 到 [0, +inf) ─────────────────────────────────────
-  val cmpDot = Module(new FCMP(cfg))
-  cmpDot.io.a        := dotUnit.io.res
-  cmpDot.io.b        := val_0_0
-  cmpDot.io.signaling := false.B
-
-  val dotAligned = PipeUtils.pipeData(dotUnit.io.res, cfg.fcmpLatency)
-  val diff = Mux(cmpDot.io.lt, val_0_0, dotAligned)
+  val diff = Mux(SimpleFPCompare.ltZero(dotUnit.io.res, cfg.totalWidth), val_0_0, dotUnit.io.res)
 
   // ── Stage 3: ambient + diffuse ───────────────────────────────────────────
   val fadd = Module(new FADD(cfg))
@@ -55,18 +49,12 @@ class RenderPE(cfg: FloatConfig) extends Module {
   // ── Stage 5: clamp 每通道到 [0, 1] ──────────────────────────────────────
   // cmpMax: a=1.0, b=mul_result → lt = (1.0 < mul_result) 即 result > 1.0
   val clampedRGB = muls.map { mul =>
-    val cmpMax = Module(new FCMP(cfg))
-    cmpMax.io.a        := val_1_0
-    cmpMax.io.b        := mul.io.result
-    cmpMax.io.signaling := false.B
-    val mulAligned = PipeUtils.pipeData(mul.io.result, cfg.fcmpLatency)
-    Mux(cmpMax.io.lt, val_1_0, mulAligned)
+    Mux(SimpleFPCompare.gtPositiveConst(mul.io.result, val_1_0, cfg.totalWidth), val_1_0, mul.io.result)
   }
 
   // ── 控制信号同步（对齐到 clampedRGB 输出拍） ─────────────────────────────
-  // 流水级：fdot + fcmp(≥0) + fadd + fmul + fcmp(≤1)
-  val totalLatency = cfg.fdotLatency + cfg.fcmpLatency +
-                     cfg.faddLatency + cfg.fmulLatency + cfg.fcmpLatency
+  // 流水级：fdot + fadd + fmul，简单 clamp 为组合逻辑。
+  val totalLatency = cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency
   val hit_sync   = PipeUtils.pipeData(io.in_hit,   totalLatency)
   val valid_sync = PipeUtils.pipeData(io.in_valid, totalLatency)
   val id_sync    = PipeUtils.pipeData(io.hit_id,   totalLatency)

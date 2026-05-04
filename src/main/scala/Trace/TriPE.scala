@@ -178,7 +178,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val latDP = c.cfg.fdotLatency
     val stageCLatency = latADD + latCP + latDP
     val stageDAlignLatency = math.max(latDIV, latDP)
-    stageCLatency + stageDAlignLatency + latMUL + latADD + c.cfg.fcmpLatency
+    stageCLatency + stageDAlignLatency + latMUL + latADD
   }
 
   for (i <- 0 until c.numPEs) {

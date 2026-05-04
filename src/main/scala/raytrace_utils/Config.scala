@@ -8,7 +8,7 @@ object GlobalConfig {
   val frameHeight = 480
   val pixelQueueDepth = 4
   val rayDirFifoDepth = 32
-  val traceNumWorkers = 4
+  val traceNumWorkers = 8
   val triMemNumBanks = traceNumWorkers
   val ddaNumWorkers = 1
 
@@ -53,7 +53,7 @@ object GlobalConfig {
 
   val triBatchQueueDepth = 64
   val ddaRetryQueueDepth = 8
-  val ddaFinalQueueDepth = 2
+
   val sdfRetryQueueDepth = 64
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 32
@@ -69,11 +69,11 @@ object GlobalConfig {
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 10
-  val fmulLatency = 3
+  val fmulLatency = 5
   val faddLatency = 5
   val fcmpLatency = 1
   val fptointLatency = 1
-  val fdivLatency = 5
+  val fdivLatency = 10
 
   val Trinum = 13093
   // SDF PE grid

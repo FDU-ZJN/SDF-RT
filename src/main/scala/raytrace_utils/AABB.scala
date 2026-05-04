@@ -18,7 +18,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   })
 
   val rm = 0.U(3.W)
-  val fpZero = 0.U(cfg.totalWidth.W)
   val fpOne = cfg.oneBigInt.U(cfg.totalWidth.W)
   val fpEps = java.lang.Float.floatToIntBits(1e-9f).U(cfg.totalWidth.W)
 
@@ -138,21 +137,12 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   cmpRange.io.signaling := false.B
   val rangeOk = cmpRange.io.le
 
-  val cmpTMaxNonNeg = Module(new FCMP(cfg))
-  cmpTMaxNonNeg.io.a := fpZero
-  cmpTMaxNonNeg.io.b := tMax
-  cmpTMaxNonNeg.io.signaling := false.B
-  val tMaxNonNeg = cmpTMaxNonNeg.io.le
-
-  // tNear = (tMin > 0) ? tMin : tMax
-  val cmpTMinPos = Module(new FCMP(cfg))
-  cmpTMinPos.io.a := fpZero
-  cmpTMinPos.io.b := tMin
-  cmpTMinPos.io.signaling := false.B
-  val tMinPos = cmpTMinPos.io.lt
-
   val tMinFinal = pipeUInt(tMin, cfg.fcmpLatency)
   val tMaxFinal = pipeUInt(tMax, cfg.fcmpLatency)
+  val tMaxNonNeg = !SimpleFPCompare.ltZero(tMaxFinal, cfg.totalWidth)
+
+  // tNear = (tMin > 0) ? tMin : tMax
+  val tMinPos = SimpleFPCompare.gtZero(tMinFinal, cfg.totalWidth)
 
   val tNearComb = Mux(tMinPos, tMinFinal, tMaxFinal)
   val hitComb = rangeOk && tMaxNonNeg
