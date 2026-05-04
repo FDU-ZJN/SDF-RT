@@ -19,7 +19,7 @@ inline constexpr int kMaxWaitCycles = 30000;  // Increased for deep pipeline: Ra
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
 
-inline constexpr int kDdaGlobalRes = 16;
+inline constexpr int kDdaGlobalRes = 8;
 inline constexpr int kDdaSubRes = 1;
 inline constexpr int kDdaTraceSteps = 100;
 

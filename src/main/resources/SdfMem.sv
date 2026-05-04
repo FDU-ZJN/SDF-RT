@@ -6,7 +6,8 @@ module SdfMem #(
   parameter int GLOBAL_SDF_SIZE  = 4096,    // 16*16*16
   parameter int LOCAL_CELL_COUNT = 2048,
   parameter int LOCAL_PER_CELL   = 64,      // 4*4*4
-  parameter int LOCAL_SDF_SIZE   = LOCAL_CELL_COUNT * LOCAL_PER_CELL  // 131072
+  parameter int LOCAL_SDF_SIZE   = LOCAL_CELL_COUNT * LOCAL_PER_CELL, // 131072
+  parameter string LOCAL_IDX_INIT_FILE = "sdf_local_mapping.mem"
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -99,10 +100,34 @@ module SdfMem #(
 
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:0];
 
-  local_idx_mem local_idx_mem_inst (
-    .clk (clk),
-    .a(mapping_addr),
-    .qspo(mapping_entry)
+  xpm_memory_sprom #(
+    .ADDR_WIDTH_A       (GLOBAL_ADDR_BITS),
+    .MEMORY_SIZE        (GLOBAL_SDF_SIZE * 16),
+    .MEMORY_PRIMITIVE   ("block"),
+    .MEMORY_INIT_FILE   (LOCAL_IDX_INIT_FILE),
+    .MEMORY_INIT_PARAM  (""),
+    .USE_MEM_INIT       (1),
+    .READ_DATA_WIDTH_A  (16),
+    .READ_LATENCY_A     (1),
+    .ECC_MODE           ("no_ecc"),
+    .AUTO_SLEEP_TIME    (0),
+    .CASCADE_HEIGHT     (0),
+    .SIM_ASSERT_CHK     (0),
+    .WAKEUP_TIME        ("disable_sleep"),
+    .READ_RESET_VALUE_A ("0"),
+    .RST_MODE_A         ("SYNC")
+  ) local_idx_mem_inst (
+    .sleep          (1'b0),
+    .clka           (clk),
+    .rsta           (reset),
+    .ena            (en),
+    .regcea         (1'b1),
+    .addra          (mapping_addr),
+    .injectsbiterra (1'b0),
+    .injectdbiterra (1'b0),
+    .douta          (mapping_entry),
+    .sbiterra       (),
+    .dbiterra       ()
   );
 
   assign has_local = mapping_entry[15];

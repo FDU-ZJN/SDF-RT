@@ -16,7 +16,7 @@ module NormalMem #(
   input  logic [31:0]            wr_data
 );
 
-  localparam int FIXED_LATENCY      = 2;
+  localparam int FIXED_LATENCY      = LATENCY;
   localparam int URAM_READ_LATENCY  = FIXED_LATENCY - 1;
   localparam int WORDS_PER_NORMAL   = 4;
   localparam int NORMAL_MEM_WORDS   = MAX_ENTRIES * WORDS_PER_NORMAL;
@@ -42,8 +42,8 @@ module NormalMem #(
   integer i;
 
   initial begin
-    if (LATENCY != FIXED_LATENCY) begin
-      $warning("[NormalMem] LATENCY=%0d is ignored, fixed latency is %0d", LATENCY, FIXED_LATENCY);
+    if (LATENCY < 2) begin
+      $error("[NormalMem] LATENCY=%0d is invalid, expected >= 2", LATENCY);
     end
   end
 

@@ -145,29 +145,15 @@ class RayDirCalc(
 
   val sumSq = addSum.io.res  // available at cumulative 45
 
-  // =========================================================================
-  // S7: FSQRT — invLen = 1 / sqrt(sumSq)  (latency +cfg.fsqrtLatency)
-  // =========================================================================
   val fsqrt = Module(new FSQRT(cfg))
   fsqrt.io.in := sumSq
 
   val invLen = fsqrt.io.out  // available at cumulative 74
 
-  // Latency bookkeeping derived from the configured floating-point units.
-  //
-  // u/v become available after S3:
-  //   S1 FMUL + S2 FADD + S3 FMUL
   val uvLatency = cfg.fmulLatency + cfg.faddLatency + cfg.fmulLatency
-  // invLen becomes available after S7:
-  //   S1 FMUL + S2 FADD + S3 FMUL + S4 FMUL + S5 FADD + S6 FADD + S7 FSQRT
   val invLenLatency = 3 * cfg.fmulLatency + 3 * cfg.faddLatency + cfg.fsqrtLatency
   require(invLenLatency >= uvLatency, "RayDirCalc timing error: invLen must arrive after u/v")
 
-  // =========================================================================
-  // S8: FMUL — dir = (u, v, z) * invLen  (latency +8, cumulative 82)
-  //       u, v produced at t=23 must be delayed to t=74 (51 cycles)
-  //       z is constant, delayed 74 cycles for alignment
-  // =========================================================================
   val uDelayed = PipeUtils.pipeData(u, invLenLatency - uvLatency)
   val vDelayed = PipeUtils.pipeData(v, invLenLatency - uvLatency)
   val zDelayed = PipeUtils.pipeData(neg1_8Fp, invLenLatency)

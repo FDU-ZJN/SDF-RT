@@ -1,6 +1,7 @@
 package SDF
 
 import chisel3._
+import chisel3.experimental.StringParam
 import chisel3.util.{HasBlackBoxInline, HasBlackBoxResource}
 import raytrace_utils.GlobalConfig
 
@@ -118,7 +119,8 @@ private class SdfMemIpBB(
         "ADDR_WIDTH"       -> addrWidth,
         "DATA_WIDTH"       -> dataWidth,
         "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
-        "LATENCY"          -> GlobalConfig.sdfMemDpiLatency
+        "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
+        "LOCAL_IDX_INIT_FILE" -> StringParam("sdf_local_mapping.mem")
       )
     )
     with HasBlackBoxResource {
@@ -197,4 +199,3 @@ class SdfMemDPI(
       impl.io.wr_data := io.wr.wr_data
   }
 }
-

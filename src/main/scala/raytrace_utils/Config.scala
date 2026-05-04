@@ -52,10 +52,9 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 64
-  val ddaRetryQueueDepth = 32
-  val ddaFinalQueueDepth = 8
-  val sdfWorkQueueDepth = 32
-  val sdfRetryQueueDepth = 32
+  val ddaRetryQueueDepth = 8
+  val ddaFinalQueueDepth = 2
+  val sdfRetryQueueDepth = 64
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 32
   val simSdfHitQueueDepth = 64
@@ -70,14 +69,19 @@ object GlobalConfig {
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 10
+  val fmulLatency = 3
+  val faddLatency = 5
+  val fcmpLatency = 1
+  val fptointLatency = 1
+  val fdivLatency = 5
 
-  val Trinum = 19347
+  val Trinum = 13093
   // SDF PE grid
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
   val LocalCell = 2048
   // DDA grid
-  val GlobalDdaRes = 16
+  val GlobalDdaRes = 8
   val SubDdaRes = 1
   val DdaRes= GlobalDdaRes*SubDdaRes
   // ============================================================
@@ -88,7 +92,6 @@ object GlobalConfig {
   // Triangle data width per TriPE request block.
   val triMemNumPEs = 1
   val triMemDataWidth = triMemNumPEs * 9 * 32
-  val triMemDepthAlign = 512
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16
@@ -139,8 +142,7 @@ object GlobalConfig {
     require(numBanks > 0, s"triMem numBanks must be > 0, got $numBanks")
     require(numPEs > 0, s"triMem numPEs must be > 0, got $numPEs")
     val totalDepth = (Trinum + numPEs - 1) / numPEs
-    val bankDepth = (totalDepth + numBanks - 1) / numBanks
-    ((bankDepth + triMemDepthAlign - 1) / triMemDepthAlign) * triMemDepthAlign
+    (totalDepth + numBanks - 1) / numBanks
   }
 
   val triMemDepth = triMemDepthFor(1)
@@ -154,14 +156,14 @@ object GlobalConfig {
 case class FloatConfig(
                         expWidth: Int,
                         precision: Int,
-                        fmulLatency: Int = 4,
-                        faddLatency: Int = 6,
-                        fcmpLatency: Int = 1,
-                        fptointLatency: Int = 1,
-                        fdivLatency: Int = 10,
+                        fmulLatency: Int = GlobalConfig.fmulLatency,
+                        faddLatency: Int = GlobalConfig.faddLatency,
+                        fcmpLatency: Int = GlobalConfig.fcmpLatency,
+                        fptointLatency: Int = GlobalConfig.fptointLatency,
+                        fdivLatency: Int = GlobalConfig.fdivLatency,
                         fsqrtLatency: Int = GlobalConfig.fsqrtLatency,
                         useFloatIP: Boolean = GlobalConfig.useFloatIP,
-                      ) {
+) {
   val totalWidth = expWidth + precision
   val fmacLatency = fmulLatency + faddLatency
   val fdotLatency = fmulLatency + faddLatency + faddLatency

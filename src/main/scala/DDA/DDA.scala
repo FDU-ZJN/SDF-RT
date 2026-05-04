@@ -19,19 +19,21 @@ class DDA(
     val trace_job_out = Decoupled(new DdaTraceJob(cfg, addrWidth, maxTraversalSteps))
   })
 
-  val scheduler = Module(new DdaScheduler(cfg, addrWidth, maxTraversalSteps, numWorkers))
-  val stepPEs = Seq.fill(numWorkers)(Module(new DdaStepPE(cfg, addrWidth, globalRes, subRes, maxTraversalSteps)))
+  val scheduler = Module(new DdaScheduler(cfg, addrWidth, maxTraversalSteps))
+  val initPE = Module(new DdaInitPE(cfg, addrWidth))
+  val stepPE = Module(new DdaStepPipelinePE(cfg, addrWidth, globalRes, subRes, maxTraversalSteps))
   val cmdBuffer = Module(new DdaTraceCmdBuffer(cfg, addrWidth, maxTraversalSteps))
 
   scheduler.io.issue_in <> io.in
   scheduler.io.trace_job_out <> io.trace_job_out
 
-  for (i <- 0 until numWorkers) {
-    scheduler.io.pe_in(i) <> stepPEs(i).io.in
-    scheduler.io.pe_out(i) <> stepPEs(i).io.out
-    stepPEs(i).io.grid_min := io.grid_min
-    stepPEs(i).io.inv_sub_voxel := io.inv_sub_voxel
-  }
+  scheduler.io.init_in <> initPE.io.in
+  scheduler.io.init_out <> initPE.io.out
+  scheduler.io.step_in <> stepPE.io.in
+  scheduler.io.step_out <> stepPE.io.out
+
+  initPE.io.grid_min := io.grid_min
+  initPE.io.inv_sub_voxel := io.inv_sub_voxel
 
   cmdBuffer.io.clear := scheduler.io.cmd_clear
   cmdBuffer.io.write := scheduler.io.cmd_write

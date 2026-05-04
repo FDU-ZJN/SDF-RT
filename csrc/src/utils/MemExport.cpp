@@ -42,9 +42,7 @@ static inline std::string u32ToHex(uint32_t value) {
 
 static inline size_t triBankDepthForExport(size_t triCount, int numPEs, int numBanks) {
     const size_t totalDepth = (triCount + static_cast<size_t>(numPEs) - 1) / static_cast<size_t>(numPEs);
-    const size_t bankDepth = (totalDepth + static_cast<size_t>(numBanks) - 1) / static_cast<size_t>(numBanks);
-    const size_t align = static_cast<size_t>(kTriMemDepthAlign);
-    return ((bankDepth + align - 1) / align) * align;
+    return (totalDepth + static_cast<size_t>(numBanks) - 1) / static_cast<size_t>(numBanks);
 }
 
 // Export triangle memory to .mem file
@@ -69,9 +67,9 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
 
     const int triBatchSize = numPEs;
     const size_t bankStride = static_cast<size_t>(numBanks) * static_cast<size_t>(triBatchSize);
-    const size_t alignedDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
+    const size_t bankDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
 
-    for (size_t addrIdx = 0; addrIdx < alignedDepth; ++addrIdx) {
+    for (size_t addrIdx = 0; addrIdx < bankDepth; ++addrIdx) {
         const size_t baseIdx = static_cast<size_t>(bankId) + addrIdx * bankStride;
         std::string hexLine;
 
@@ -100,7 +98,7 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
 
     out.close();
     std::cout << "[MemExport] Exported " << tri_store.size()
-              << " triangles to " << filename << " (" << alignedDepth << " bank addresses, bank "
+              << " triangles to " << filename << " (" << bankDepth << " bank addresses, bank "
               << bankId << "/" << numBanks << ")" << std::endl;
 }
 
@@ -379,9 +377,9 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
     const int bitsPerEntry = 32; // float is 32 bits
     const int bitsPerAddress = triBatchSize * 9 * bitsPerEntry;
     const size_t bankStride = static_cast<size_t>(numBanks) * static_cast<size_t>(triBatchSize);
-    const size_t alignedDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
+    const size_t bankDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
 
-    for (size_t addrIdx = 0; addrIdx < alignedDepth; ++addrIdx) {
+    for (size_t addrIdx = 0; addrIdx < bankDepth; ++addrIdx) {
         const size_t baseIdx = static_cast<size_t>(bankId) + addrIdx * bankStride;
         std::string hexLine;
 
@@ -405,7 +403,7 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
             }
         }
 
-        const bool isLast = (addrIdx + 1 == alignedDepth);
+        const bool isLast = (addrIdx + 1 == bankDepth);
         out << hexLine << (isLast ? "" : ",") << std::endl;
     }
 
@@ -413,7 +411,7 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
     out.close();
     
     std::cout << "[MemExport] Exported " << tri_store.size()
-              << " triangles to COE " << filename << " (" << alignedDepth
+              << " triangles to COE " << filename << " (" << bankDepth
               << " bank addresses, bank " << bankId << "/" << numBanks
               << ", " << bitsPerAddress << "-bit width)" << std::endl;
 }

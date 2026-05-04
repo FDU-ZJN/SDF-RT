@@ -26,7 +26,6 @@ extern "C" int svSize(const svOpenArrayHandle, int);
 
 constexpr int kTriNumPE = 1;
 constexpr int kTriNumBanks = 4;
-constexpr int kTriMemDepthAlign = 512;
 
 // Test case structure
 

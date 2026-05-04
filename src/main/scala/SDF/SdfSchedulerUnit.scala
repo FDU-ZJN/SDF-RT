@@ -20,7 +20,6 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val out_valid = Output(Bool())
   })
 
-  val workQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), GlobalConfig.sdfWorkQueueDepth))
   val retryQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), GlobalConfig.sdfRetryQueueDepth))
   val finalQ = Module(new Queue(new SdfRayResp(cfg, addrWidth), GlobalConfig.sdfFinalQueueDepth))
 
@@ -44,12 +43,8 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   val arbReq = inArb.io.out.bits
   val arbIsDeferredTerminalMiss = inArb.io.out.valid && (arbReq.iter >= maxSteps.U)
 
-  workQ.io.enq.valid := inArb.io.out.valid && !arbIsDeferredTerminalMiss
-  workQ.io.enq.bits := arbReq
-  when(workQ.io.enq.valid) {
-    assert(workQ.io.enq.ready, "SdfStage workQ overflow")
-  }
-  io.pe_in <> workQ.io.deq
+  io.pe_in.valid := inArb.io.out.valid && !arbIsDeferredTerminalMiss
+  io.pe_in.bits := arbReq
 
   io.pe_out_miss.ready := true.B
   io.pe_out_hit.ready := true.B
@@ -93,7 +88,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   }
 
   val consumeDeferred = selDeferred && finalQ.io.enq.ready
-  inArb.io.out.ready := Mux(arbIsDeferredTerminalMiss, consumeDeferred, workQ.io.enq.ready)
+  inArb.io.out.ready := Mux(arbIsDeferredTerminalMiss, consumeDeferred, io.pe_in.ready)
 
   finalQ.io.deq.ready := true.B
   io.out_valid := finalQ.io.deq.valid

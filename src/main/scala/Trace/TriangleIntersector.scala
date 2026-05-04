@@ -23,8 +23,8 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val latMUL = cfg.fmulLatency
   val latADD = cfg.faddLatency
   val latDIV = cfg.fdivLatency
-  val latCP  = latMUL + latADD
-  val latDP  = latMUL + latADD + latADD
+  val latCP  = cfg.fcrossLatency
+  val latDP  = cfg.fdotLatency
   // Timing derivation (parameterized, no hardcoded 3/2/6 assumptions):
   // latCP = MUL + ADD
   // latDP = MUL + ADD + ADD
