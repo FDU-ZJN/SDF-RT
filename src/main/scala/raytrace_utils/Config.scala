@@ -8,7 +8,7 @@ object GlobalConfig {
   val frameHeight = 480
   val pixelQueueDepth = 4
   val rayDirFifoDepth = 32
-  val traceNumWorkers = 8
+  val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
   val ddaNumWorkers = 1
 
@@ -53,6 +53,7 @@ object GlobalConfig {
 
   val triBatchQueueDepth = 64
   val ddaRetryQueueDepth = 8
+  val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
 
   val sdfRetryQueueDepth = 64
   val sdfFinalQueueDepth = 8
@@ -68,7 +69,7 @@ object GlobalConfig {
   val triMemDpiLatency = 2
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
-  val fsqrtLatency = 10
+  val fsqrtLatency = 15
   val fmulLatency = 5
   val faddLatency = 5
   val fcmpLatency = 1

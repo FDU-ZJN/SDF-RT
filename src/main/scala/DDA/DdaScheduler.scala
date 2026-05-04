@@ -9,11 +9,10 @@ class DdaScheduler(
   addrWidth: Int = 32,
   maxTraversalSteps: Int = 1024
 ) extends Module {
-  private val slotBits = GlobalConfig.slotBits
+  private val traceSlotBits = GlobalConfig.ddaTraceSlotBits
   private val cmdIdxBits = math.max(1, log2Ceil(maxTraversalSteps))
   private val cmdCountW = log2Ceil(maxTraversalSteps + 1)
   private val maxInflight = GlobalConfig.ddaRetryQueueDepth
-  private val inflightW = math.max(1, log2Ceil(maxInflight + 1))
   private val completionDepth = GlobalConfig.commitQueueDepth
   private val initOutDepth = GlobalConfig.commitQueueDepth
 
@@ -23,28 +22,27 @@ class DdaScheduler(
     val init_out = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
     val step_in = Decoupled(new DdaContext(cfg, addrWidth))
     val step_out = Flipped(Decoupled(new DdaStepResult(cfg, addrWidth)))
-    val trace_job_out = Decoupled(new DdaTraceJob(cfg, addrWidth, maxTraversalSteps))
-
-    val cmd_clear = Valid(UInt(slotBits.W))
+    val trace_job_out = Decoupled(new DdaTraceJobDesc(cfg, addrWidth, maxTraversalSteps))
     val cmd_write = Valid(new DdaTraceCmdWrite(addrWidth, maxTraversalSteps))
-    val cmd_read_slot = Output(UInt(slotBits.W))
-    val cmd_read_count = Input(UInt(log2Ceil(maxTraversalSteps + 1).W))
-    val cmd_read_cmds = Input(Vec(maxTraversalSteps, new TriBatch(addrWidth)))
+    val slot_release = Flipped(Valid(UInt(traceSlotBits.W)))
   })
 
   val retryQ = Module(new Queue(new DdaContext(cfg, addrWidth), GlobalConfig.ddaRetryQueueDepth))
   val initOutQ = Module(new Queue(new DdaContext(cfg, addrWidth), initOutDepth))
   val completionQ = Module(new Queue(new DdaContext(cfg, addrWidth), completionDepth))
-  val inflightCount = RegInit(0.U(inflightW.W))
-  val slotCmdCounts = RegInit(VecInit(Seq.fill(GlobalConfig.commitQueueDepth)(0.U(cmdCountW.W))))
+  val freeSlots = RegInit(VecInit(Seq.fill(maxInflight)(true.B)))
+  val slotCmdCounts = RegInit(VecInit(Seq.fill(maxInflight)(0.U(cmdCountW.W))))
 
   val initIssuedCount = RegInit(0.U(log2Ceil(initOutDepth + 1).W))
   val initPending = initIssuedCount - initOutQ.io.deq.fire.asUInt
   val initHasSpace = initPending < initOutDepth.U
-  val hasFreeSlot = inflightCount < maxInflight.U
+  val hasFreeSlot = freeSlots.asUInt.orR
+  val allocOH = PriorityEncoderOH(freeSlots)
+  val allocIdx = OHToUInt(allocOH)
 
   io.init_in.valid := io.issue_in.valid && hasFreeSlot && initHasSpace
   io.init_in.bits := io.issue_in.bits
+  io.init_in.bits.traceSlot := allocIdx
   io.issue_in.ready := hasFreeSlot && initHasSpace && io.init_in.ready
 
   initOutQ.io.enq <> io.init_out
@@ -56,7 +54,7 @@ class DdaScheduler(
   initOutQ.io.deq.ready := io.step_in.ready && !takeRetry
 
   val outFire = io.step_out.fire
-  val slotIdx = io.step_out.bits.ctx.meta.slotId(slotBits - 1, 0)
+  val slotIdx = io.step_out.bits.ctx.traceSlot
   val routeFinal = io.step_out.valid && io.step_out.bits.done
   val routeRetry = io.step_out.valid && !io.step_out.bits.done
 
@@ -75,16 +73,11 @@ class DdaScheduler(
   }
 
   val issueFire = io.issue_in.fire
-  val retireFire = io.trace_job_out.fire
-  val inflightInc = issueFire.asUInt
-  val inflightDec = retireFire.asUInt
-  inflightCount := inflightCount + inflightInc - inflightDec
   initIssuedCount := initPending + issueFire.asUInt
 
-  io.cmd_clear.valid := issueFire
-  io.cmd_clear.bits := io.issue_in.bits.meta.slotId(slotBits - 1, 0)
   when(issueFire) {
-    slotCmdCounts(io.issue_in.bits.meta.slotId(slotBits - 1, 0)) := 0.U
+    slotCmdCounts(allocIdx) := 0.U
+    freeSlots(allocIdx) := false.B
   }
 
   io.cmd_write.valid := outFire && io.step_out.bits.emitCmd
@@ -95,12 +88,14 @@ class DdaScheduler(
     slotCmdCounts(slotIdx) := slotCmdCounts(slotIdx) + 1.U
   }
 
-  io.cmd_read_slot := completionQ.io.deq.bits.meta.slotId(slotBits - 1, 0)
-
   io.trace_job_out.valid := completionQ.io.deq.valid
   io.trace_job_out.bits.ray := completionQ.io.deq.bits.ray
   io.trace_job_out.bits.meta := completionQ.io.deq.bits.meta
-  io.trace_job_out.bits.cmdCount := slotCmdCounts(completionQ.io.deq.bits.meta.slotId(slotBits - 1, 0))
-  io.trace_job_out.bits.cmds := io.cmd_read_cmds
+  io.trace_job_out.bits.cmdCount := slotCmdCounts(completionQ.io.deq.bits.traceSlot)
+  io.trace_job_out.bits.traceSlot := completionQ.io.deq.bits.traceSlot
   completionQ.io.deq.ready := io.trace_job_out.ready
+
+  when(io.slot_release.valid) {
+    freeSlots(io.slot_release.bits) := true.B
+  }
 }

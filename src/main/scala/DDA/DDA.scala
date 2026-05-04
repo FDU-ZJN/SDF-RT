@@ -16,16 +16,19 @@ class DDA(
     val in = Flipped(Decoupled(new DdaTraversalReq(cfg, addrWidth)))
     val grid_min = Input(new Vec3(cfg))
     val inv_sub_voxel = Input(new Vec3(cfg))
-    val trace_job_out = Decoupled(new DdaTraceJob(cfg, addrWidth, maxTraversalSteps))
+    val trace_job_out = Decoupled(new DdaTraceJobDesc(cfg, addrWidth, maxTraversalSteps))
+    val cmd_write = Valid(new DdaTraceCmdWrite(addrWidth, maxTraversalSteps))
+    val slot_release = Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W)))
   })
 
   val scheduler = Module(new DdaScheduler(cfg, addrWidth, maxTraversalSteps))
   val initPE = Module(new DdaInitPE(cfg, addrWidth))
   val stepPE = Module(new DdaStepPipelinePE(cfg, addrWidth, globalRes, subRes, maxTraversalSteps))
-  val cmdBuffer = Module(new DdaTraceCmdBuffer(cfg, addrWidth, maxTraversalSteps))
 
   scheduler.io.issue_in <> io.in
   scheduler.io.trace_job_out <> io.trace_job_out
+  scheduler.io.slot_release := io.slot_release
+  io.cmd_write := scheduler.io.cmd_write
 
   scheduler.io.init_in <> initPE.io.in
   scheduler.io.init_out <> initPE.io.out
@@ -34,10 +37,4 @@ class DDA(
 
   initPE.io.grid_min := io.grid_min
   initPE.io.inv_sub_voxel := io.inv_sub_voxel
-
-  cmdBuffer.io.clear := scheduler.io.cmd_clear
-  cmdBuffer.io.write := scheduler.io.cmd_write
-  cmdBuffer.io.readSlot := scheduler.io.cmd_read_slot
-  scheduler.io.cmd_read_count := cmdBuffer.io.readCmdCount
-  scheduler.io.cmd_read_cmds := cmdBuffer.io.readCmds
 }

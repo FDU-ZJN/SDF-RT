@@ -8,14 +8,14 @@ class DdaTraceCmdBuffer(
   cfg: FloatConfig = FloatConfig.FP32,
   addrWidth: Int = 32,
   maxCmds: Int = 1024,
-  slotCount: Int = GlobalConfig.commitQueueDepth
+  slotCount: Int = GlobalConfig.ddaRetryQueueDepth
 ) extends Module {
   private val cmdCountW = log2Ceil(maxCmds + 1)
 
   val io = IO(new Bundle {
-    val clear = Flipped(Valid(UInt(GlobalConfig.slotBits.W)))
+    val clear = Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W)))
     val write = Flipped(Valid(new DdaTraceCmdWrite(addrWidth, maxCmds)))
-    val readSlot = Input(UInt(GlobalConfig.slotBits.W))
+    val readSlot = Input(UInt(GlobalConfig.ddaTraceSlotBits.W))
     val readCmdCount = Output(UInt(cmdCountW.W))
     val readCmds = Output(Vec(maxCmds, new TriBatch(addrWidth)))
   })

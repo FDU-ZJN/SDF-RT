@@ -226,6 +226,7 @@ class DdaInitPE(
   io.out.bits.ray := reqAtOut.ray
   io.out.bits.meta := reqAtOut.meta
   io.out.bits.reverseTraversal := reqAtOut.reverseTraversal
+  io.out.bits.traceSlot := reqAtOut.traceSlot
   io.out.bits.initialized := true.B
   io.out.bits.subX := Mux(subXNegOut, (-1).S((addrWidth + 1).W), subXIdxOut.zext)
   io.out.bits.subY := Mux(subYNegOut, (-1).S((addrWidth + 1).W), subYIdxOut.zext)

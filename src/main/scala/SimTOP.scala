@@ -37,7 +37,7 @@ class SimTop extends Module {
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
   val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
-  val triBatchQueue = Module(new Queue(new DdaTraceJob(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
+  val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
@@ -101,17 +101,20 @@ class SimTop extends Module {
 
   ddaStage.io.grid_min := setupUnit.io.gridMin
   ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
-  triBatchQueue.io.enq <> ddaStage.io.trace_job_out
-  when(triBatchQueue.io.enq.valid) {
-    assert(triBatchQueue.io.enq.ready, "SimTop triBatchQueue overflow")
+  ddaStage.io.slot_release := traceController.io.slot_release
+  traceController.io.cmd_write := ddaStage.io.cmd_write
+  traceJobQueue.io.enq <> ddaStage.io.trace_job_out
+  when(traceJobQueue.io.enq.valid) {
+    assert(traceJobQueue.io.enq.ready, "SimTop traceJobQueue overflow")
   }
-  traceController.io.job_in <> triBatchQueue.io.deq
+  traceController.io.job_in <> traceJobQueue.io.deq
 
   val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), GlobalConfig.simSdfHitQueueDepth))
   sdfHitQ.io.enq.valid := sdfStage.io.out_valid && sdfStage.io.out_hit
   sdfHitQ.io.enq.bits.ray := sdfStage.io.out_ray
   sdfHitQ.io.enq.bits.meta := sdfStage.io.out_meta
   sdfHitQ.io.enq.bits.reverseTraversal := sdfStage.io.out_reverseTraversal
+  sdfHitQ.io.enq.bits.traceSlot := 0.U
   when(sdfHitQ.io.enq.valid) {
     assert(sdfHitQ.io.enq.ready, "SimTop sdfHitQ overflow")
   }
