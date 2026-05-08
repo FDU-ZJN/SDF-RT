@@ -36,12 +36,9 @@ class DdaInitPE(
   val inFire = io.in.fire
   val reqAtOut = pipeData(io.in.bits, totalInitLatency)
 
-  val rdNegX = io.in.bits.ray.dir.x(cfg.totalWidth - 1)
-  val rdNegY = io.in.bits.ray.dir.y(cfg.totalWidth - 1)
-  val rdNegZ = io.in.bits.ray.dir.z(cfg.totalWidth - 1)
-  val stepNegX = rdNegX ^ io.in.bits.reverseTraversal
-  val stepNegY = rdNegY ^ io.in.bits.reverseTraversal
-  val stepNegZ = rdNegZ ^ io.in.bits.reverseTraversal
+  val stepNegX = io.in.bits.ray.dir.x(cfg.totalWidth - 1)
+  val stepNegY = io.in.bits.ray.dir.y(cfg.totalWidth - 1)
+  val stepNegZ = io.in.bits.ray.dir.z(cfg.totalWidth - 1)
 
   // Materialize the current traversal point from the immutable ray origin and accumulated distance.
   val posMulX = Module(new FMUL(cfg))
@@ -257,7 +254,6 @@ class DdaInitPE(
   io.out.bits := 0.U.asTypeOf(new DdaContext(cfg, addrWidth))
   io.out.bits.ray := reqAtOut.ray
   io.out.bits.meta := reqAtOut.meta
-  io.out.bits.reverseTraversal := reqAtOut.reverseTraversal
   io.out.bits.traceSlot := reqAtOut.traceSlot
   io.out.bits.initialized := true.B
   io.out.bits.subX := Mux(subXNegOut, (-1).S((addrWidth + 1).W), subXIdxOut.zext)

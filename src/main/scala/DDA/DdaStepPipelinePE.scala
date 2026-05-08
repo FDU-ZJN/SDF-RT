@@ -113,9 +113,9 @@ class DdaStepPipelinePE(
     assert(subgridMem.io.valid, "DdaStepPipelinePE expects fixed-latency subgridMem response")
   }
 
-  val stepNegXAtOut = ctxAtOut.ray.dir.x(cfg.totalWidth - 1) ^ ctxAtOut.reverseTraversal
-  val stepNegYAtOut = ctxAtOut.ray.dir.y(cfg.totalWidth - 1) ^ ctxAtOut.reverseTraversal
-  val stepNegZAtOut = ctxAtOut.ray.dir.z(cfg.totalWidth - 1) ^ ctxAtOut.reverseTraversal
+  val stepNegXAtOut = ctxAtOut.ray.dir.x(cfg.totalWidth - 1)
+  val stepNegYAtOut = ctxAtOut.ray.dir.y(cfg.totalWidth - 1)
+  val stepNegZAtOut = ctxAtOut.ray.dir.z(cfg.totalWidth - 1)
 
   val nextCtx = Wire(new DdaContext(cfg, addrWidth))
   nextCtx := ctxAtOut

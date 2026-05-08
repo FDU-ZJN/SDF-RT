@@ -15,7 +15,6 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val out_rgb = Output(new Vec3(cfg))
     val out_meta = Output(new RayMeta(addrWidth))
     val out_hit = Output(Bool())
-    val out_reverseTraversal = Output(Bool())
     val out_ray = Output(new Ray(cfg))
     val out_valid = Output(Bool())
   })
@@ -30,6 +29,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   newReq.ray := io.issue_in.bits.ray
   newReq.meta := io.issue_in.bits.meta
   newReq.iter := 0.U
+  newReq.prevSdf := 0.U
 
   val inArb = Module(new RRArbiter(new SdfRayReq(cfg, addrWidth), 2))
   inArb.io.in(0).valid := retryQ.io.deq.valid
@@ -66,6 +66,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   retryQ.io.enq.bits.meta := io.pe_out_miss.bits.meta
   // Mark conflict-deferred terminal miss so it bypasses PE next time and commits directly.
   retryQ.io.enq.bits.iter := Mux(retryFromConflictMiss, maxSteps.U, io.pe_out_miss.bits.iter)
+  retryQ.io.enq.bits.prevSdf := io.pe_out_miss.bits.prevSdf
   when(retryPush) {
     assert(retryQ.io.enq.ready, "SdfStage retryQ overflow")
   }
@@ -75,7 +76,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   deferredResp.meta := arbReq.meta
   deferredResp.hit := false.B
   deferredResp.iter := arbReq.iter
-  deferredResp.reverseTraversal := false.B
+  deferredResp.prevSdf := arbReq.prevSdf
 
   val selHit = hitTerminal
   val selMiss = !selHit && missTerminalDirect
@@ -94,7 +95,6 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   io.out_valid := finalQ.io.deq.valid
   io.out_meta := finalQ.io.deq.bits.meta
   io.out_hit := finalQ.io.deq.bits.hit
-  io.out_reverseTraversal := finalQ.io.deq.bits.reverseTraversal
   io.out_ray := finalQ.io.deq.bits.ray
   io.out_rgb.x := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
   io.out_rgb.y := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)

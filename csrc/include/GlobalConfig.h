@@ -20,7 +20,7 @@ inline constexpr int kTriNumBanks = 4;
 inline constexpr int kTriRefPackFactor = 16;
 
 inline constexpr int kSDFGlobalRes = 16;
-inline constexpr int kSDFSubRes = 4;
+inline constexpr int kSDFSubRes = 8;
 
 inline constexpr int kDdaGlobalRes = 32;
 inline constexpr int kDdaSubRes = 1;
@@ -30,7 +30,8 @@ inline constexpr int kSanityFullX = 64;
 inline constexpr int kSanityFullY = 145;
 inline constexpr int kSanityFullZ = 195;
 
-inline constexpr bool kUseComputedHybridSdf = false;
+inline constexpr bool kUseComputedHybridSdf = true;
+inline constexpr bool kForceRebuildSdfCacheFpga = true;
 inline constexpr float kLocalActiveBand = 0.15f;
 
 inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";

@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -39,11 +40,16 @@ void tick(VFpgaTop* dut) {
 
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
+    bool runtimeRebuildSdf = kForceRebuildSdfCacheFpga;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i] ? argv[i] : "";
         constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
+        constexpr const char* kSdfRebuildPrefix = "+SDF_REBUILD=";
         if (arg.rfind(kVcdArgPrefix, 0) == 0) {
             runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
+        } else if (arg.rfind(kSdfRebuildPrefix, 0) == 0) {
+            const std::string value = arg.substr(std::char_traits<char>::length(kSdfRebuildPrefix));
+            runtimeRebuildSdf = (value == "1" || value == "true" || value == "TRUE");
         }
     }
 
@@ -73,9 +79,26 @@ int main(int argc, char** argv) {
               << gridMinX << ", " << gridMinY << ", " << gridMinZ
               << "), max=(" << gridMaxX << ", " << gridMaxY << ", " << gridMaxZ << ")" << std::endl;
 
-    // Load SDF data (critical for ray tracing)
-    printf("Loading SDF cache...\n");
-    load_sdf_npz(kComputedSdfOutPath);
+    const bool sdfCacheExists = std::filesystem::exists(kComputedSdfOutPath);
+    const bool shouldRebuildSdf = runtimeRebuildSdf || !sdfCacheExists;
+
+    if (shouldRebuildSdf) {
+        std::printf("Rebuilding SDF cache%s...\n", sdfCacheExists ? "" : " (cache missing)");
+        build_hybrid_sdf_from_mesh(
+            gridMin,
+            gridMax,
+            kSDFGlobalRes,
+            kSDFGlobalRes,
+            kSDFGlobalRes,
+            kSDFSubRes,
+            kSDFSubRes,
+            kSDFSubRes,
+            kLocalActiveBand);
+        save_sdf_npz(kComputedSdfOutPath);
+    } else {
+        printf("Loading SDF cache...\n");
+        load_sdf_npz(kComputedSdfOutPath);
+    }
     if (global_sdf_flat.empty()) {
         std::cerr << "SDF cache is empty." << endl;
         return 2;

@@ -79,12 +79,9 @@ class DdaStepPE(
   val globalLinear = globalX + globalYScaled + globalZScaled
   val subLinear = subCellX + subYScaled + subZScaled
 
-  val rdNegX = ctxReg.ray.dir.x(cfg.totalWidth - 1)
-  val rdNegY = ctxReg.ray.dir.y(cfg.totalWidth - 1)
-  val rdNegZ = ctxReg.ray.dir.z(cfg.totalWidth - 1)
-  val stepNegX = rdNegX ^ ctxReg.reverseTraversal
-  val stepNegY = rdNegY ^ ctxReg.reverseTraversal
-  val stepNegZ = rdNegZ ^ ctxReg.reverseTraversal
+  val stepNegX = ctxReg.ray.dir.x(cfg.totalWidth - 1)
+  val stepNegY = ctxReg.ray.dir.y(cfg.totalWidth - 1)
+  val stepNegZ = ctxReg.ray.dir.z(cfg.totalWidth - 1)
 
   val subGx = Module(new FADD(cfg))
   val subGy = Module(new FADD(cfg))

@@ -82,7 +82,7 @@ object GlobalConfig {
   val TriOriginalNum = 8554
   // SDF PE grid
   val GlobalSdfRes = 16
-  val LocalSdfRes = 4
+  val LocalSdfRes = 8
   val LocalCell = 2048
   // DDA grid
   val GlobalDdaRes = 32
@@ -133,9 +133,9 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 64
-  val sdfThreshold1 = 0.01f
-  val sdfThreshold2 = 0.02f
-  val sdfThreshold3 = 0.04f
+  val sdfThreshold1 = 0.005f
+  val sdfThreshold2 = 0.01f
+  val sdfThreshold3 = 0.02f
   val sdfStepScale = 0.6f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f

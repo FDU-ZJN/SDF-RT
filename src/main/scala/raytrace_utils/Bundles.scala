@@ -89,6 +89,7 @@ class SdfRayReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extend
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
   val iter = UInt(16.W)
+  val prevSdf = UInt(cfg.totalWidth.W)
 }
 
 class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
@@ -96,7 +97,7 @@ class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
   val iter = UInt(16.W)
-  val reverseTraversal = Bool()
+  val prevSdf = UInt(cfg.totalWidth.W)
 }
 
 class SdfMemReq(addrWidth: Int = 32) extends Bundle {
@@ -116,14 +117,12 @@ class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
 class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
-  val reverseTraversal = Bool()
   val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
 }
 
 class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
-  val reverseTraversal = Bool()
   val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
   val initialized = Bool()
   val subX = SInt((addrWidth + 1).W)
