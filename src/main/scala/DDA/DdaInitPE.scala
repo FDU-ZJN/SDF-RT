@@ -17,7 +17,8 @@ class DdaInitPE(
     val out = Decoupled(new DdaContext(cfg, addrWidth))
   })
 
-  private val mapLatency = cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
+  private val positionLatency = cfg.fmulLatency + cfg.faddLatency
+  private val mapLatency = positionLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
   private val distSelectLatency = mapLatency + cfg.faddLatency + cfg.faddLatency
   private val deltaLatency = cfg.fmulLatency + cfg.fcmpLatency + cfg.fdivLatency
   private val tMaxInputLatency = math.max(distSelectLatency, deltaLatency)
@@ -42,16 +43,47 @@ class DdaInitPE(
   val stepNegY = rdNegY ^ io.in.bits.reverseTraversal
   val stepNegZ = rdNegZ ^ io.in.bits.reverseTraversal
 
+  // Materialize the current traversal point from the immutable ray origin and accumulated distance.
+  val posMulX = Module(new FMUL(cfg))
+  val posMulY = Module(new FMUL(cfg))
+  val posMulZ = Module(new FMUL(cfg))
+  posMulX.io.a := io.in.bits.ray.dir.x
+  posMulX.io.b := io.in.bits.ray.dist
+  posMulX.io.rm := RNE
+  posMulY.io.a := io.in.bits.ray.dir.y
+  posMulY.io.b := io.in.bits.ray.dist
+  posMulY.io.rm := RNE
+  posMulZ.io.a := io.in.bits.ray.dir.z
+  posMulZ.io.b := io.in.bits.ray.dist
+  posMulZ.io.rm := RNE
+
+  val originXAtPos = pipeUInt(io.in.bits.ray.origin.x, cfg.fmulLatency)
+  val originYAtPos = pipeUInt(io.in.bits.ray.origin.y, cfg.fmulLatency)
+  val originZAtPos = pipeUInt(io.in.bits.ray.origin.z, cfg.fmulLatency)
+
+  val posAddX = Module(new FADD(cfg))
+  val posAddY = Module(new FADD(cfg))
+  val posAddZ = Module(new FADD(cfg))
+  posAddX.io.a := originXAtPos
+  posAddX.io.b := posMulX.io.result
+  posAddX.io.rm := RNE
+  posAddY.io.a := originYAtPos
+  posAddY.io.b := posMulY.io.result
+  posAddY.io.rm := RNE
+  posAddZ.io.a := originZAtPos
+  posAddZ.io.b := posMulZ.io.result
+  posAddZ.io.rm := RNE
+
   val subGx = Module(new FADD(cfg))
   val subGy = Module(new FADD(cfg))
   val subGz = Module(new FADD(cfg))
-  subGx.io.a := io.in.bits.ray.origin.x
+  subGx.io.a := posAddX.io.res
   subGx.io.b := neg(io.grid_min.x)
   subGx.io.rm := RNE
-  subGy.io.a := io.in.bits.ray.origin.y
+  subGy.io.a := posAddY.io.res
   subGy.io.b := neg(io.grid_min.y)
   subGy.io.rm := RNE
-  subGz.io.a := io.in.bits.ray.origin.z
+  subGz.io.a := posAddZ.io.res
   subGz.io.b := neg(io.grid_min.z)
   subGz.io.rm := RNE
 

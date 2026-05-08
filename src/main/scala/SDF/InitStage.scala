@@ -21,12 +21,12 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   val rm = RNE
   val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = cfg.faddLatency
-  val pointLatency = cfg.fmulLatency + cfg.faddLatency
   val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)
 
   val rayWire = Wire(new Ray(cfg))
   rayWire.origin := io.setup_origin
   rayWire.dir := io.in.bits.rd
+  rayWire.dist := 0.U
 
   aabb.io.ray := rayWire
   aabb.io.aabb.min := io.setup_grid_min
@@ -51,59 +51,25 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   tEntry.io.b := entryAdvanceBits
   tEntry.io.rm := rm
 
-  val rdXAtEntry = PipeUtils.pipeData(rdXAtAabb, entryLatency)
-  val rdYAtEntry = PipeUtils.pipeData(rdYAtAabb, entryLatency)
-  val rdZAtEntry = PipeUtils.pipeData(rdZAtAabb, entryLatency)
-
-  val roXAtEntry = PipeUtils.pipeData(roXAtAabb, entryLatency)
-  val roYAtEntry = PipeUtils.pipeData(roYAtAabb, entryLatency)
-  val roZAtEntry = PipeUtils.pipeData(roZAtAabb, entryLatency)
-
-  val slotAtEntry = PipeUtils.pipeData(slotAtAabb, entryLatency)
-
-  val mulX = Module(new FMUL(cfg))
-  val mulY = Module(new FMUL(cfg))
-  val mulZ = Module(new FMUL(cfg))
-
-  mulX.io.a := rdXAtEntry
-  mulX.io.b := tEntry.io.res
-  mulX.io.rm := rm
-  mulY.io.a := rdYAtEntry
-  mulY.io.b := tEntry.io.res
-  mulY.io.rm := rm
-  mulZ.io.a := rdZAtEntry
-  mulZ.io.b := tEntry.io.res
-  mulZ.io.rm := rm
-
-  val addX = Module(new FADD(cfg))
-  val addY = Module(new FADD(cfg))
-  val addZ = Module(new FADD(cfg))
-
-  addX.io.a := roXAtEntry
-  addX.io.b := mulX.io.result
-  addX.io.rm := rm
-  addY.io.a := roYAtEntry
-  addY.io.b := mulY.io.result
-  addY.io.rm := rm
-  addZ.io.a := roZAtEntry
-  addZ.io.b := mulZ.io.result
-  addZ.io.rm := rm
-
-  val outAlignLatency = entryLatency + pointLatency
+  val outAlignLatency = entryLatency
   val outValid = PipeUtils.pipeData(aabb.io.out_valid, outAlignLatency)
   val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
-  val outSlot = PipeUtils.pipeData(slotAtEntry, pointLatency)
-  val outRdX = PipeUtils.pipeData(rdXAtEntry, pointLatency)
-  val outRdY = PipeUtils.pipeData(rdYAtEntry, pointLatency)
-  val outRdZ = PipeUtils.pipeData(rdZAtEntry, pointLatency)
+  val outSlot = PipeUtils.pipeData(slotAtAabb, entryLatency)
+  val outRoX = PipeUtils.pipeData(roXAtAabb, entryLatency)
+  val outRoY = PipeUtils.pipeData(roYAtAabb, entryLatency)
+  val outRoZ = PipeUtils.pipeData(roZAtAabb, entryLatency)
+  val outRdX = PipeUtils.pipeData(rdXAtAabb, entryLatency)
+  val outRdY = PipeUtils.pipeData(rdYAtAabb, entryLatency)
+  val outRdZ = PipeUtils.pipeData(rdZAtAabb, entryLatency)
 
   io.to_sdf.valid := outValid && outHit
-  io.to_sdf.bits.ray.origin.x := addX.io.res
-  io.to_sdf.bits.ray.origin.y := addY.io.res
-  io.to_sdf.bits.ray.origin.z := addZ.io.res
+  io.to_sdf.bits.ray.origin.x := outRoX
+  io.to_sdf.bits.ray.origin.y := outRoY
+  io.to_sdf.bits.ray.origin.z := outRoZ
   io.to_sdf.bits.ray.dir.x := outRdX
   io.to_sdf.bits.ray.dir.y := outRdY
   io.to_sdf.bits.ray.dir.z := outRdZ
+  io.to_sdf.bits.ray.dist := tEntry.io.res
   io.to_sdf.bits.meta.slotId := outSlot
   io.to_sdf.bits.meta.pixelX := 0.U
   io.to_sdf.bits.meta.pixelY := 0.U

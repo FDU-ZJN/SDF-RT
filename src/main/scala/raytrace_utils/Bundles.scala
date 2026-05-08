@@ -18,6 +18,7 @@ class AABB(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val origin = new Vec3(cfg)
   val dir = new Vec3(cfg)
+  val dist = UInt(cfg.totalWidth.W)
 }
 
 class RayMeta(addrWidth: Int = 32, pixelWidth: Int = 16) extends Bundle {

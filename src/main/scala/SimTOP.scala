@@ -61,7 +61,7 @@ class SimTop extends Module {
 
   // Conservative admission control for InitStage input:
   // assume all in-flight rays may become SDF-hit and need Init->SDF queue space.
-  val initOutLatency = 4 + (3 * c.cfg.faddLatency) + (2 * c.cfg.fmulLatency) + c.cfg.fdivLatency + (4 * c.cfg.fcmpLatency)
+  val initOutLatency = 4 + (2 * c.cfg.faddLatency) + c.cfg.fmulLatency + c.cfg.fdivLatency + (4 * c.cfg.fcmpLatency)
   val inflightW = log2Ceil(initToSdfDepth + initOutLatency + 4)
   val initInflight = RegInit(0.U(inflightW.W))
 

@@ -169,15 +169,17 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
 
   val u_pos = !u_d26(cfg.totalWidth-1)
   val v_pos = !v_d26(cfg.totalWidth-1)
+  val t_pos = SimpleFPCompare.gtZero(t_d26, cfg.totalWidth)
   val uv_le_one = SimpleFPCompare.lePositiveConst(uv_sum, fp_one, cfg.totalWidth)
   val det_is_zero_final = det_is_zero_pre_cmp
   val u_pos_final = u_pos
   val v_pos_final = v_pos
+  val t_pos_final = t_pos
   val t_final = t_d26
   val u_final = u_d26
   val v_final = v_d26
 
-  io.hit := out_valid_final && !det_is_zero_final && u_pos_final && v_pos_final && uv_le_one
+  io.hit := out_valid_final && !det_is_zero_final && u_pos_final && v_pos_final && t_pos_final && uv_le_one
 
   io.t := Mux(det_is_zero_final, 0.U, t_final)
   io.u := Mux(det_is_zero_final, 0.U, u_final)
