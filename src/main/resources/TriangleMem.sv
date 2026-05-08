@@ -20,27 +20,27 @@ module TriangleMem #(
   output logic                   req_ready
 );
 
-  localparam int FIXED_LATENCY = 2;
   localparam int MEM_ADDR_WIDTH = (MAX_ENTRIES <= 1) ? 1 : $clog2(MAX_ENTRIES);
   localparam int MEM_SIZE_BITS = MAX_ENTRIES * DATA_WIDTH;
 
   logic [MEM_ADDR_WIDTH-1:0] mem_addr;
   logic [DATA_WIDTH-1:0]     data_raw;
-  logic                      valid_pipe [0:FIXED_LATENCY-1];
-  logic [NUM_PES-1:0]        mask_pipe [0:FIXED_LATENCY-1];
-  logic [ADDR_WIDTH-1:0]     addr_pipe [0:FIXED_LATENCY-1];
+  logic                      valid_pipe [0:LATENCY-1];
+  logic [NUM_PES-1:0]        mask_pipe [0:LATENCY-1];
+  logic [ADDR_WIDTH-1:0]     addr_pipe [0:LATENCY-1];
   integer i;
 
-  initial begin
-    if (LATENCY != FIXED_LATENCY) begin
-      $warning("[TriangleMem] LATENCY=%0d is ignored, fixed latency is %0d", LATENCY, FIXED_LATENCY);
-    end
-  end
+
 
   assign mem_addr = addr[MEM_ADDR_WIDTH-1:0];
   assign req_ready = 1'b1;
 
-xpm_memory_sprom #(
+  logic [MEM_ADDR_WIDTH-1:0] mem_addr_reg;
+  always_ff @(posedge clk) begin
+    mem_addr_reg <= mem_addr;
+  end
+
+  xpm_memory_sprom #(
     .ADDR_WIDTH_A       (MEM_ADDR_WIDTH),
     .MEMORY_SIZE        (MEM_SIZE_BITS),
     .MEMORY_PRIMITIVE   ("block"),
@@ -48,31 +48,25 @@ xpm_memory_sprom #(
     .MEMORY_INIT_PARAM  (""),
     .USE_MEM_INIT       (1),
     .READ_DATA_WIDTH_A  (DATA_WIDTH),
-    .READ_LATENCY_A     (FIXED_LATENCY),
+    .READ_LATENCY_A     (LATENCY - 1),
     .ECC_MODE           ("no_ecc"),
     .AUTO_SLEEP_TIME    (0),
-    .CASCADE_HEIGHT     (0),
+    .CASCADE_HEIGHT     (5),
     .SIM_ASSERT_CHK     (0),
     .WAKEUP_TIME        ("disable_sleep"),
-    .READ_RESET_VALUE_A ("0"),
-    .RST_MODE_A         ("SYNC")
+    .READ_RESET_VALUE_A ("0")
 ) trimem_xpm_inst (
     .sleep  (1'b0),
     .clka   (clk),
-    .rsta   (reset),
-    .ena    (req_valid),
+    .ena    (1'b1),
     .regcea (1'b1),
-    .addra  (mem_addr),
-    .injectsbiterra (1'b0),
-    .injectdbiterra (1'b0),
-    .douta  (data_raw),
-    .sbiterra (),
-    .dbiterra ()
+    .addra  (mem_addr_reg),
+    .douta  (data_raw)
 );
 
   always_ff @(posedge clk) begin
     if (reset) begin
-      for (i = 0; i < FIXED_LATENCY; i = i + 1) begin
+      for (i = 0; i < LATENCY; i = i + 1) begin
         valid_pipe[i] <= 1'b0;
         mask_pipe[i]  <= '0;
         addr_pipe[i]  <= '0;
@@ -82,7 +76,7 @@ xpm_memory_sprom #(
       mask_pipe[0]  <= req_mask;
       addr_pipe[0]  <= addr;
 
-      for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
+      for (i = 1; i < LATENCY; i = i + 1) begin
         valid_pipe[i] <= valid_pipe[i-1];
         mask_pipe[i]  <= mask_pipe[i-1];
         addr_pipe[i]  <= addr_pipe[i-1];
@@ -91,8 +85,8 @@ xpm_memory_sprom #(
   end
 
   assign data       = data_raw;
-  assign valid      = valid_pipe[FIXED_LATENCY-1];
-  assign valid_mask = mask_pipe[FIXED_LATENCY-1];
-  assign addr_q     = addr_pipe[FIXED_LATENCY-1];
+  assign valid      = valid_pipe[LATENCY-1];
+  assign valid_mask = mask_pipe[LATENCY-1];
+  assign addr_q     = addr_pipe[LATENCY-1];
 
 endmodule

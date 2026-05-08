@@ -11,6 +11,7 @@ object GlobalConfig {
   val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
   val ddaNumWorkers = 1
+  val triRefPackFactor = 16
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
@@ -52,7 +53,7 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val triBatchQueueDepth = 64
-  val ddaRetryQueueDepth = 8
+  val ddaRetryQueueDepth = 16
   val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
 
   val sdfRetryQueueDepth = 64
@@ -66,7 +67,8 @@ object GlobalConfig {
   val bvhMissQueueDepth = 8
   
   val normalMemDpiLatency = 4
-  val triMemDpiLatency = 2
+  val triMemDpiLatency = 3
+  val triRefMemDpiLatency = 2
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 15
@@ -76,13 +78,14 @@ object GlobalConfig {
   val fptointLatency = 1
   val fdivLatency = 10
 
-  val Trinum = 13093
+  val Trinum = 38049
+  val TriOriginalNum = 8554
   // SDF PE grid
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
   val LocalCell = 2048
   // DDA grid
-  val GlobalDdaRes = 8
+  val GlobalDdaRes = 32
   val SubDdaRes = 1
   val DdaRes= GlobalDdaRes*SubDdaRes
   // ============================================================
@@ -93,6 +96,8 @@ object GlobalConfig {
   // Triangle data width per TriPE request block.
   val triMemNumPEs = 1
   val triMemDataWidth = triMemNumPEs * 9 * 32
+  val triRefIdWidth = 16
+  val triRefMemDataWidth = triRefPackFactor * triRefIdWidth
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16
@@ -100,8 +105,8 @@ object GlobalConfig {
   val normalMemDataWidth = 3 * 32  // = 96 bits
 
   val subgridMetaMemAddrWidth = 32
-  val subgridMetaMemTriStartWidth = 16
-  val subgridMetaMemTriCountWidth = 16
+  val subgridMetaMemTriStartWidth = 24
+  val subgridMetaMemTriCountWidth = 8
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
@@ -137,18 +142,27 @@ object GlobalConfig {
   val sdfHitBackoffN = 1
 
 
-  val ddaMaxSteps =8
+  val ddaMaxSteps =16
+  val triRefMemMaxRefs = Trinum
+
+  private def alignUp(value: Int, quantum: Int): Int = {
+    require(quantum > 0, s"alignment quantum must be > 0, got $quantum")
+    ((value + quantum - 1) / quantum) * quantum
+  }
+
+  private val bramDepthAlign = 512
 
   def triMemDepthFor(numBanks: Int, numPEs: Int = triMemNumPEs): Int = {
     require(numBanks > 0, s"triMem numBanks must be > 0, got $numBanks")
     require(numPEs > 0, s"triMem numPEs must be > 0, got $numPEs")
-    val totalDepth = (Trinum + numPEs - 1) / numPEs
-    (totalDepth + numBanks - 1) / numBanks
+    val totalDepth = (TriOriginalNum + numPEs - 1) / numPEs
+    alignUp((totalDepth + numBanks - 1) / numBanks, bramDepthAlign)
   }
 
   val triMemDepth = triMemDepthFor(1)
   val triMemBankDepth = triMemDepthFor(triMemNumBanks)
-  val normalMemDepth = Trinum
+  val triRefMemDepth = alignUp((triRefMemMaxRefs + triRefPackFactor - 1) / triRefPackFactor, bramDepthAlign)
+  val normalMemDepth = TriOriginalNum
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
   val sdfLocalMemDepth = LocalCell

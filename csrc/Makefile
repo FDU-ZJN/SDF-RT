@@ -33,6 +33,7 @@ else ifeq ($(MODE),useblackbox)
              +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
              +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
              +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
+             +TRI_REF_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_ref_mem.mem \
              +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
              +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem \
              +BVH_MEM_FILE=$(VIVADO_MEM_DIR)/bvh_mem.mem
@@ -54,6 +55,7 @@ else ifeq ($(MODE),fpga)
              +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
              +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
              +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
+             +TRI_REF_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_ref_mem.mem \
              +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
              +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem \
              +BVH_MEM_FILE=$(VIVADO_MEM_DIR)/bvh_mem.mem

@@ -138,8 +138,8 @@ class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
 }
 
 class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {
-  val triStart = UInt(addrWidth.W)
-  val triCount = UInt(16.W)
+  val triStart = UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)
+  val triCount = UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)
 }
 
 class DdaTraversalResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {

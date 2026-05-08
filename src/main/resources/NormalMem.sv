@@ -2,7 +2,7 @@ module NormalMem #(
   parameter int ADDR_WIDTH = 16,
   parameter int DATA_WIDTH = 96,
   parameter int LATENCY = 2,
-  parameter int MAX_ENTRIES = 14204
+  parameter int MAX_ENTRIES = 8554
 ) (
   input  logic                   clk,
   input  logic                   reset,

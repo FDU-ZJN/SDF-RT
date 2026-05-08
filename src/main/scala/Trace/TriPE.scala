@@ -4,9 +4,14 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
-import raytrace_utils.PipeUtils._
 
 class TriPE(val c: TriPeConfig) extends Module {
+  require(c.numPEs == 1, s"TriPE two-level fetch currently requires numPEs=1, got ${c.numPEs}")
+
+  private val triIdWidth = GlobalConfig.triRefIdWidth
+  private val refPackFactor = GlobalConfig.triRefPackFactor
+  private val refPackShift = log2Ceil(refPackFactor)
+  private val refCountWidth = log2Ceil(refPackFactor + 1)
 
   val io = IO(new Bundle {
     val ray_in: Ray = Input(new Ray(c.cfg))
@@ -18,8 +23,11 @@ class TriPE(val c: TriPeConfig) extends Module {
     val end_exec: Bool = Input(Bool())
     val flush: Bool = Input(Bool())
 
+    val ref_mem_req = Decoupled(UInt(c.addrWidth.W))
+    val ref_mem_resp = Flipped(Decoupled(UInt(GlobalConfig.triRefMemDataWidth.W)))
+
     val mem_req: DecoupledIO[UInt] = Decoupled(UInt(c.addrWidth.W))
-    val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))  // per-lane valid mask
+    val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))
     val mem_resp: DecoupledIO[TriangleBlock] = Flipped(Decoupled(new TriangleBlock(c)))
 
     val start_ready: Bool = Output(Bool())
@@ -31,38 +39,36 @@ class TriPE(val c: TriPeConfig) extends Module {
     val out_done: Bool = Output(Bool())
   })
 
-  // ============================================================
-  // 1. 任务调度
-  // ============================================================
+  private val current_batch = RegInit(0.U.asTypeOf(new TriBatch(c.addrWidth)))
+  private val ray_reg = RegInit(0.U.asTypeOf(new Ray(c.cfg)))
+  private val ray_meta_reg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
+  private val batch_ref_idx = RegInit(0.U(c.addrWidth.W))
+  private val batch_refs_remaining = RegInit(0.U(16.W))
+  private val batch_in_progress = RegInit(false.B)
+  private val no_more_batches = RegInit(false.B)
+  private val done_pulse_reg = RegInit(false.B)
+  private val active_epoch = RegInit(false.B)
+  private val result_capture_pending = RegInit(false.B)
+  private val result_hit_reg = RegInit(false.B)
+  private val result_id_reg = RegInit(0.U(c.addrWidth.W))
+  private val result_t_reg = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
+  private val result_meta_reg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
 
-  private val current_batch: TriBatch = RegInit(0.U.asTypeOf(new TriBatch(c.addrWidth)))
-  private val ray_reg: Ray = RegInit(0.U.asTypeOf(new Ray(c.cfg)))
-  private val ray_meta_reg: RayMeta = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
-  private val block_offset: UInt = RegInit(0.U(16.W))
-  private val batch_active: Bool = RegInit(false.B)
-  private val batch_in_progress: Bool = RegInit(false.B)
-  private val no_more_batches: Bool = RegInit(false.B)
-  private val done_pulse_reg: Bool = RegInit(false.B)
-  private val active_epoch: Bool = RegInit(false.B)
-  private val result_capture_pending: Bool = RegInit(false.B)
-  private val result_hit_reg: Bool = RegInit(false.B)
-  private val result_id_reg: UInt = RegInit(0.U(c.addrWidth.W))
-  private val result_t_reg: UInt = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
-  private val result_meta_reg: RayMeta = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
+  private val ref_buffer = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
+  private val ref_buf_idx = RegInit(0.U(refPackShift.W))
+  private val ref_buf_count = RegInit(0.U(refCountWidth.W))
 
-  private val pe_best_t: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(
-    0x7F7FFFFF.U(c.cfg.totalWidth.W)
-  )))
-  private val pe_best_id: Vec[UInt] = RegInit(VecInit(Seq.fill(c.numPEs)(0.U(c.addrWidth.W))))
-  private val pe_has_hit: Vec[Bool] = RegInit(VecInit(Seq.fill(c.numPEs)(false.B)))
+  private val best_t = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
+  private val best_id = RegInit(0.U(c.addrWidth.W))
+  private val has_hit = RegInit(false.B)
 
   private val s_IDLE :: s_BUSY :: Nil = Enum(2)
-  private val state: UInt = RegInit(s_IDLE)
+  private val state = RegInit(s_IDLE)
 
   when(io.flush) {
     current_batch := 0.U.asTypeOf(new TriBatch(c.addrWidth))
-    block_offset := 0.U
-    batch_active := false.B
+    batch_ref_idx := 0.U
+    batch_refs_remaining := 0.U
     batch_in_progress := false.B
     no_more_batches := false.B
     done_pulse_reg := false.B
@@ -71,13 +77,13 @@ class TriPE(val c: TriPeConfig) extends Module {
     result_id_reg := 0.U
     result_t_reg := 0x7F7FFFFF.U
     result_meta_reg := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+    ref_buf_idx := 0.U
+    ref_buf_count := 0.U
+    best_t := 0x7F7FFFFF.U
+    best_id := 0.U
+    has_hit := false.B
     active_epoch := !active_epoch
     state := s_IDLE
-    for (i <- 0 until c.numPEs) {
-      pe_best_t(i) := 0x7F7FFFFF.U
-      pe_best_id(i) := 0.U
-      pe_has_hit(i) := false.B
-    }
   }.elsewhen(state === s_IDLE && io.ray_valid) {
     state := s_BUSY
     ray_reg := io.ray_in
@@ -94,58 +100,100 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   when(io.tri_batch_valid && canAcceptBatch && !io.flush) {
     current_batch := io.tri_batch_in
-    block_offset := 0.U
-    batch_active := true.B
+    batch_ref_idx := io.tri_batch_in.base_addr
+    batch_refs_remaining := io.tri_batch_in.count
     batch_in_progress := true.B
-    for (i <- 0 until c.numPEs) {
-      pe_best_t(i) := 0x7F7FFFFF.U
-      pe_best_id(i) := 0.U
-      pe_has_hit(i) := false.B
+    ref_buf_idx := 0.U
+    ref_buf_count := 0.U
+    best_t := 0x7F7FFFFF.U
+    best_id := 0.U
+    has_hit := false.B
+  }
+
+  private val refReqPendingLive = Wire(Bool())
+  private val refWordAddr = batch_ref_idx >> refPackShift
+  private val refWordOff = batch_ref_idx(refPackShift - 1, 0)
+  private val refChunkAvailWide = refPackFactor.U(16.W) - refWordOff
+  private val refChunkCountWide = Mux(batch_refs_remaining < refChunkAvailWide, batch_refs_remaining, refChunkAvailWide)
+  private val refChunkCount = refChunkCountWide(refCountWidth - 1, 0)
+  io.ref_mem_req.valid := batch_in_progress && (ref_buf_count === 0.U) && (batch_refs_remaining =/= 0.U) && !refReqPendingLive && !io.flush
+  io.ref_mem_req.bits := refWordAddr
+
+  when(io.ref_mem_req.fire) {
+    batch_ref_idx := batch_ref_idx + refChunkCount
+    batch_refs_remaining := batch_refs_remaining - refChunkCount
+  }
+
+  io.ref_mem_resp.ready := true.B
+
+  private val refReqPipeLen = GlobalConfig.triRefMemDpiLatency
+  private val ref_req_live_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
+  private val ref_req_epoch_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
+  private val ref_req_offset_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
+  private val ref_req_count_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
+  when(io.flush) {
+    for (i <- 0 until refReqPipeLen) {
+      ref_req_live_pipe(i) := false.B
+      ref_req_epoch_pipe(i) := false.B
+      ref_req_offset_pipe(i) := 0.U
+      ref_req_count_pipe(i) := 0.U
+    }
+  }.otherwise {
+    ref_req_live_pipe(0) := io.ref_mem_req.fire
+    ref_req_epoch_pipe(0) := Mux(io.ref_mem_req.fire, active_epoch, false.B)
+    ref_req_offset_pipe(0) := Mux(io.ref_mem_req.fire, refWordOff, 0.U)
+    ref_req_count_pipe(0) := Mux(io.ref_mem_req.fire, refChunkCount, 0.U)
+    for (i <- 1 until refReqPipeLen) {
+      ref_req_live_pipe(i) := ref_req_live_pipe(i - 1)
+      ref_req_epoch_pipe(i) := ref_req_epoch_pipe(i - 1)
+      ref_req_offset_pipe(i) := ref_req_offset_pipe(i - 1)
+      ref_req_count_pipe(i) := ref_req_count_pipe(i - 1)
+    }
+  }
+  refReqPendingLive := ref_req_live_pipe.asUInt.orR
+
+  private val ref_resp_live =
+    io.ref_mem_resp.fire &&
+      ref_req_live_pipe.last &&
+      (ref_req_epoch_pipe.last === active_epoch) &&
+      !io.flush
+
+  private val refWordIds = Wire(Vec(refPackFactor, UInt(triIdWidth.W)))
+  for (i <- 0 until refPackFactor) {
+    refWordIds(i) := io.ref_mem_resp.bits((i + 1) * triIdWidth - 1, i * triIdWidth)
+  }
+  private val compactedIds = Wire(Vec(refPackFactor, UInt(triIdWidth.W)))
+  for (i <- 0 until refPackFactor) {
+    compactedIds(i) := 0.U
+    for (off <- 0 until refPackFactor) {
+      if (off + i < refPackFactor) {
+        when(ref_req_offset_pipe.last === off.U) {
+          compactedIds(i) := refWordIds(off + i)
+        }
+      }
     }
   }
 
-  private val shiftAmt: Int = if (c.numPEs <= 1) 0 else log2Up(c.numPEs)
-
-  // Align base_addr to block boundary (multiple of 4)
-  private val alignedBase: UInt = (current_batch.base_addr >> shiftAmt).asUInt << shiftAmt.U
-
-  // Calculate total blocks needed to cover [base_addr, base_addr + count)
-  private val lastTri: UInt = current_batch.base_addr + current_batch.count - 1.U
-  private val totalBlocks: UInt = ((lastTri >> shiftAmt).asUInt - (alignedBase >> shiftAmt).asUInt) + 1.U
-
-  // Calculate per-lane mask for current aligned address
-  // lane i corresponds to triangle: aligned_addr + i
-  // mask[i] = 1 iff base_addr <= (aligned_addr + i) < base_addr + count
-  private val alignedAddr: UInt = alignedBase + (block_offset << shiftAmt).asUInt
-  private val reqMask: UInt = {
-    val masks = (0 until c.numPEs).map { lane =>
-      val triIdx = alignedAddr + lane.U
-      (triIdx >= current_batch.base_addr) && (triIdx < current_batch.base_addr + current_batch.count)
+  when(ref_resp_live) {
+    for (i <- 0 until refPackFactor) {
+      ref_buffer(i) := compactedIds(i)
     }
-    Cat(masks.reverse)
+    ref_buf_idx := 0.U
+    ref_buf_count := ref_req_count_pipe.last
   }
 
-  io.mem_req.valid := batch_active && !io.flush
-  io.mem_req.bits := alignedAddr
-  io.mem_req_mask.valid := batch_active && !io.flush
-  io.mem_req_mask.bits := reqMask
+  private val geomTriId = ref_buffer(ref_buf_idx)
+  io.mem_req.valid := batch_in_progress && (ref_buf_count =/= 0.U) && !io.flush
+  io.mem_req.bits := geomTriId
+  io.mem_req_mask.valid := io.mem_req.valid
+  io.mem_req_mask.bits := 1.U
 
   when(io.mem_req.fire && !io.flush) {
-    block_offset := block_offset + 1.U
-
-    when(block_offset === totalBlocks - 1.U) {
-      batch_active := false.B
-    }
+    ref_buf_idx := ref_buf_idx + 1.U
+    ref_buf_count := ref_buf_count - 1.U
   }
 
-  // ============================================================
-  // 2. PE 阵列
-  // ============================================================
-
-  private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
-
   io.mem_resp.ready := true.B
-
 
   private val memReqPipeLen = GlobalConfig.triMemDpiLatency
   private val mem_req_live_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
@@ -163,62 +211,43 @@ class TriPE(val c: TriPeConfig) extends Module {
       mem_req_epoch_pipe(i) := mem_req_epoch_pipe(i - 1)
     }
   }
-  private val mem_req_live = mem_req_live_pipe(memReqPipeLen - 1)
-  private val mem_req_epoch = mem_req_epoch_pipe(memReqPipeLen - 1)
+  private val mem_req_live = mem_req_live_pipe.last
+  private val mem_req_epoch = mem_req_epoch_pipe.last
   private val mem_resp_live =
     io.mem_resp.fire &&
       mem_req_live &&
       (mem_req_epoch === active_epoch) &&
       !io.flush
-  private val triLatency = {
-    val latMUL = c.cfg.fmulLatency
-    val latADD = c.cfg.faddLatency
-    val latDIV = c.cfg.fdivLatency
-    val latCP = c.cfg.fcrossLatency
-    val latDP = c.cfg.fdotLatency
-    val stageCLatency = latADD + latCP + latDP
-    val stageDAlignLatency = math.max(latDIV, latDP)
-    stageCLatency + stageDAlignLatency + latMUL + latADD
-  }
 
-  for (i <- 0 until c.numPEs) {
+  private val pe = Module(new RayTriangleIntersection(c.cfg))
+  pe.io.ray := ray_reg
+  pe.io.tri := io.mem_resp.bits.tris(0)
+  pe.io.in_valid := mem_resp_live && io.mem_resp.bits.mask(0)
 
-    pes(i).io.ray := ray_reg
-    pes(i).io.tri := io.mem_resp.bits.tris(i)
-
-    pes(i).io.in_valid :=
-      mem_resp_live && io.mem_resp.bits.mask(i)
-
-    // 本地比较
-    val fcmp = Module(new FCMP(c.cfg))
-    fcmp.io.a := pes(i).io.t
-    fcmp.io.b := pe_best_t(i)
-    fcmp.io.signaling := false.B
-
-    when(pes(i).io.out_valid && pes(i).io.hit) {
-      when(fcmp.io.lt || !pe_has_hit(i)) {
-        pe_best_t(i) := pes(i).io.t
-        pe_best_id(i) := pes(i).io.id
-        pe_has_hit(i) := true.B
-      }
+  val fcmp = Module(new FCMP(c.cfg))
+  fcmp.io.a := pe.io.t
+  fcmp.io.b := best_t
+  fcmp.io.signaling := false.B
+  when(pe.io.out_valid && pe.io.hit) {
+    when(fcmp.io.lt || !has_hit) {
+      best_t := pe.io.t
+      best_id := pe.io.id
+      has_hit := true.B
     }
   }
 
-  // ============================================================
-  // 3. inflight 计数 + 状态转换
-  // ============================================================
-
-  private val inflight_cnt: UInt = RegInit(0.U(10.W))
-
-  private val incoming_count: UInt = PopCount(io.mem_resp.bits.mask.asUInt)
-  private val outgoing_count: UInt = PopCount(pes.map(_.io.out_valid))
-  private val inflight_next =
-    inflight_cnt +
-      Mux(mem_resp_live, incoming_count, 0.U) -
-      outgoing_count
+  private val inflight_cnt = RegInit(0.U(10.W))
+  private val incoming_count = Mux(mem_resp_live && io.mem_resp.bits.mask(0), 1.U(10.W), 0.U(10.W))
+  private val outgoing_count = Mux(pe.io.out_valid, 1.U(10.W), 0.U(10.W))
+  private val inflight_next = inflight_cnt + incoming_count - outgoing_count
+  private val batch_source_drained =
+    (batch_refs_remaining === 0.U) &&
+      (ref_buf_count === 0.U) &&
+      !refReqPendingLive &&
+      !mem_req_live_pipe.asUInt.orR
   private val batch_done_now =
     batch_in_progress &&
-      !batch_active &&
+      batch_source_drained &&
       (inflight_next === 0.U)
 
   when(io.flush) {
@@ -242,44 +271,20 @@ class TriPE(val c: TriPeConfig) extends Module {
     state := s_IDLE
   }
 
-  // ============================================================
-  // 4. 全局 argmin(t)
-  // ============================================================
-
-  private val pairs = (0 until c.numPEs).map(i => (pe_best_t(i), pe_best_id(i), pe_has_hit(i)))
-  private val (global_best_t, global_best_id, global_has_hit) = pairs.reduce { (a, b) =>
-    val cmp = Module(new FCMP(c.cfg))
-    cmp.io.a := a._1
-    cmp.io.b := b._1
-    cmp.io.signaling := false.B
-    val a_better = a._3 && (!b._3 || cmp.io.lt)
-    (
-      Mux(a_better, a._1, b._1),
-      Mux(a_better, a._2, b._2),
-      a._3 || b._3
-    )
-  }
-
-  // ============================================================
-  // 5. 输出
-  // ============================================================
-
   when(result_capture_pending && !io.flush) {
     result_capture_pending := false.B
-    result_hit_reg := global_has_hit
-    result_id_reg := global_best_id
-    result_t_reg := global_best_t
+    result_hit_reg := has_hit
+    result_id_reg := best_id
+    result_t_reg := best_t
     result_meta_reg := ray_meta_reg
     done_pulse_reg := true.B
   }
 
   io.start_ready := state === s_IDLE
   io.output_ready := canAcceptBatch
-
   io.out_best_hit := result_hit_reg
   io.hit_id := result_id_reg
   io.t_best := result_t_reg
   io.out_meta := result_meta_reg
-
   io.out_done := done_pulse_reg
 }

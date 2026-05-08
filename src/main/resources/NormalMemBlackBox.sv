@@ -2,7 +2,7 @@ module NormalMemResourceBB #(
   parameter int ADDR_WIDTH = 16,
   parameter int DATA_WIDTH = 96,
   parameter int LATENCY = 2,
-  parameter int MAX_ENTRIES = 65536
+  parameter int MAX_ENTRIES = 8554
 ) (
   input  logic                   clk,
   input  logic                   reset,
@@ -27,7 +27,7 @@ module NormalMemResourceBB #(
   initial begin
     string mem_file;
     if ($value$plusargs("NORMAL_MEM_FILE=%s", mem_file)) begin
-      $display("[NormalMem] Loading compact normal memory from %s", mem_file);
+      $display("[NormalMem] Loading original normal memory from %s", mem_file);
       $readmemh(mem_file, normal_mem);
     end else begin
       $display("[NormalMem] NORMAL_MEM_FILE not specified, expecting bus writes");

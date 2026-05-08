@@ -24,6 +24,7 @@ class TraceController(
 
   val workers = Seq.fill(numWorkers)(Module(new TriPE(c)))
   val cmdQueues = Seq.fill(slotCount)(Module(new Queue(new TriBatch(c.addrWidth), maxCmds, hasFlush = true)))
+  val refMem = Module(new TriRefMemMultiPort(numWorkers, c.addrWidth))
   val mem = Module(new TriangleMemMultiPort(c, numWorkers))
 
   val sIdle :: sIssueRay :: sIssueBatch :: sWaitBatch :: Nil = Enum(4)
@@ -81,6 +82,8 @@ class TraceController(
     workers(i).io.end_exec := false.B
     workers(i).io.flush := workerFlushPending(i)
 
+    refMem.io.req(i) <> workers(i).io.ref_mem_req
+    workers(i).io.ref_mem_resp <> refMem.io.resp(i)
     mem.io.req(i) <> workers(i).io.mem_req
     mem.io.req_mask(i) <> workers(i).io.mem_req_mask
     workers(i).io.mem_resp <> mem.io.resp(i)

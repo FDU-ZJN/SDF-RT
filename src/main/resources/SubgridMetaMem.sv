@@ -11,8 +11,8 @@ module SubgridMetaMem #(
   input  logic [ADDR_WIDTH-1:0]  globalIdx,
   input  logic [ADDR_WIDTH-1:0]  subIdx,
   input  logic                   en,
-  output logic [15:0]            triStart,
-  output logic [15:0]            triCount,
+  output logic [23:0]            triStart,
+  output logic [7:0]             triCount,
   output logic                   valid
 );
 
@@ -98,8 +98,8 @@ module SubgridMetaMem #(
     end
   end
 
-  assign triStart = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[31:16] : 16'h0;
-  assign triCount = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[15:0]  : 16'h0;
+  assign triStart = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[31:8] : 24'h0;
+  assign triCount = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[7:0] : 8'h0;
   assign valid    = valid_pipe[FIXED_LATENCY - 1];
 
 endmodule

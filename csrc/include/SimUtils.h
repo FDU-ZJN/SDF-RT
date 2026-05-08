@@ -28,5 +28,11 @@ bool mapPointToDdaGlobalSub(
     int& outSubIdx);
 
 void writePPM(const std::string& path, const std::vector<uint8_t>& img, int width, int height);
+void writeSubgridTriCountHistogramPPM(
+    const std::string& path,
+    int globalRes,
+    int subRes,
+    int width = 1024,
+    int height = 512);
 
 #endif // SIM_UTILS_H

@@ -10,8 +10,8 @@ module SubgridMetaMemResourceBB #(
   input  logic [ADDR_WIDTH-1:0]  globalIdx,
   input  logic [ADDR_WIDTH-1:0]  subIdx,
   input  logic                   en,
-  output logic [15:0]            triStart,
-  output logic [15:0]            triCount,
+  output logic [23:0]            triStart,
+  output logic [7:0]             triCount,
   output logic                   valid
 );
   localparam int FIXED_LATENCY    = 2;
@@ -75,7 +75,7 @@ module SubgridMetaMemResourceBB #(
     end
   end
 
-  assign triStart = data_pipe[FIXED_LATENCY - 1][31:16];
-  assign triCount = data_pipe[FIXED_LATENCY - 1][15:0];
+  assign triStart = data_pipe[FIXED_LATENCY - 1][31:8];
+  assign triCount = data_pipe[FIXED_LATENCY - 1][7:0];
   assign valid    = valid_pipe[FIXED_LATENCY - 1];
 endmodule

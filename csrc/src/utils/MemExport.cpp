@@ -45,11 +45,13 @@ static inline size_t triBankDepthForExport(size_t triCount, int numPEs, int numB
     return (totalDepth + static_cast<size_t>(numBanks) - 1) / static_cast<size_t>(numBanks);
 }
 
+static inline size_t triRefDepthForExport(size_t refCount, int packFactor) {
+    return (refCount + static_cast<size_t>(packFactor) - 1) / static_cast<size_t>(packFactor);
+}
+
 // Export triangle memory to .mem file
 void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, int bankId) {
-    // Use compact triangle layout if available (after subgrid build)
-    const auto& tri_store = (subgrid_layout_ready && !triangles_compact.empty()) 
-                            ? triangles_compact : triangles;
+    const auto& tri_store = triangles;
     
     std::ofstream out(filename);
     if (!out.is_open()) {
@@ -102,6 +104,40 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
               << bankId << "/" << numBanks << ")" << std::endl;
 }
 
+void export_triangle_ref_mem(const std::string& filename, int packFactor) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
+        return;
+    }
+
+    out << "// Triangle Reference Memory Initialization File" << std::endl;
+    out << "// Format: Each line = " << packFactor << " packed uint16 triIds, low index at low bits" << std::endl;
+    out << "// Total refs: " << triangles_compact_src_ids.size() << std::endl;
+    out << std::endl;
+
+    const size_t wordDepth = triRefDepthForExport(triangles_compact_src_ids.size(), packFactor);
+    for (size_t word = 0; word < wordDepth; ++word) {
+        std::string hexLine;
+        for (int lane = packFactor - 1; lane >= 0; --lane) {
+            const size_t refIdx = word * static_cast<size_t>(packFactor) + static_cast<size_t>(lane);
+            uint16_t triId = 0;
+            if (refIdx < triangles_compact_src_ids.size()) {
+                triId = static_cast<uint16_t>(triangles_compact_src_ids[refIdx] & 0xFFFFu);
+            }
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << triId;
+            hexLine += oss.str();
+        }
+        out << hexLine << std::endl;
+    }
+
+    out.close();
+    std::cout << "[MemExport] Exported " << triangles_compact_src_ids.size()
+              << " triangle refs to " << filename << " (" << wordDepth
+              << " words, pack " << packFactor << ")" << std::endl;
+}
+
 // Export BVH memory to .mem file
 void export_bvh_mem(const std::string& filename) {
     std::ofstream out(filename);
@@ -148,9 +184,7 @@ void export_bvh_mem(const std::string& filename) {
 
 // Export normal memory to .mem file
 void export_normal_mem(const std::string& filename) {
-    // Use compact normal layout if available (after subgrid build)
-    const auto& normal_store = (subgrid_layout_ready && !normals_compact.empty()) 
-                               ? normals_compact : normals;
+    const auto& normal_store = normals;
     
     std::ofstream out(filename);
     if (!out.is_open()) {
@@ -312,7 +346,7 @@ void export_subgrid_meta_mem(const std::string& filename) {
     }
 
     out << "// Subgrid Meta Memory Initialization File" << std::endl;
-    out << "// Format: Each line = triStart (uint32) triCount (uint16)" << std::endl;
+    out << "// Format: Each line = packed [31:8]=triStart(uint24), [7:0]=triCount(uint8)" << std::endl;
     out << "// $readmemh format: @address triStart triCount" << std::endl;
     out << std::endl;
 
@@ -336,13 +370,13 @@ void export_subgrid_meta_mem(const std::string& filename) {
             // Linear address: contiguous from 0
             uint32_t linear_addr = global_idx * subgrid_sub_cells + sub_idx;
 
-            // Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
-            // This matches the BlackBox extraction: triStart = mem[31:16], triCount = mem[15:0]
-            uint32_t packed_value = ((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF);
+            uint32_t packed_value =
+                ((triStart & 0xFFFFFFu) << 8) |
+                static_cast<uint32_t>(triCount & 0xFFu);
 
             out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
                 << linear_addr << std::endl;
-            out << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
+            out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
                 << packed_value << std::endl;
             ++entryCount;
         }
@@ -355,9 +389,7 @@ void export_subgrid_meta_mem(const std::string& filename) {
 
 // Export triangle memory to COE file (for Vivado BRAM initialization)
 void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBanks, int bankId) {
-    // Use compact triangle layout if available (after subgrid build)
-    const auto& tri_store = (subgrid_layout_ready && !triangles_compact.empty())
-                            ? triangles_compact : triangles;
+    const auto& tri_store = triangles;
 
     std::ofstream out(filename);
     if (!out.is_open()) {
@@ -414,6 +446,42 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
               << " triangles to COE " << filename << " (" << bankDepth
               << " bank addresses, bank " << bankId << "/" << numBanks
               << ", " << bitsPerAddress << "-bit width)" << std::endl;
+}
+
+void export_triangle_ref_mem_coe(const std::string& filename, int packFactor) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
+        return;
+    }
+
+    out << "; Triangle Ref Memory COE File for Vivado" << std::endl;
+    out << "; Format: " << (packFactor * 16) << "-bit width per entry, packed uint16 triIds" << std::endl;
+    out << "; Total refs: " << triangles_compact_src_ids.size() << std::endl;
+    out << "memory_initialization_radix=16;" << std::endl;
+    out << "memory_initialization_vector=" << std::endl;
+
+    const size_t wordDepth = triRefDepthForExport(triangles_compact_src_ids.size(), packFactor);
+    for (size_t word = 0; word < wordDepth; ++word) {
+        std::string hexLine;
+        for (int lane = packFactor - 1; lane >= 0; --lane) {
+            const size_t refIdx = word * static_cast<size_t>(packFactor) + static_cast<size_t>(lane);
+            uint16_t triId = 0;
+            if (refIdx < triangles_compact_src_ids.size()) {
+                triId = static_cast<uint16_t>(triangles_compact_src_ids[refIdx] & 0xFFFFu);
+            }
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << triId;
+            hexLine += oss.str();
+        }
+        out << hexLine << (word + 1 == wordDepth ? "" : ",") << std::endl;
+    }
+    out << ";" << std::endl;
+    out.close();
+
+    std::cout << "[MemExport] Exported " << triangles_compact_src_ids.size()
+              << " triangle refs to COE " << filename << " (" << wordDepth
+              << " words, pack " << packFactor << ")" << std::endl;
 }
 
 // Export normal memory to COE file (for Vivado BRAM initialization)
@@ -569,7 +637,7 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 
     // COE file format for Xilinx block RAM
     out << "; Subgrid Meta Memory COE File for Vivado" << std::endl;
-    out << "; Format: 32-bit width per entry [31:16]=triStart, [15:0]=triCount" << std::endl;
+    out << "; Format: 32-bit width per entry [31:8]=triStart, [7:0]=triCount" << std::endl;
     out << "; Total entries: " << totalEntries << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
     out << "memory_initialization_vector=" << std::endl;
@@ -582,8 +650,9 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
             uint32_t triStart = get_subgrid_tri_start_uint32(global_idx, sub_idx);
             uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
 
-            // Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
-            uint32_t packed_value = ((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF);
+            uint32_t packed_value =
+                ((triStart & 0xFFFFFFu) << 8) |
+                static_cast<uint32_t>(triCount & 0xFFu);
 
             std::ostringstream oss;
             oss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << packed_value;
@@ -603,9 +672,14 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
 
-    for (int bank = 0; bank < kTriNumBanks; ++bank) {
-        export_triangle_mem(output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".mem", kTriNumPE, kTriNumBanks, bank);
+    for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
+        export_triangle_mem(
+            output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".mem",
+            rt::config::kTriNumPE,
+            rt::config::kTriNumBanks,
+            bank);
     }
+    export_triangle_ref_mem(output_dir + "/triangle_ref_mem.mem", rt::config::kTriRefPackFactor);
     export_bvh_mem(output_dir + "/bvh_mem.mem");
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
@@ -613,9 +687,14 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_subgrid_meta_mem(output_dir + "/subgrid_meta_mem.mem");
 
     // Export COE files for FPGA BRAM initialization
-    for (int bank = 0; bank < kTriNumBanks; ++bank) {
-        export_triangle_mem_coe(output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".coe", kTriNumPE, kTriNumBanks, bank);
+    for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
+        export_triangle_mem_coe(
+            output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".coe",
+            rt::config::kTriNumPE,
+            rt::config::kTriNumBanks,
+            bank);
     }
+    export_triangle_ref_mem_coe(output_dir + "/triangle_ref_mem.coe", rt::config::kTriRefPackFactor);
     export_normal_mem_coe(output_dir + "/normal_mem.coe");
     export_normal_id_mapping_coe(output_dir + "/normal_id_mapping.coe");
     export_sdf_local_mapping_coe(output_dir + "/sdf_local_mapping.coe");
