@@ -9,9 +9,7 @@ class FCMA(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val precision=cfg.precision
   val io = IO(new Bundle() {
     val a, b, c = Input(UInt((expWidth + precision).W))
-    val rm = Input(UInt(3.W))
     val result = Output(UInt((expWidth + precision).W))
-    val fflags = Output(UInt(5.W))
   })
 
   val fmul = Module(new FMUL(cfg))
@@ -19,16 +17,13 @@ class FCMA(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 
   fmul.io.a := io.a
   fmul.io.b := io.b
-  fmul.io.rm := io.rm
 
   val mul_to_fadd = fmul.io.to_fadd
   fadd.io.a := Cat(io.c, 0.U(precision.W))
   fadd.io.b := mul_to_fadd.fp_prod.asUInt
   fadd.io.b_inter_valid := true.B
   fadd.io.b_inter_flags := mul_to_fadd.inter_flags
-  fadd.io.rm := io.rm
+  fadd.io.rm := RNE
 
   io.result := fadd.io.result
-  io.fflags := fadd.io.fflags
 }
-

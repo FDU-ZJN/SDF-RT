@@ -12,6 +12,7 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val refPackFactor = GlobalConfig.triRefPackFactor
   private val refPackShift = log2Ceil(refPackFactor)
   private val refCountWidth = log2Ceil(refPackFactor + 1)
+  private val refPrefetchLowWatermark = math.max(1, refPackFactor / 4)
 
   val io = IO(new Bundle {
     val ray_in: Ray = Input(new Ray(c.cfg))
@@ -54,9 +55,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val result_t_reg = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
   private val result_meta_reg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
 
-  private val ref_buffer = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
-  private val ref_buf_idx = RegInit(0.U(refPackShift.W))
-  private val ref_buf_count = RegInit(0.U(refCountWidth.W))
+  private val ref_buffer_a = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
+  private val ref_buffer_b = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
+  private val ref_buf_idx_a = RegInit(0.U(refPackShift.W))
+  private val ref_buf_idx_b = RegInit(0.U(refPackShift.W))
+  private val ref_buf_count_a = RegInit(0.U(refCountWidth.W))
+  private val ref_buf_count_b = RegInit(0.U(refCountWidth.W))
 
   private val best_t = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
   private val best_id = RegInit(0.U(c.addrWidth.W))
@@ -77,8 +81,10 @@ class TriPE(val c: TriPeConfig) extends Module {
     result_id_reg := 0.U
     result_t_reg := 0x7F7FFFFF.U
     result_meta_reg := 0.U.asTypeOf(new RayMeta(c.addrWidth))
-    ref_buf_idx := 0.U
-    ref_buf_count := 0.U
+    ref_buf_idx_a := 0.U
+    ref_buf_idx_b := 0.U
+    ref_buf_count_a := 0.U
+    ref_buf_count_b := 0.U
     best_t := 0x7F7FFFFF.U
     best_id := 0.U
     has_hit := false.B
@@ -103,20 +109,45 @@ class TriPE(val c: TriPeConfig) extends Module {
     batch_ref_idx := io.tri_batch_in.base_addr
     batch_refs_remaining := io.tri_batch_in.count
     batch_in_progress := true.B
-    ref_buf_idx := 0.U
-    ref_buf_count := 0.U
+    ref_buf_idx_a := 0.U
+    ref_buf_idx_b := 0.U
+    ref_buf_count_a := 0.U
+    ref_buf_count_b := 0.U
     best_t := 0x7F7FFFFF.U
     best_id := 0.U
     has_hit := false.B
   }
 
   private val refReqPendingLive = Wire(Bool())
+  private val activeBufSel = Wire(Bool())
+  private val activeBufIdx = Wire(UInt(refPackShift.W))
+  private val activeBufCount = Wire(UInt(refCountWidth.W))
+  private val prefetchBufEmpty = Wire(Bool())
+  private val requestToBufB = Wire(Bool())
+  private val sourceHasData = Wire(Bool())
+
+  activeBufSel := ref_buf_count_a === 0.U && ref_buf_count_b =/= 0.U
+  activeBufIdx := Mux(activeBufSel, ref_buf_idx_b, ref_buf_idx_a)
+  activeBufCount := Mux(activeBufSel, ref_buf_count_b, ref_buf_count_a)
+  sourceHasData := ref_buf_count_a =/= 0.U || ref_buf_count_b =/= 0.U
+  prefetchBufEmpty := Mux(activeBufSel, ref_buf_count_a === 0.U, ref_buf_count_b === 0.U)
+  requestToBufB := Mux(sourceHasData, !activeBufSel, false.B)
+
   private val refWordAddr = batch_ref_idx >> refPackShift
   private val refWordOff = batch_ref_idx(refPackShift - 1, 0)
   private val refChunkAvailWide = refPackFactor.U(16.W) - refWordOff
   private val refChunkCountWide = Mux(batch_refs_remaining < refChunkAvailWide, batch_refs_remaining, refChunkAvailWide)
   private val refChunkCount = refChunkCountWide(refCountWidth - 1, 0)
-  io.ref_mem_req.valid := batch_in_progress && (ref_buf_count === 0.U) && (batch_refs_remaining =/= 0.U) && !refReqPendingLive && !io.flush
+  private val needInitialFill = !sourceHasData
+  private val needPrefetch =
+    sourceHasData &&
+      prefetchBufEmpty &&
+      (activeBufCount <= refPrefetchLowWatermark.U)
+  io.ref_mem_req.valid := batch_in_progress &&
+    (batch_refs_remaining =/= 0.U) &&
+    !refReqPendingLive &&
+    !io.flush &&
+    (needInitialFill || needPrefetch)
   io.ref_mem_req.bits := refWordAddr
 
   when(io.ref_mem_req.fire) {
@@ -131,23 +162,27 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val ref_req_epoch_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
   private val ref_req_offset_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
   private val ref_req_count_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
+  private val ref_req_target_b_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
   when(io.flush) {
     for (i <- 0 until refReqPipeLen) {
       ref_req_live_pipe(i) := false.B
       ref_req_epoch_pipe(i) := false.B
       ref_req_offset_pipe(i) := 0.U
       ref_req_count_pipe(i) := 0.U
+      ref_req_target_b_pipe(i) := false.B
     }
   }.otherwise {
     ref_req_live_pipe(0) := io.ref_mem_req.fire
     ref_req_epoch_pipe(0) := Mux(io.ref_mem_req.fire, active_epoch, false.B)
     ref_req_offset_pipe(0) := Mux(io.ref_mem_req.fire, refWordOff, 0.U)
     ref_req_count_pipe(0) := Mux(io.ref_mem_req.fire, refChunkCount, 0.U)
+    ref_req_target_b_pipe(0) := Mux(io.ref_mem_req.fire, requestToBufB, false.B)
     for (i <- 1 until refReqPipeLen) {
       ref_req_live_pipe(i) := ref_req_live_pipe(i - 1)
       ref_req_epoch_pipe(i) := ref_req_epoch_pipe(i - 1)
       ref_req_offset_pipe(i) := ref_req_offset_pipe(i - 1)
       ref_req_count_pipe(i) := ref_req_count_pipe(i - 1)
+      ref_req_target_b_pipe(i) := ref_req_target_b_pipe(i - 1)
     }
   }
   refReqPendingLive := ref_req_live_pipe.asUInt.orR
@@ -175,22 +210,35 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   when(ref_resp_live) {
-    for (i <- 0 until refPackFactor) {
-      ref_buffer(i) := compactedIds(i)
+    when(ref_req_target_b_pipe.last) {
+      for (i <- 0 until refPackFactor) {
+        ref_buffer_b(i) := compactedIds(i)
+      }
+      ref_buf_idx_b := 0.U
+      ref_buf_count_b := ref_req_count_pipe.last
+    }.otherwise {
+      for (i <- 0 until refPackFactor) {
+        ref_buffer_a(i) := compactedIds(i)
+      }
+      ref_buf_idx_a := 0.U
+      ref_buf_count_a := ref_req_count_pipe.last
     }
-    ref_buf_idx := 0.U
-    ref_buf_count := ref_req_count_pipe.last
   }
 
-  private val geomTriId = ref_buffer(ref_buf_idx)
-  io.mem_req.valid := batch_in_progress && (ref_buf_count =/= 0.U) && !io.flush
+  private val geomTriId = Mux(activeBufSel, ref_buffer_b(activeBufIdx), ref_buffer_a(activeBufIdx))
+  io.mem_req.valid := batch_in_progress && sourceHasData && !io.flush
   io.mem_req.bits := geomTriId
   io.mem_req_mask.valid := io.mem_req.valid
   io.mem_req_mask.bits := 1.U
 
   when(io.mem_req.fire && !io.flush) {
-    ref_buf_idx := ref_buf_idx + 1.U
-    ref_buf_count := ref_buf_count - 1.U
+    when(activeBufSel) {
+      ref_buf_idx_b := ref_buf_idx_b + 1.U
+      ref_buf_count_b := ref_buf_count_b - 1.U
+    }.otherwise {
+      ref_buf_idx_a := ref_buf_idx_a + 1.U
+      ref_buf_count_a := ref_buf_count_a - 1.U
+    }
   }
 
   io.mem_resp.ready := true.B
@@ -242,7 +290,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val inflight_next = inflight_cnt + incoming_count - outgoing_count
   private val batch_source_drained =
     (batch_refs_remaining === 0.U) &&
-      (ref_buf_count === 0.U) &&
+      (ref_buf_count_a === 0.U) &&
+      (ref_buf_count_b === 0.U) &&
       !refReqPendingLive &&
       !mem_req_live_pipe.asUInt.orR
   private val batch_done_now =

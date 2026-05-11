@@ -21,8 +21,6 @@ class RayDirCalc(
     val dir_z     = Output(UInt(cfg.totalWidth.W))
   })
 
-  val rm = RNE
-
   // =========================================================================
   // FP32 constants computed at elaboration time
   // =========================================================================
@@ -55,16 +53,10 @@ class RayDirCalc(
   }
 
   val intToFP_x = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_x.io.int  := Cat(0.U(48.W), pixelXReg)
-  intToFP_x.io.sign := false.B
-  intToFP_x.io.long := false.B
-  intToFP_x.io.rm   := rm
+  intToFP_x.io.int  := pixelXReg
 
   val intToFP_y = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_y.io.int  := Cat(0.U(48.W), pixelYReg)
-  intToFP_y.io.sign := false.B
-  intToFP_y.io.long := false.B
-  intToFP_y.io.rm   := rm
+  intToFP_y.io.int  := pixelYReg
 
   val xFp = intToFP_x.io.result
   val yFp = intToFP_y.io.result
@@ -75,12 +67,10 @@ class RayDirCalc(
   val mul2x = Module(new FMUL(cfg))
   mul2x.io.a := xFp
   mul2x.io.b := twoFp
-  mul2x.io.rm := rm
 
   val mul2y = Module(new FMUL(cfg))
   mul2y.io.a := yFp
   mul2y.io.b := twoFp
-  mul2y.io.rm := rm
 
   // =========================================================================
   // S2: FADD — 2x - w, 2y - h  (latency +7, cumulative 15)
@@ -88,12 +78,10 @@ class RayDirCalc(
   val subW = Module(new FADD(cfg))
   subW.io.a := mul2x.io.result
   subW.io.b := negWFp
-  subW.io.rm := rm
 
   val subH = Module(new FADD(cfg))
   subH.io.a := mul2y.io.result
   subH.io.b := negHFp
-  subH.io.rm := rm
 
   // =========================================================================
   // S3: FMUL — u = (2x-w)/h, v = -(2y-h)/h  (latency +8, cumulative 23)
@@ -102,12 +90,10 @@ class RayDirCalc(
   val mulU = Module(new FMUL(cfg))
   mulU.io.a := subW.io.res
   mulU.io.b := invHFp
-  mulU.io.rm := rm
 
   val mulV = Module(new FMUL(cfg))
   mulV.io.a := subH.io.res
   mulV.io.b := negInvHFp
-  mulV.io.rm := rm
 
   val u = mulU.io.result  // available at cumulative 23
   val v = mulV.io.result
@@ -119,12 +105,10 @@ class RayDirCalc(
   val mulU2 = Module(new FMUL(cfg))
   mulU2.io.a := u
   mulU2.io.b := u
-  mulU2.io.rm := rm
 
   val mulV2 = Module(new FMUL(cfg))
   mulV2.io.a := v
   mulV2.io.b := v
-  mulV2.io.rm := rm
 
   // =========================================================================
   // S5: FADD — u² + v²  (latency +7, cumulative 38)
@@ -132,7 +116,6 @@ class RayDirCalc(
   val addUV2 = Module(new FADD(cfg))
   addUV2.io.a := mulU2.io.result
   addUV2.io.b := mulV2.io.result
-  addUV2.io.rm := rm
 
   // =========================================================================
   // S6: FADD — sumSq = (u²+v²) + z²  (latency +7, cumulative 45)
@@ -141,7 +124,6 @@ class RayDirCalc(
   val addSum = Module(new FADD(cfg))
   addSum.io.a := addUV2.io.res
   addSum.io.b := z2Fp
-  addSum.io.rm := rm
 
   val sumSq = addSum.io.res  // available at cumulative 45
 
@@ -161,17 +143,14 @@ class RayDirCalc(
   val mulDirX = Module(new FMUL(cfg))
   mulDirX.io.a := uDelayed
   mulDirX.io.b := invLen
-  mulDirX.io.rm := rm
 
   val mulDirY = Module(new FMUL(cfg))
   mulDirY.io.a := vDelayed
   mulDirY.io.b := invLen
-  mulDirY.io.rm := rm
 
   val mulDirZ = Module(new FMUL(cfg))
   mulDirZ.io.a := zDelayed
   mulDirZ.io.b := invLen
-  mulDirZ.io.rm := rm
 
   // =========================================================================
   // Output

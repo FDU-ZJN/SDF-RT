@@ -39,13 +39,10 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val spanZSub = Module(new FADD(cfg))
   spanXSub.io.a := io.setup_grid_max.x
   spanXSub.io.b := neg(io.setup_grid_min.x)
-  spanXSub.io.rm := RNE
   spanYSub.io.a := io.setup_grid_max.y
   spanYSub.io.b := neg(io.setup_grid_min.y)
-  spanYSub.io.rm := RNE
   spanZSub.io.a := io.setup_grid_max.z
   spanZSub.io.b := neg(io.setup_grid_min.z)
-  spanZSub.io.rm := RNE
 
   // inv_span(axis) = 1 / span(axis)
   val divX = Module(new FRQ(cfg))
@@ -79,9 +76,6 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   mulResX.io.b := divX.io.result
   mulResY.io.b := divY.io.result
   mulResZ.io.b := divZ.io.result
-  mulResX.io.rm := RNE
-  mulResY.io.rm := RNE
-  mulResZ.io.rm := RNE
 
   // inv_sub_voxel = (GlobalRes*SubRes) * inv_span
   val mulSubResX = Module(new FMUL(cfg))
@@ -93,9 +87,6 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   mulSubResX.io.b := divX.io.result
   mulSubResY.io.b := divY.io.result
   mulSubResZ.io.b := divZ.io.result
-  mulSubResX.io.rm := RNE
-  mulSubResY.io.rm := RNE
-  mulSubResZ.io.rm := RNE
 
   val mulDone = PipeUtils.pipeData(divX.io.out_valid && divY.io.out_valid && divZ.io.out_valid, cfg.fmulLatency)
 

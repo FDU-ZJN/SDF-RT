@@ -18,7 +18,6 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
 
   val aabb = Module(new RayAABBIntersection(cfg))
 
-  val rm = RNE
   val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = cfg.faddLatency
   val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)
@@ -49,7 +48,6 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   val tEntry = Module(new FADD(cfg))
   tEntry.io.a := aabb.io.tNear
   tEntry.io.b := entryAdvanceBits
-  tEntry.io.rm := rm
 
   val outAlignLatency = entryLatency
   val outValid = PipeUtils.pipeData(aabb.io.out_valid, outAlignLatency)

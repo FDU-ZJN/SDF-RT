@@ -383,9 +383,7 @@ class FCMA_ADD(val expWidth: Int, val precision: Int, val outPc: Int)
 class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle() {
     val a, b = Input(UInt(cfg.totalWidth.W))
-    val rm = Input(UInt(3.W))
     val res = Output(UInt(cfg.totalWidth.W))
-    val fflags = Output(UInt(5.W))
   })
 
   if (cfg.useFloatIP) {
@@ -396,16 +394,14 @@ class FADD(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_a_tvalid := true.B
     bb.io.s_axis_b_tvalid := true.B
     io.res := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U(cfg.totalWidth.W))
-    io.fflags := 0.U // BlackBox 不提供 fflags 输出，这里暂时返回 0
   } else {
     val module = Module(new FCMA_ADD(cfg.expWidth, cfg.precision, cfg.precision))
     module.io.a := io.a
     module.io.b := io.b
-    module.io.rm := io.rm
+    module.io.rm := RNE
     module.io.b_inter_valid := false.B
     module.io.b_inter_flags := DontCare
     io.res := PipeUtils.pipeData(module.io.result, cfg.faddLatency)
-    io.fflags := PipeUtils.pipeData(module.io.fflags, cfg.faddLatency)
   }
 }
 

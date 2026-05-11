@@ -49,17 +49,17 @@ object GlobalConfig {
   // ============================================================
   // Queue depths (centralized)
   // ============================================================
-  val commitQueueDepth = 64
+  val commitQueueDepth = 128
   val slotBits = log2Ceil(commitQueueDepth)
 
-  val triBatchQueueDepth = 64
   val ddaRetryQueueDepth = 16
+  val triBatchQueueDepth = 16
   val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
 
-  val sdfRetryQueueDepth = 64
+  val sdfRetryQueueDepth = 128
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 32
-  val simSdfHitQueueDepth = 64
+  val simSdfHitQueueDepth = 128
 
   // Unused / reserved for future
   val bvhReqQueueDepth = 16
@@ -73,16 +73,16 @@ object GlobalConfig {
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 15
   val fmulLatency = 5
-  val faddLatency = 5
+  val faddLatency = 7
   val fcmpLatency = 1
   val fptointLatency = 1
-  val fdivLatency = 10
+  val fdivLatency = 11
 
   val Trinum = 38049
   val TriOriginalNum = 8554
   // SDF PE grid
   val GlobalSdfRes = 16
-  val LocalSdfRes = 8
+  val LocalSdfRes = 4
   val LocalCell = 2048
   // DDA grid
   val GlobalDdaRes = 32
@@ -133,9 +133,9 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 64
-  val sdfThreshold1 = 0.005f
-  val sdfThreshold2 = 0.01f
-  val sdfThreshold3 = 0.02f
+  val sdfThreshold1 = 0.01f
+  val sdfThreshold2 = 0.02f
+  val sdfThreshold3 = 0.04f
   val sdfStepScale = 0.6f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f

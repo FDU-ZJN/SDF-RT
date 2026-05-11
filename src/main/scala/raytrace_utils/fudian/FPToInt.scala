@@ -14,10 +14,8 @@ class FPToInt  (
   extends Module {
   val io = IO(new Bundle {
     val a      = Input(UInt(32.W))
-    val rm     = Input(UInt(3.W))
     val op = Input(Bool())
-    val result = Output(UInt(64.W))
-    val fflags = Output(UInt(5.W))
+    val result = Output(UInt(32.W))
   })
 
   val sign  = io.a(31)
@@ -28,8 +26,7 @@ class FPToInt  (
   val raw    = Mux(shift >= 23.U, frac << (shift - 23.U), frac >> (23.U - shift))
   val result = Mux(sign, (-raw.asSInt).asUInt, raw)
 
-  io.result := PipeUtils.pipeData(result(31, 0), 1)
-  io.fflags  := PipeUtils.pipeData(0.U(5.W), 1)
+  io.result := PipeUtils.pipeData(result(31, 0), latency)
 }
 
 
@@ -44,4 +41,3 @@ class Fptoint extends BlackBox with HasBlackBoxResource {
     val m_axis_result_tvalid = Output(Bool())
   })
 }
-

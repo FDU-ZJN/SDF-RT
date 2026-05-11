@@ -88,43 +88,34 @@ class DdaStepPE(
   val subGz = Module(new FADD(cfg))
   subGx.io.a := ctxReg.ray.origin.x
   subGx.io.b := neg(io.grid_min.x)
-  subGx.io.rm := RNE
   subGy.io.a := ctxReg.ray.origin.y
   subGy.io.b := neg(io.grid_min.y)
-  subGy.io.rm := RNE
   subGz.io.a := ctxReg.ray.origin.z
   subGz.io.b := neg(io.grid_min.z)
-  subGz.io.rm := RNE
 
   val mulIdxX = Module(new FMUL(cfg))
   val mulIdxY = Module(new FMUL(cfg))
   val mulIdxZ = Module(new FMUL(cfg))
   mulIdxX.io.a := subGx.io.res
   mulIdxX.io.b := io.inv_sub_voxel.x
-  mulIdxX.io.rm := RNE
   mulIdxY.io.a := subGy.io.res
   mulIdxY.io.b := io.inv_sub_voxel.y
-  mulIdxY.io.rm := RNE
   mulIdxZ.io.a := subGz.io.res
   mulIdxZ.io.b := io.inv_sub_voxel.z
-  mulIdxZ.io.rm := RNE
 
   val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   val fpToIntY = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   val fpToIntZ = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   fpToIntX.io.a := mulIdxX.io.result
-  fpToIntX.io.rm := RTZ
   fpToIntX.io.op := "b11".U
   fpToIntY.io.a := mulIdxY.io.result
-  fpToIntY.io.rm := RTZ
   fpToIntY.io.op := "b11".U
   fpToIntZ.io.a := mulIdxZ.io.result
-  fpToIntZ.io.rm := RTZ
   fpToIntZ.io.op := "b11".U
 
-  val mapXNeg = fpToIntX.io.result(63)
-  val mapYNeg = fpToIntY.io.result(63)
-  val mapZNeg = fpToIntZ.io.result(63)
+  val mapXNeg = fpToIntX.io.result(31)
+  val mapYNeg = fpToIntY.io.result(31)
+  val mapZNeg = fpToIntZ.io.result(31)
   val mapXIdx = fpToIntX.io.result(addrWidth - 1, 0).asUInt
   val mapYIdx = fpToIntY.io.result(addrWidth - 1, 0).asUInt
   val mapZIdx = fpToIntZ.io.result(addrWidth - 1, 0).asUInt
@@ -133,43 +124,28 @@ class DdaStepPE(
   val idxToFpY = Module(new IntToFP(cfg.expWidth, cfg.precision))
   val idxToFpZ = Module(new IntToFP(cfg.expWidth, cfg.precision))
   idxToFpX.io.int := mapXIdx
-  idxToFpX.io.sign := false.B
-  idxToFpX.io.long := false.B
-  idxToFpX.io.rm := RNE
   idxToFpY.io.int := mapYIdx
-  idxToFpY.io.sign := false.B
-  idxToFpY.io.long := false.B
-  idxToFpY.io.rm := RNE
   idxToFpZ.io.int := mapZIdx
-  idxToFpZ.io.sign := false.B
-  idxToFpZ.io.long := false.B
-  idxToFpZ.io.rm := RNE
 
   val fracSubX = Module(new FADD(cfg))
   val fracSubY = Module(new FADD(cfg))
   val fracSubZ = Module(new FADD(cfg))
   fracSubX.io.a := mulIdxX.io.result
   fracSubX.io.b := neg(idxToFpX.io.result)
-  fracSubX.io.rm := RNE
   fracSubY.io.a := mulIdxY.io.result
   fracSubY.io.b := neg(idxToFpY.io.result)
-  fracSubY.io.rm := RNE
   fracSubZ.io.a := mulIdxZ.io.result
   fracSubZ.io.b := neg(idxToFpZ.io.result)
-  fracSubZ.io.rm := RNE
 
   val oneMinusFracX = Module(new FADD(cfg))
   val oneMinusFracY = Module(new FADD(cfg))
   val oneMinusFracZ = Module(new FADD(cfg))
   oneMinusFracX.io.a := fpOne
   oneMinusFracX.io.b := neg(fracSubX.io.res)
-  oneMinusFracX.io.rm := RNE
   oneMinusFracY.io.a := fpOne
   oneMinusFracY.io.b := neg(fracSubY.io.res)
-  oneMinusFracY.io.rm := RNE
   oneMinusFracZ.io.a := fpOne
   oneMinusFracZ.io.b := neg(fracSubZ.io.res)
-  oneMinusFracZ.io.rm := RNE
 
   val fracXAligned = pipeUInt(fracSubX.io.res, cfg.faddLatency)
   val fracYAligned = pipeUInt(fracSubY.io.res, cfg.faddLatency)
@@ -183,13 +159,10 @@ class DdaStepPE(
   val dsdtMulZ = Module(new FMUL(cfg))
   dsdtMulX.io.a := ctxReg.ray.dir.x
   dsdtMulX.io.b := io.inv_sub_voxel.x
-  dsdtMulX.io.rm := RNE
   dsdtMulY.io.a := ctxReg.ray.dir.y
   dsdtMulY.io.b := io.inv_sub_voxel.y
-  dsdtMulY.io.rm := RNE
   dsdtMulZ.io.a := ctxReg.ray.dir.z
   dsdtMulZ.io.b := io.inv_sub_voxel.z
-  dsdtMulZ.io.rm := RNE
 
   val absDsdtX = fpAbs(dsdtMulX.io.result)
   val absDsdtY = fpAbs(dsdtMulY.io.result)
@@ -237,13 +210,10 @@ class DdaStepPE(
   val tMaxMulZ = Module(new FMUL(cfg))
   tMaxMulX.io.a := distToMulX
   tMaxMulX.io.b := deltaToMulX
-  tMaxMulX.io.rm := RNE
   tMaxMulY.io.a := distToMulY
   tMaxMulY.io.b := deltaToMulY
-  tMaxMulY.io.rm := RNE
   tMaxMulZ.io.a := distToMulZ
   tMaxMulZ.io.b := deltaToMulZ
-  tMaxMulZ.io.rm := RNE
 
   val tDeltaCapX = alignToTarget(deltaDivX.io.result, ddaDeltaLatency, ddaInitLatency)
   val tDeltaCapY = alignToTarget(deltaDivY.io.result, ddaDeltaLatency, ddaInitLatency)
@@ -274,13 +244,10 @@ class DdaStepPE(
   val addTMaxZ = Module(new FADD(cfg))
   addTMaxX.io.a := ctxReg.tMaxX
   addTMaxX.io.b := ctxReg.tDeltaX
-  addTMaxX.io.rm := RNE
   addTMaxY.io.a := ctxReg.tMaxY
   addTMaxY.io.b := ctxReg.tDeltaY
-  addTMaxY.io.rm := RNE
   addTMaxZ.io.a := ctxReg.tMaxZ
   addTMaxZ.io.b := ctxReg.tDeltaZ
-  addTMaxZ.io.rm := RNE
 
   io.in.ready := state === sIdle
   io.out.valid := state === sOut

@@ -90,13 +90,10 @@ class DdaStepPipelinePE(
   val addTMaxZ = Module(new FADD(cfg))
   addTMaxX.io.a := ctx.tMaxX
   addTMaxX.io.b := ctx.tDeltaX
-  addTMaxX.io.rm := RNE
   addTMaxY.io.a := ctx.tMaxY
   addTMaxY.io.b := ctx.tDeltaY
-  addTMaxY.io.rm := RNE
   addTMaxZ.io.a := ctx.tMaxZ
   addTMaxZ.io.b := ctx.tDeltaZ
-  addTMaxZ.io.rm := RNE
 
   val outValid = pipeBool(inFire, totalStepLatency)
   val terminalAtOut = pipeBool(terminalNow, totalStepLatency)

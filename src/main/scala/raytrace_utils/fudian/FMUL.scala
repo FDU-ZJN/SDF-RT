@@ -21,9 +21,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val precision=cfg.precision
   val io = IO(new Bundle() {
     val a, b = Input(UInt((expWidth + precision).W))
-    val rm = Input(UInt(3.W))
     val result = Output(UInt((expWidth + precision).W))
-    val fflags = Output(UInt(5.W))
     val to_fadd = Output(new FMULToFADD(expWidth, precision))
   })
 
@@ -36,7 +34,6 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_b_tvalid := true.B
 
     io.result := Mux(bb.io.m_axis_result_tvalid, bb.io.m_axis_result_tdata, 0.U((expWidth + precision).W))
-    io.fflags := 0.U
     io.to_fadd := 0.U.asTypeOf(new FMULToFADD(expWidth, precision))
   } else {
 
@@ -90,7 +87,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 
   val tininess_rounder = RoundingUnit(
     sig_shifted.tail(2),
-    io.rm,
+    RNE,
     prod_sign,
     precision - 1
   )
@@ -100,7 +97,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 
   val rounder = RoundingUnit(
     sig_shifted.tail(1),
-    io.rm,
+    RNE,
     prod_sign,
     precision - 1
   )
@@ -116,7 +113,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val common_ix = rounder.io.inexact | common_of
   val common_uf = tininess & common_ix
 
-  val rmin = RoundingUnit.is_rmin(io.rm, prod_sign)
+  val rmin = RoundingUnit.is_rmin(RNE, prod_sign)
 
   val of_exp = Mux(rmin,
     ((BigInt(1) << expWidth) - 2).U(expWidth.W),
@@ -134,8 +131,6 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   )
   val common_result =
     Cat(prod_sign, common_exp, common_sig)
-
-  val common_fflags = Cat(false.B, false.B, common_of, common_uf, common_ix)
 
   /*
       Special cases
@@ -161,11 +156,7 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
       Cat(prod_sign, 0.U((expWidth + precision - 1).W)) // zero
     )
   )
-  val special_fflags = Cat(special_iv, false.B, false.B, false.B, false.B)
-
   val final_result_comb = Mux(special_case_happen, special_result, common_result)
-  val final_fflags_comb = Mux(special_case_happen, special_fflags, common_fflags)
-
   // 准备 to_fadd 的组合逻辑输出
   val to_fadd_comb = Wire(new FMULToFADD(expWidth, precision))
   to_fadd_comb.fp_prod.sign := prod_sign
@@ -175,9 +166,8 @@ class FMUL(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   to_fadd_comb.inter_flags.isInf    := hasInf && !nan_result
   to_fadd_comb.inter_flags.isNaN    := nan_result
   to_fadd_comb.inter_flags.overflow := exp_pre_round > Fill(expWidth, 1.U(1.W))
-    io.result  := PipeUtils.pipeData(final_result_comb, cfg.fmulLatency)
-    io.fflags  := PipeUtils.pipeData(final_fflags_comb, cfg.fmulLatency)
-    io.to_fadd := PipeUtils.pipeData(to_fadd_comb, cfg.fmulLatency)
+  io.result  := PipeUtils.pipeData(final_result_comb, cfg.fmulLatency)
+  io.to_fadd := PipeUtils.pipeData(to_fadd_comb, cfg.fmulLatency)
   }
 }
 

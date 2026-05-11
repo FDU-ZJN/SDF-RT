@@ -12,9 +12,7 @@ abstract class FPConverter(
     extends Module {
   val io = IO(new Bundle() {
     val in = Input(UInt((inExpWidth + inPrecision).W))
-    val rm = Input(UInt(3.W))
     val result = Output(UInt((outExpWidth + outPrecision).W))
-    val fflags = Output(UInt(5.W))
   })
 }
 
@@ -67,7 +65,6 @@ class FPDownConverter(
 
   val fp_in = FloatPoint.fromUInt(io.in, inExpWidth, inPrecision)
   val decode = fp_in.decode
-  val raw_in = RawFloat.fromFP(fp_in, Some(decode.expNotZero))
   val down_exp = fp_in.exp.zext - exp_delta.S
 
   /*
@@ -82,7 +79,7 @@ class FPDownConverter(
   normal_rounder.io.roundIn := normal_roundBit
   normal_rounder.io.stickyIn := normal_stickyBit
   normal_rounder.io.signIn := fp_in.sign
-  normal_rounder.io.rm := io.rm
+  normal_rounder.io.rm := RNE
 
   val normal_sig_rounded = normal_rounder.io.out
   val normal_exp_rounded = Mux(normal_rounder.io.cout, down_exp + 1.S, down_exp)
@@ -116,15 +113,14 @@ class FPDownConverter(
   subnormal_rounder.io.roundIn := subnormal_sig(0)
   subnormal_rounder.io.stickyIn := subnormal_sitckyBit
   subnormal_rounder.io.signIn := fp_in.sign
-  subnormal_rounder.io.rm := io.rm
+  subnormal_rounder.io.rm := RNE
   val subnormal_sig_rounded = subnormal_rounder.io.out
   val subnormal_exp_rounded = Mux(subnormal_rounder.io.cout, 1.U, 0.U)
   val subnormal_ix = subnormal_rounder.io.inexact
 
   val may_be_subnormal = down_exp < 1.S
 
-  val rmin =
-    io.rm === RTZ || (io.rm === RDN && !fp_in.sign) || (io.rm === RUP && fp_in.sign)
+  val rmin = false.B
 
   val normal_of_exp = Mux(
     rmin,
@@ -166,15 +162,6 @@ class FPDownConverter(
 
   val special_case = decode.expIsOnes // NaN or Inf
 
-  val iv = decode.isSNaN
-  val dz = false.B
-  val of = !special_case && normal_of
-  val uf = !special_case && may_be_subnormal && exp_uf && subnormal_ix
-  val ix = !special_case && (
-    (!may_be_subnormal && normal_ix) ||
-      (may_be_subnormal && subnormal_ix)
-  )
-
   val result = Cat(
     !decode.isNaN && fp_in.sign,
     Mux1H(
@@ -191,7 +178,6 @@ class FPDownConverter(
   )
 
   io.result := result
-  io.fflags := Cat(iv, dz, of, uf, ix)
 
 }
 
@@ -248,8 +234,5 @@ class FPUpConverter(
     )
   )
 
-  val fflags = Cat(decode_in.isSNaN, 0.U(4.W))
-
   io.result := result
-  io.fflags := fflags
 }

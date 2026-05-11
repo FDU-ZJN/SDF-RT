@@ -27,7 +27,6 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val dotUnit = Module(new DotProductUnit(cfg))
   dotUnit.io.a  := io.in_normal
   dotUnit.io.b  := "h3F3504F3".U.asTypeOf(new Vec3(cfg))
-  dotUnit.io.rm := 0.U
 
   // ── Stage 2: clamp dot 到 [0, +inf) ─────────────────────────────────────
   val diff = Mux(SimpleFPCompare.ltZero(dotUnit.io.res, cfg.totalWidth), val_0_0, dotUnit.io.res)
@@ -36,14 +35,12 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val fadd = Module(new FADD(cfg))
   fadd.io.a  := diff
   fadd.io.b  := val_0_15
-  fadd.io.rm := 0.U
 
   // ── Stage 4: × color coefficients ───────────────────────────────────────
   val muls = Seq.fill(3)(Module(new FMUL(cfg)))
   for (i <- 0 until 3) {
     muls(i).io.a  := fadd.io.res
     muls(i).io.b  := color_coeffs(i)
-    muls(i).io.rm := 0.U
   }
 
   // ── Stage 5: clamp 每通道到 [0, 1] ──────────────────────────────────────

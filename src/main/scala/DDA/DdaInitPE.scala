@@ -46,13 +46,10 @@ class DdaInitPE(
   val posMulZ = Module(new FMUL(cfg))
   posMulX.io.a := io.in.bits.ray.dir.x
   posMulX.io.b := io.in.bits.ray.dist
-  posMulX.io.rm := RNE
   posMulY.io.a := io.in.bits.ray.dir.y
   posMulY.io.b := io.in.bits.ray.dist
-  posMulY.io.rm := RNE
   posMulZ.io.a := io.in.bits.ray.dir.z
   posMulZ.io.b := io.in.bits.ray.dist
-  posMulZ.io.rm := RNE
 
   val originXAtPos = pipeUInt(io.in.bits.ray.origin.x, cfg.fmulLatency)
   val originYAtPos = pipeUInt(io.in.bits.ray.origin.y, cfg.fmulLatency)
@@ -63,56 +60,44 @@ class DdaInitPE(
   val posAddZ = Module(new FADD(cfg))
   posAddX.io.a := originXAtPos
   posAddX.io.b := posMulX.io.result
-  posAddX.io.rm := RNE
   posAddY.io.a := originYAtPos
   posAddY.io.b := posMulY.io.result
-  posAddY.io.rm := RNE
   posAddZ.io.a := originZAtPos
   posAddZ.io.b := posMulZ.io.result
-  posAddZ.io.rm := RNE
 
   val subGx = Module(new FADD(cfg))
   val subGy = Module(new FADD(cfg))
   val subGz = Module(new FADD(cfg))
   subGx.io.a := posAddX.io.res
   subGx.io.b := neg(io.grid_min.x)
-  subGx.io.rm := RNE
   subGy.io.a := posAddY.io.res
   subGy.io.b := neg(io.grid_min.y)
-  subGy.io.rm := RNE
   subGz.io.a := posAddZ.io.res
   subGz.io.b := neg(io.grid_min.z)
-  subGz.io.rm := RNE
 
   val mulIdxX = Module(new FMUL(cfg))
   val mulIdxY = Module(new FMUL(cfg))
   val mulIdxZ = Module(new FMUL(cfg))
   mulIdxX.io.a := subGx.io.res
   mulIdxX.io.b := io.inv_sub_voxel.x
-  mulIdxX.io.rm := RNE
   mulIdxY.io.a := subGy.io.res
   mulIdxY.io.b := io.inv_sub_voxel.y
-  mulIdxY.io.rm := RNE
   mulIdxZ.io.a := subGz.io.res
   mulIdxZ.io.b := io.inv_sub_voxel.z
-  mulIdxZ.io.rm := RNE
 
   val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   val fpToIntY = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   val fpToIntZ = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
   fpToIntX.io.a := mulIdxX.io.result
-  fpToIntX.io.rm := RTZ
   fpToIntX.io.op := "b11".U
   fpToIntY.io.a := mulIdxY.io.result
-  fpToIntY.io.rm := RTZ
   fpToIntY.io.op := "b11".U
   fpToIntZ.io.a := mulIdxZ.io.result
-  fpToIntZ.io.rm := RTZ
   fpToIntZ.io.op := "b11".U
 
-  val mapXNeg = fpToIntX.io.result(63)
-  val mapYNeg = fpToIntY.io.result(63)
-  val mapZNeg = fpToIntZ.io.result(63)
+  val mapXNeg = fpToIntX.io.result(31)
+  val mapYNeg = fpToIntY.io.result(31)
+  val mapZNeg = fpToIntZ.io.result(31)
   val mapXIdx = fpToIntX.io.result(addrWidth - 1, 0).asUInt
   val mapYIdx = fpToIntY.io.result(addrWidth - 1, 0).asUInt
   val mapZIdx = fpToIntZ.io.result(addrWidth - 1, 0).asUInt
@@ -121,17 +106,8 @@ class DdaInitPE(
   val idxToFpY = Module(new IntToFP(cfg.expWidth, cfg.precision))
   val idxToFpZ = Module(new IntToFP(cfg.expWidth, cfg.precision))
   idxToFpX.io.int := mapXIdx
-  idxToFpX.io.sign := false.B
-  idxToFpX.io.long := false.B
-  idxToFpX.io.rm := RNE
   idxToFpY.io.int := mapYIdx
-  idxToFpY.io.sign := false.B
-  idxToFpY.io.long := false.B
-  idxToFpY.io.rm := RNE
   idxToFpZ.io.int := mapZIdx
-  idxToFpZ.io.sign := false.B
-  idxToFpZ.io.long := false.B
-  idxToFpZ.io.rm := RNE
 
   val fracSubX = Module(new FADD(cfg))
   val fracSubY = Module(new FADD(cfg))
@@ -141,26 +117,20 @@ class DdaInitPE(
   val mulIdxZAtInt = pipeUInt(mulIdxZ.io.result, cfg.fptointLatency)
   fracSubX.io.a := mulIdxXAtInt
   fracSubX.io.b := neg(idxToFpX.io.result)
-  fracSubX.io.rm := RNE
   fracSubY.io.a := mulIdxYAtInt
   fracSubY.io.b := neg(idxToFpY.io.result)
-  fracSubY.io.rm := RNE
   fracSubZ.io.a := mulIdxZAtInt
   fracSubZ.io.b := neg(idxToFpZ.io.result)
-  fracSubZ.io.rm := RNE
 
   val oneMinusFracX = Module(new FADD(cfg))
   val oneMinusFracY = Module(new FADD(cfg))
   val oneMinusFracZ = Module(new FADD(cfg))
   oneMinusFracX.io.a := fpOne
   oneMinusFracX.io.b := neg(fracSubX.io.res)
-  oneMinusFracX.io.rm := RNE
   oneMinusFracY.io.a := fpOne
   oneMinusFracY.io.b := neg(fracSubY.io.res)
-  oneMinusFracY.io.rm := RNE
   oneMinusFracZ.io.a := fpOne
   oneMinusFracZ.io.b := neg(fracSubZ.io.res)
-  oneMinusFracZ.io.rm := RNE
 
   val fracXAligned = pipeUInt(fracSubX.io.res, cfg.faddLatency)
   val fracYAligned = pipeUInt(fracSubY.io.res, cfg.faddLatency)
@@ -177,13 +147,10 @@ class DdaInitPE(
   val dsdtMulZ = Module(new FMUL(cfg))
   dsdtMulX.io.a := io.in.bits.ray.dir.x
   dsdtMulX.io.b := io.inv_sub_voxel.x
-  dsdtMulX.io.rm := RNE
   dsdtMulY.io.a := io.in.bits.ray.dir.y
   dsdtMulY.io.b := io.inv_sub_voxel.y
-  dsdtMulY.io.rm := RNE
   dsdtMulZ.io.a := io.in.bits.ray.dir.z
   dsdtMulZ.io.b := io.inv_sub_voxel.z
-  dsdtMulZ.io.rm := RNE
 
   val absDsdtX = fpAbs(dsdtMulX.io.result)
   val absDsdtY = fpAbs(dsdtMulY.io.result)
@@ -231,13 +198,10 @@ class DdaInitPE(
   val tMaxMulZ = Module(new FMUL(cfg))
   tMaxMulX.io.a := distToMulX
   tMaxMulX.io.b := deltaToMulX
-  tMaxMulX.io.rm := RNE
   tMaxMulY.io.a := distToMulY
   tMaxMulY.io.b := deltaToMulY
-  tMaxMulY.io.rm := RNE
   tMaxMulZ.io.a := distToMulZ
   tMaxMulZ.io.b := deltaToMulZ
-  tMaxMulZ.io.rm := RNE
 
   val tDeltaCapX = alignToTarget(deltaDivX.io.result, deltaLatency, totalInitLatency)
   val tDeltaCapY = alignToTarget(deltaDivY.io.result, deltaLatency, totalInitLatency)

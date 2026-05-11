@@ -22,9 +22,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     val out_hit = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
   })
 
-  val rmRne = RNE
-  val rmRtz = RTZ
-
   val hitThreshold1 = BigInt(c.threshold1Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold2 = BigInt(c.threshold2Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold3 = BigInt(c.threshold3Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
@@ -105,13 +102,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val posMulZ = Module(new FMUL(c.cfg))
   posMulX.io.a := io.in.bits.ray.dir.x
   posMulX.io.b := io.in.bits.ray.dist
-  posMulX.io.rm := rmRne
   posMulY.io.a := io.in.bits.ray.dir.y
   posMulY.io.b := io.in.bits.ray.dist
-  posMulY.io.rm := rmRne
   posMulZ.io.a := io.in.bits.ray.dir.z
   posMulZ.io.b := io.in.bits.ray.dist
-  posMulZ.io.rm := rmRne
 
   val originXAtPos = pipeUInt(io.in.bits.ray.origin.x, c.cfg.fmulLatency)
   val originYAtPos = pipeUInt(io.in.bits.ray.origin.y, c.cfg.fmulLatency)
@@ -122,13 +116,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val posAddZ = Module(new FADD(c.cfg))
   posAddX.io.a := originXAtPos
   posAddX.io.b := posMulX.io.result
-  posAddX.io.rm := rmRne
   posAddY.io.a := originYAtPos
   posAddY.io.b := posMulY.io.result
-  posAddY.io.rm := rmRne
   posAddZ.io.a := originZAtPos
   posAddZ.io.b := posMulZ.io.result
-  posAddZ.io.rm := rmRne
 
   val subGx = Module(new FADD(c.cfg))
   val subGy = Module(new FADD(c.cfg))
@@ -136,13 +127,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   subGx.io.a := posAddX.io.res
   subGx.io.b := neg(io.grid_min.x)
-  subGx.io.rm := rmRne
   subGy.io.a := posAddY.io.res
   subGy.io.b := neg(io.grid_min.y)
-  subGy.io.rm := rmRne
   subGz.io.a := posAddZ.io.res
   subGz.io.b := neg(io.grid_min.z)
-  subGz.io.rm := rmRne
 
   val mulIdxX = Module(new FMUL(c.cfg))
   val mulIdxY = Module(new FMUL(c.cfg))
@@ -150,31 +138,25 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   mulIdxX.io.a := subGx.io.res
   mulIdxX.io.b := io.inv_voxel.x
-  mulIdxX.io.rm := rmRne
   mulIdxY.io.a := subGy.io.res
   mulIdxY.io.b := io.inv_voxel.y
-  mulIdxY.io.rm := rmRne
   mulIdxZ.io.a := subGz.io.res
   mulIdxZ.io.b := io.inv_voxel.z
-  mulIdxZ.io.rm := rmRne
 
   val fpToIntX = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
   val fpToIntY = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
   val fpToIntZ = Module(new FPToInt(c.cfg.expWidth, c.cfg.precision, c.cfg.fptointLatency))
 
   fpToIntX.io.a := mulIdxX.io.result
-  fpToIntX.io.rm := rmRtz
   fpToIntX.io.op := "b11".U
   fpToIntY.io.a := mulIdxY.io.result
-  fpToIntY.io.rm := rmRtz
   fpToIntY.io.op := "b11".U
   fpToIntZ.io.a := mulIdxZ.io.result
-  fpToIntZ.io.rm := rmRtz
   fpToIntZ.io.op := "b11".U
 
-  val xNeg = fpToIntX.io.result(63)
-  val yNeg = fpToIntY.io.result(63)
-  val zNeg = fpToIntZ.io.result(63)
+  val xNeg = fpToIntX.io.result(31)
+  val yNeg = fpToIntY.io.result(31)
+  val zNeg = fpToIntZ.io.result(31)
 
   val xIdx = fpToIntX.io.result(c.addrWidth - 1, 0).asUInt
   val yIdx = fpToIntY.io.result(c.addrWidth - 1, 0).asUInt
@@ -308,12 +290,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val posDistAdd = Module(new FADD(c.cfg))
   posDistAdd.io.a := bRayDistCmp
   posDistAdd.io.b := bSampleCmp
-  posDistAdd.io.rm := rmRne
 
   val negDistAdd = Module(new FADD(c.cfg))
   negDistAdd.io.a := bRayDistCmp
   negDistAdd.io.b := negPrevSdfHalf
-  negDistAdd.io.rm := rmRne
 
   val nextPrevSdfRaw = Mux(sampleIsNeg, prevSdfHalf, bSampleCmp)
   val sampleIsNegAtOut = pipeBool(sampleIsNeg, advanceLatency)

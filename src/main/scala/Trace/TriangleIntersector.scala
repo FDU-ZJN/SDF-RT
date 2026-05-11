@@ -39,8 +39,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   // preCmpLatency=88, totalLatency=90
   // Key milestones: T0(in_valid) -> T44(det/u') -> T73(aligned div+dot)
   // -> T81(final mul) -> T88(uv add) -> T90(hit/out_valid)
-  val rm = 0.U
-
   // ---------------- Stage A (T0 -> T0+ADD) ----------------
   def vecSub(a: Vec3, b: Vec3): Vec3 = {
     val res = Wire(new Vec3(cfg))
@@ -51,7 +49,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     for (i <- 0 until 3) {
       subs(i).io.a := as(i)
       subs(i).io.b := Cat(!bs(i)(cfg.totalWidth-1), bs(i)(cfg.totalWidth-2, 0))
-      subs(i).io.rm := rm
     }
 
     res.x := subs(0).io.res
@@ -70,7 +67,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val cp_p = Module(new CrossProductUnit(cfg))
   cp_p.io.a := dir_d2
   cp_p.io.b := e2
-  cp_p.io.rm := rm
   val p = cp_p.io.res
 
   val e1_d7  = PipeUtils.pipeData(e1, latCP)
@@ -82,7 +78,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val dp_det = Module(new DotProductUnit(cfg))
   dp_det.io.a := e1_d7
   dp_det.io.b := p
-  dp_det.io.rm := rm
   val det = dp_det.io.res
 
   // 检测 det 是否为 0 (忽略符号位)
@@ -91,13 +86,11 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val dp_u_prime = Module(new DotProductUnit(cfg))
   dp_u_prime.io.a := s_d7
   dp_u_prime.io.b := p
-  dp_u_prime.io.rm := rm
   val u_prime = dp_u_prime.io.res
 
   val cp_q = Module(new CrossProductUnit(cfg))
   cp_q.io.a := s_d7
   cp_q.io.b := e1_d7
-  cp_q.io.rm := rm
   val q_d14 = PipeUtils.pipeData(cp_q.io.res, latDP - latCP)
 
   val dir_d14 = PipeUtils.pipeData(dir_d7, latDP)
@@ -123,13 +116,11 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val dp_v_prime = Module(new DotProductUnit(cfg))
   dp_v_prime.io.a := dir_d14
   dp_v_prime.io.b := q_d14
-  dp_v_prime.io.rm := rm
   val v_prime_aligned = PipeUtils.pipeData(dp_v_prime.io.res, stageDAlignLatency - latDP)
 
   val dp_t_prime = Module(new DotProductUnit(cfg))
   dp_t_prime.io.a := e2_d14
   dp_t_prime.io.b := q_d14
-  dp_t_prime.io.rm := rm
   val t_prime_aligned = PipeUtils.pipeData(dp_t_prime.io.res, stageDAlignLatency - latDP)
 
   // ---------------- Stage E ----------------
@@ -137,7 +128,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     val m = Module(new FMUL(cfg))
     m.io.a := a
     m.io.b := b
-    m.io.rm := rm
     m.io.result
   }
 
@@ -149,7 +139,6 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val uv_adder = Module(new FADD(cfg))
   uv_adder.io.a := u_raw
   uv_adder.io.b := v_raw
-  uv_adder.io.rm := rm
   val uv_sum = uv_adder.io.res
 
   val t_d26 = PipeUtils.pipeData(t_raw, latADD)

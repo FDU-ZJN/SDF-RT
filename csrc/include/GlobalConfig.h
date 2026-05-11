@@ -20,7 +20,7 @@ inline constexpr int kTriNumBanks = 4;
 inline constexpr int kTriRefPackFactor = 16;
 
 inline constexpr int kSDFGlobalRes = 16;
-inline constexpr int kSDFSubRes = 8;
+inline constexpr int kSDFSubRes = 4;
 
 inline constexpr int kDdaGlobalRes = 32;
 inline constexpr int kDdaSubRes = 1;

@@ -17,7 +17,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val out_valid = Output(Bool())
   })
 
-  val rm = 0.U(3.W)
   val fpOne = cfg.oneBigInt.U(cfg.totalWidth.W)
   val fpEps = java.lang.Float.floatToIntBits(1e-9f).U(cfg.totalWidth.W)
 
@@ -40,7 +39,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val addDirEps = Module(new FADD(cfg))
     addDirEps.io.a := dirs(i)
     addDirEps.io.b := fpEps
-    addDirEps.io.rm := rm
     dirPlusEps(i) := addDirEps.io.res
 
     val div = Module(new FRQ(cfg))
@@ -51,12 +49,10 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val subMin = Module(new FADD(cfg))
     subMin.io.a := mins(i)
     subMin.io.b := neg(origs(i))
-    subMin.io.rm := rm
 
     val subMax = Module(new FADD(cfg))
     subMax.io.a := maxs(i)
     subMax.io.b := neg(origs(i))
-    subMax.io.rm := rm
 
     val subMinAligned = PipeUtils.pipeData(subMin.io.res, cfg.fdivLatency)
     val subMaxAligned = PipeUtils.pipeData(subMax.io.res, cfg.fdivLatency)
@@ -64,13 +60,11 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val mul0 = Module(new FMUL(cfg))
     mul0.io.a := subMinAligned
     mul0.io.b := invDir(i)
-    mul0.io.rm := rm
     t0(i) := mul0.io.result
 
     val mul1 = Module(new FMUL(cfg))
     mul1.io.a := subMaxAligned
     mul1.io.b := invDir(i)
-    mul1.io.rm := rm
     t1(i) := mul1.io.result
 
     val cmpAxis = Module(new FCMP(cfg))
