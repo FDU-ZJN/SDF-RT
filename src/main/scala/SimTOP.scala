@@ -37,7 +37,7 @@ class SimTop extends Module {
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
   val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
-  val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
+  val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.ddaTraceSlotCount))
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
 
@@ -52,8 +52,8 @@ class SimTop extends Module {
   io.setup_finish := setupUnit.io.setup_finish
 
   initStage.io.setup_origin := setupUnit.io.origin
-  initStage.io.setup_grid_min := setupUnit.io.gridMin
-  initStage.io.setup_grid_max := setupUnit.io.gridMax
+  initStage.io.setup_grid_min_rel_origin := setupUnit.io.gridMinRelOrigin
+  initStage.io.setup_grid_max_rel_origin := setupUnit.io.gridMaxRelOrigin
 
   sdfStage.io.grid_min := setupUnit.io.gridMin
   sdfStage.io.inv_voxel := setupUnit.io.invVoxel
@@ -97,12 +97,27 @@ class SimTop extends Module {
   when(initToSdfQ.io.enq.valid) {
     assert(initToSdfQ.io.enq.ready, "SimTop initToSdfQ overflow")
   }
-  sdfStage.io.issue_in <> initToSdfQ.io.deq
+
+  val sdfIssueSel = RegInit(0.U(1.W))
+  val sdfLaneReady = VecInit(sdfStage.io.issue_in.map(_.ready))
+  val preferLane1 = sdfIssueSel === 1.U
+  val chooseLane1 = (preferLane1 && sdfLaneReady(1)) || (!sdfLaneReady(0) && sdfLaneReady(1))
+  val chooseLane0 = sdfLaneReady(0) && !chooseLane1
+  for (i <- 0 until 2) {
+    sdfStage.io.issue_in(i).valid := initToSdfQ.io.deq.valid && (if (i == 0) chooseLane0 else chooseLane1)
+    sdfStage.io.issue_in(i).bits := initToSdfQ.io.deq.bits
+  }
+  initToSdfQ.io.deq.ready := chooseLane0 || chooseLane1
+  when(initToSdfQ.io.deq.fire) {
+    sdfIssueSel := ~chooseLane1
+  }
 
   ddaStage.io.grid_min := setupUnit.io.gridMin
   ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
   ddaStage.io.slot_release := traceController.io.slot_release
-  traceController.io.cmd_write := ddaStage.io.cmd_write
+  traceController.io.cmd_write.valid := ddaStage.io.cmd_write.valid
+  traceController.io.cmd_write.bits := ddaStage.io.cmd_write.bits
+  ddaStage.io.cmd_write.ready := traceController.io.cmd_write.ready
   traceJobQueue.io.enq <> ddaStage.io.trace_job_out
   when(traceJobQueue.io.enq.valid) {
     assert(traceJobQueue.io.enq.ready, "SimTop traceJobQueue overflow")

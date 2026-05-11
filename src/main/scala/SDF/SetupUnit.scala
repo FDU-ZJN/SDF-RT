@@ -17,6 +17,8 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
     val tFar = Output(UInt(cfg.totalWidth.W))
     val gridMin = Output(new Vec3(cfg))
     val gridMax = Output(new Vec3(cfg))
+    val gridMinRelOrigin = Output(new Vec3(cfg))
+    val gridMaxRelOrigin = Output(new Vec3(cfg))
     val invVoxel = Output(new Vec3(cfg))
     val invSubVoxel = Output(new Vec3(cfg))
     val setup_finish = Output(Bool())
@@ -29,6 +31,8 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   val tFarReg = RegInit("h7F800000".U(cfg.totalWidth.W))
   val gridMinReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val gridMaxReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
+  val gridMinRelOriginReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
+  val gridMaxRelOriginReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val invVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val invSubVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
   val setupFinishReg = RegInit(false.B)
@@ -43,6 +47,27 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   spanYSub.io.b := neg(io.setup_grid_min.y)
   spanZSub.io.a := io.setup_grid_max.z
   spanZSub.io.b := neg(io.setup_grid_min.z)
+
+  // AABB init constants: grid_{min,max} - origin. These are setup constants
+  // and do not need to be recomputed per ray in InitStage.
+  val minRelXSub = Module(new FADD(cfg))
+  val minRelYSub = Module(new FADD(cfg))
+  val minRelZSub = Module(new FADD(cfg))
+  val maxRelXSub = Module(new FADD(cfg))
+  val maxRelYSub = Module(new FADD(cfg))
+  val maxRelZSub = Module(new FADD(cfg))
+  minRelXSub.io.a := io.setup_grid_min.x
+  minRelXSub.io.b := neg(io.setup_origin.x)
+  minRelYSub.io.a := io.setup_grid_min.y
+  minRelYSub.io.b := neg(io.setup_origin.y)
+  minRelZSub.io.a := io.setup_grid_min.z
+  minRelZSub.io.b := neg(io.setup_origin.z)
+  maxRelXSub.io.a := io.setup_grid_max.x
+  maxRelXSub.io.b := neg(io.setup_origin.x)
+  maxRelYSub.io.a := io.setup_grid_max.y
+  maxRelYSub.io.b := neg(io.setup_origin.y)
+  maxRelZSub.io.a := io.setup_grid_max.z
+  maxRelZSub.io.b := neg(io.setup_origin.z)
 
   // inv_span(axis) = 1 / span(axis)
   val divX = Module(new FRQ(cfg))
@@ -98,6 +123,12 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   }
 
   when(mulDone) {
+    gridMinRelOriginReg.x := minRelXSub.io.res
+    gridMinRelOriginReg.y := minRelYSub.io.res
+    gridMinRelOriginReg.z := minRelZSub.io.res
+    gridMaxRelOriginReg.x := maxRelXSub.io.res
+    gridMaxRelOriginReg.y := maxRelYSub.io.res
+    gridMaxRelOriginReg.z := maxRelZSub.io.res
     invVoxelReg.x := mulResX.io.result
     invVoxelReg.y := mulResY.io.result
     invVoxelReg.z := mulResZ.io.result
@@ -112,6 +143,8 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
   io.tFar := tFarReg
   io.gridMin := gridMinReg
   io.gridMax := gridMaxReg
+  io.gridMinRelOrigin := gridMinRelOriginReg
+  io.gridMaxRelOrigin := gridMaxRelOriginReg
   io.invVoxel := invVoxelReg
   io.invSubVoxel := invSubVoxelReg
   io.setup_finish := setupFinishReg

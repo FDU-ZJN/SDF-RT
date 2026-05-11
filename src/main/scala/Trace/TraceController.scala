@@ -9,13 +9,13 @@ class TraceController(
   maxCmds: Int = GlobalConfig.ddaMaxSteps
 ) extends Module {
   private val numWorkers = GlobalConfig.traceNumWorkers
-  private val slotCount = GlobalConfig.ddaRetryQueueDepth
+  private val slotCount = GlobalConfig.ddaTraceSlotCount
   private val traceSlotBits = GlobalConfig.ddaTraceSlotBits
   private val cmdIdxW = math.max(1, log2Ceil(maxCmds))
 
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
-    val cmd_write = Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds)))
+    val cmd_write = Flipped(Decoupled(new DdaTraceCmdWrite(c.addrWidth, maxCmds)))
     val slot_release = Valid(UInt(traceSlotBits.W))
     val result_out = Decoupled(new TraceResult(c.cfg, c.addrWidth))
   })
@@ -59,6 +59,7 @@ class TraceController(
   io.slot_release.valid := false.B
   io.slot_release.bits := 0.U
   val cmdWriteReady = WireDefault(false.B)
+  io.cmd_write.ready := cmdWriteReady
 
   for (i <- 0 until slotCount) {
     cmdQueues(i).io.enq.valid := io.cmd_write.valid && (io.cmd_write.bits.slotIdx === i.U)

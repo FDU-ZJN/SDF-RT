@@ -57,23 +57,6 @@ class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) ext
   val rgb8 = UInt(24.W)
 }
 
-class BvhNode(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val bounds = new AABB(cfg)
-  val isLeaf = Bool()
-  val leftValid = Bool()
-  val rightValid = Bool()
-  val left = UInt(addrWidth.W)
-  val right = UInt(addrWidth.W)
-  val triStart = UInt(addrWidth.W)
-  val triCount = UInt(16.W)
-}
-
-class BvhStartReq(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(GlobalConfig.slotBits)
-  val rootNode = UInt(cfg.addrWidth.W)
-}
-
 class RayIssue(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
@@ -138,6 +121,16 @@ class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
 }
 
 class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {
+  val triStart = UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)
+  val triCount = UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)
+}
+
+class DdaSubgridMetaReq(addrWidth: Int = 32) extends Bundle {
+  val globalIdx = UInt(addrWidth.W)
+  val subIdx = UInt(addrWidth.W)
+}
+
+class DdaSubgridMetaResp extends Bundle {
   val triStart = UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)
   val triCount = UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)
 }

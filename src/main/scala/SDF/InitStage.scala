@@ -8,28 +8,23 @@ import raytrace_utils.fudian._
 class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) extends Module {
   val io = IO(new Bundle {
     val setup_origin = Input(new Vec3(cfg))
-    val setup_grid_min = Input(new Vec3(cfg))
-    val setup_grid_max = Input(new Vec3(cfg))
+    val setup_grid_min_rel_origin = Input(new Vec3(cfg))
+    val setup_grid_max_rel_origin = Input(new Vec3(cfg))
 
     val in = Flipped(Decoupled(new SdfInitReq(cfg, addrWidth)))
     val to_sdf = Decoupled(new RayIssue(cfg, addrWidth))
     val to_bypass = Decoupled(new SdfBypassResp(addrWidth))
   })
 
-  val aabb = Module(new RayAABBIntersection(cfg))
+  val aabb = Module(new RayAABBRelIntersection(cfg))
 
   val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = cfg.faddLatency
   val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)
 
-  val rayWire = Wire(new Ray(cfg))
-  rayWire.origin := io.setup_origin
-  rayWire.dir := io.in.bits.rd
-  rayWire.dist := 0.U
-
-  aabb.io.ray := rayWire
-  aabb.io.aabb.min := io.setup_grid_min
-  aabb.io.aabb.max := io.setup_grid_max
+  aabb.io.dir := io.in.bits.rd
+  aabb.io.aabbMinRelOrigin := io.setup_grid_min_rel_origin
+  aabb.io.aabbMaxRelOrigin := io.setup_grid_max_rel_origin
 
   io.in.ready := true.B
   val inFire = io.in.fire
