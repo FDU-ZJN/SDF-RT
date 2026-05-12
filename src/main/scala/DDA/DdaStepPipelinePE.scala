@@ -18,8 +18,6 @@ class DdaStepPipelinePE(
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
-    val mem_req = Decoupled(new DdaSubgridMetaReq(addrWidth))
-    val mem_resp = Flipped(Valid(new DdaSubgridMetaResp))
     val out = Decoupled(new DdaStepResult(cfg, addrWidth))
   })
 
@@ -33,16 +31,20 @@ class DdaStepPipelinePE(
   private val memLatency = GlobalConfig.subgridMemDpiLatency
   private val stepCalcLatency = cfg.fcmpLatency + cfg.faddLatency
   private val totalStepLatency = math.max(memLatency, stepCalcLatency)
-  private val outQueueDepth = 16
 
   private def negStep(isNeg: Bool): SInt =
     Mux(isNeg, (-1).S((addrWidth + 1).W), 1.S((addrWidth + 1).W))
 
+  val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = memLatency))
+
+  io.in.ready := true.B
+  val inFire = io.in.fire
   val ctx = io.in.bits
+
   val inBounds = ctx.subX >= 0.S && ctx.subY >= 0.S && ctx.subZ >= 0.S &&
     ctx.subX < totalSubS && ctx.subY < totalSubS && ctx.subZ < totalSubS
   val terminalNow = !inBounds || ctx.iter >= maxTraversalSteps.U
-  val nonTerminalValid = io.in.valid && !terminalNow
+  val nonTerminalFire = inFire && !terminalNow
 
   val globalX = (ctx.subX.asUInt >> subShift).pad(addrWidth)(addrWidth - 1, 0)
   val globalY = (ctx.subY.asUInt >> subShift).pad(addrWidth)(addrWidth - 1, 0)
@@ -57,13 +59,11 @@ class DdaStepPipelinePE(
   val globalLinear = globalX + globalYScaled + globalZScaled
   val subLinear = subCellX + subYScaled + subZScaled
 
-  io.mem_req.valid := nonTerminalValid
-  io.mem_req.bits.globalIdx := globalLinear
-  io.mem_req.bits.subIdx := subLinear
-  io.in.ready := terminalNow || io.mem_req.ready
-
-  val inFire = io.in.fire
-  val nonTerminalFire = inFire && !terminalNow
+  subgridMem.io.clk := clock
+  subgridMem.io.reset := reset
+  subgridMem.io.globalIdx := globalLinear
+  subgridMem.io.subIdx := subLinear
+  subgridMem.io.en := nonTerminalFire
 
   val cmpXY = Module(new FCMP(cfg))
   val cmpXZ = Module(new FCMP(cfg))
@@ -95,11 +95,6 @@ class DdaStepPipelinePE(
   addTMaxZ.io.a := ctx.tMaxZ
   addTMaxZ.io.b := ctx.tDeltaZ
 
-  val expectedResp = pipeBool(nonTerminalFire, memLatency)
-  when(expectedResp) {
-    assert(io.mem_resp.valid, "DdaStepPipelinePE expects fixed-latency mem response after grant")
-  }
-
   val outValid = pipeBool(inFire, totalStepLatency)
   val terminalAtOut = pipeBool(terminalNow, totalStepLatency)
   val ctxAtOut = pipeData(ctx, totalStepLatency)
@@ -107,8 +102,13 @@ class DdaStepPipelinePE(
   val addXAtOut = pipeUInt(addTMaxX.io.res, totalStepLatency - cfg.faddLatency)
   val addYAtOut = pipeUInt(addTMaxY.io.res, totalStepLatency - cfg.faddLatency)
   val addZAtOut = pipeUInt(addTMaxZ.io.res, totalStepLatency - cfg.faddLatency)
-  val triStartAtOut = pipeUInt(io.mem_resp.bits.triStart, totalStepLatency - memLatency)
-  val triCountAtOut = pipeUInt(io.mem_resp.bits.triCount, totalStepLatency - memLatency)
+  val triStartAtOut = pipeUInt(subgridMem.io.triStart, totalStepLatency - memLatency)
+  val triCountAtOut = pipeUInt(subgridMem.io.triCount, totalStepLatency - memLatency)
+
+  val nonTerminalAtMem = pipeBool(nonTerminalFire, memLatency)
+  when(nonTerminalAtMem) {
+    assert(subgridMem.io.valid, "DdaStepPipelinePE expects fixed-latency subgridMem response")
+  }
 
   val stepNegXAtOut = ctxAtOut.ray.dir.x(cfg.totalWidth - 1)
   val stepNegYAtOut = ctxAtOut.ray.dir.y(cfg.totalWidth - 1)
@@ -128,16 +128,14 @@ class DdaStepPipelinePE(
   }
   nextCtx.iter := ctxAtOut.iter + 1.U
 
-  val outQ = Module(new Queue(new DdaStepResult(cfg, addrWidth), outQueueDepth))
-  outQ.io.enq.valid := outValid
-  outQ.io.enq.bits.ctx := Mux(terminalAtOut, ctxAtOut, nextCtx)
-  outQ.io.enq.bits.done := terminalAtOut
-  outQ.io.enq.bits.emitCmd := !terminalAtOut && triCountAtOut =/= 0.U
-  outQ.io.enq.bits.tri.base_addr := triStartAtOut
-  outQ.io.enq.bits.tri.count := triCountAtOut
-  io.out <> outQ.io.deq
+  io.out.valid := outValid
+  io.out.bits.ctx := Mux(terminalAtOut, ctxAtOut, nextCtx)
+  io.out.bits.done := terminalAtOut
+  io.out.bits.emitCmd := !terminalAtOut && triCountAtOut =/= 0.U
+  io.out.bits.tri.base_addr := triStartAtOut
+  io.out.bits.tri.count := triCountAtOut
 
-  when(outQ.io.enq.valid) {
-    assert(outQ.io.enq.ready, "DdaStepPipelinePE output queue overflow")
+  when(io.out.valid) {
+    assert(io.out.ready, "DdaStepPipelinePE expects io.out.ready to stay high in pipeline mode")
   }
 }

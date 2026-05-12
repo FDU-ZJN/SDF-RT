@@ -6,14 +6,12 @@ import raytrace_utils._
 
 class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   private val peCfg = SdfPeConfig(cfg = cfg)
-  private val numWorkers = GlobalConfig.sdfStepNumWorkers
-  require(numWorkers == 2, s"SdfStage dual-port SDF memory expects sdfStepNumWorkers=2, got $numWorkers")
 
   val io = IO(new Bundle {
     val grid_min = Input(new Vec3(cfg))
     val inv_voxel = Input(new Vec3(cfg))
 
-    val issue_in = Vec(numWorkers, Flipped(Decoupled(new RayIssue(cfg, addrWidth))))
+    val issue_in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
 
     val out_rgb = Output(new Vec3(cfg))
     val out_meta = Output(new RayMeta(addrWidth))
@@ -25,31 +23,27 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
-  val scheduler = Module(new SdfSchedulerUnit(cfg, addrWidth, peCfg.maxSteps, numWorkers))
-  val sdfPEs = Seq.fill(numWorkers)(Module(new SdfPE(peCfg)))
-  val sdfMem = Module(new SdfMem2R(addrWidth, cfg.totalWidth, latency = GlobalConfig.sdfMemDpiLatency))
+  val scheduler = Module(new SdfSchedulerUnit(cfg, addrWidth, peCfg.maxSteps))
+  val sdfPE = Module(new SdfPE(peCfg))
+  val sdfMem = Module(new SdfMemDPI(addrWidth, cfg.totalWidth, latency = GlobalConfig.sdfMemDpiLatency))
 
   scheduler.io.issue_in <> io.issue_in
 
-  for (i <- 0 until numWorkers) {
-    sdfPEs(i).io.in <> scheduler.io.pe_in(i)
-    scheduler.io.pe_out_miss(i) <> sdfPEs(i).io.out
-    scheduler.io.pe_out_hit(i) <> sdfPEs(i).io.out_hit
+  sdfPE.io.in <> scheduler.io.pe_in
+  scheduler.io.pe_out_miss <> sdfPE.io.out
+  scheduler.io.pe_out_hit <> sdfPE.io.out_hit
 
-    sdfPEs(i).io.grid_min := io.grid_min
-    sdfPEs(i).io.inv_voxel := io.inv_voxel
-  }
+  sdfPE.io.grid_min := io.grid_min
+  sdfPE.io.inv_voxel := io.inv_voxel
 
   sdfMem.io.clk := clock
   sdfMem.io.reset := reset
-  for (i <- 0 until numWorkers) {
-    sdfMem.io.globalIdx(i) := sdfPEs(i).io.sdf_mem_req.bits.globalIdx
-    sdfMem.io.localIdx(i) := sdfPEs(i).io.sdf_mem_req.bits.localIdx
-    sdfMem.io.en(i) := sdfPEs(i).io.sdf_mem_req.fire
-    sdfPEs(i).io.sdf_mem_req.ready := true.B
-    sdfPEs(i).io.sdf_mem_resp.valid := sdfMem.io.valid(i)
-    sdfPEs(i).io.sdf_mem_resp.bits := sdfMem.io.data(i)
-  }
+  sdfMem.io.globalIdx := sdfPE.io.sdf_mem_req.bits.globalIdx
+  sdfMem.io.localIdx := sdfPE.io.sdf_mem_req.bits.localIdx
+  sdfMem.io.en := sdfPE.io.sdf_mem_req.fire
+  sdfPE.io.sdf_mem_req.ready := true.B
+  sdfPE.io.sdf_mem_resp.valid := sdfMem.io.valid
+  sdfPE.io.sdf_mem_resp.bits := sdfMem.io.data
   
   // Connect write port
   sdfMem.io.wr <> io.sdf_mem_wr

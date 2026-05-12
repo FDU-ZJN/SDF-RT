@@ -8,7 +8,7 @@ class DdaTraceCmdBuffer(
   cfg: FloatConfig = FloatConfig.FP32,
   addrWidth: Int = 32,
   maxCmds: Int = 1024,
-  slotCount: Int = GlobalConfig.ddaTraceSlotCount
+  slotCount: Int = GlobalConfig.ddaRetryQueueDepth
 ) extends Module {
   private val cmdCountW = log2Ceil(maxCmds + 1)
 

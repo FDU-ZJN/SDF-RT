@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     const float gridMaxY = bounds[4];
     const float gridMaxZ = bounds[5];
 
-    const array<float, 3> setupOrigin = {0.0f, 0.4f, 2.8f};
+    const array<float, 3> setupOrigin = {0.0f, 0.4f, 1.5f};
     const array<float, 3> gridMin = {gridMinX, gridMinY, gridMinZ};
     const array<float, 3> gridMax = {gridMaxX, gridMaxY, gridMaxZ};
 

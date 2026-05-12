@@ -5,11 +5,10 @@ import chisel3.util._
 import raytrace_utils.fudian._
 import raytrace_utils.PipeUtils._
 
-class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
+class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
-    val dir = Input(new Vec3(cfg))
-    val aabbMinRelOrigin = Input(new Vec3(cfg))
-    val aabbMaxRelOrigin = Input(new Vec3(cfg))
+    val ray = Input(new Ray(cfg))
+    val aabb = Input(new AABB(cfg))
     val in_valid = Input(Bool())
 
     val hit = Output(Bool())
@@ -18,12 +17,18 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
     val out_valid = Output(Bool())
   })
 
+  val fpOne = cfg.oneBigInt.U(cfg.totalWidth.W)
   val fpEps = java.lang.Float.floatToIntBits(1e-9f).U(cfg.totalWidth.W)
 
-  val dirs = Seq(io.dir.x, io.dir.y, io.dir.z)
-  val minsRel = Seq(io.aabbMinRelOrigin.x, io.aabbMinRelOrigin.y, io.aabbMinRelOrigin.z)
-  val maxsRel = Seq(io.aabbMaxRelOrigin.x, io.aabbMaxRelOrigin.y, io.aabbMaxRelOrigin.z)
+  def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
+  // Parallel per-axis setup: dir' = dir + eps, then invDir = 1 / dir'.
+  val dirs = Seq(io.ray.dir.x, io.ray.dir.y, io.ray.dir.z)
+  val mins = Seq(io.aabb.min.x, io.aabb.min.y, io.aabb.min.z)
+  val maxs = Seq(io.aabb.max.x, io.aabb.max.y, io.aabb.max.z)
+  val origs = Seq(io.ray.origin.x, io.ray.origin.y, io.ray.origin.z)
+
+  val dirPlusEps = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val invDir = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val t0 = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val t1 = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
@@ -34,22 +39,31 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
     val addDirEps = Module(new FADD(cfg))
     addDirEps.io.a := dirs(i)
     addDirEps.io.b := fpEps
+    dirPlusEps(i) := addDirEps.io.res
 
     val div = Module(new FRQ(cfg))
-    div.io.in := addDirEps.io.res
+    div.io.in := dirPlusEps(i)
     div.io.in_valid := io.in_valid
     invDir(i) := div.io.result
 
-    val minRelAligned = PipeUtils.pipeData(minsRel(i), cfg.faddLatency + cfg.fdivLatency)
-    val maxRelAligned = PipeUtils.pipeData(maxsRel(i), cfg.faddLatency + cfg.fdivLatency)
+    val subMin = Module(new FADD(cfg))
+    subMin.io.a := mins(i)
+    subMin.io.b := neg(origs(i))
+
+    val subMax = Module(new FADD(cfg))
+    subMax.io.a := maxs(i)
+    subMax.io.b := neg(origs(i))
+
+    val subMinAligned = PipeUtils.pipeData(subMin.io.res, cfg.fdivLatency)
+    val subMaxAligned = PipeUtils.pipeData(subMax.io.res, cfg.fdivLatency)
 
     val mul0 = Module(new FMUL(cfg))
-    mul0.io.a := minRelAligned
+    mul0.io.a := subMinAligned
     mul0.io.b := invDir(i)
     t0(i) := mul0.io.result
 
     val mul1 = Module(new FMUL(cfg))
-    mul1.io.a := maxRelAligned
+    mul1.io.a := subMaxAligned
     mul1.io.b := invDir(i)
     t1(i) := mul1.io.result
 
@@ -65,9 +79,11 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
     axisFar(i) := Mux(axisLe, t1Cmp, t0Cmp)
   }
 
+  // Stage align: per-axis values are ready after 2 + 6 + 3 = 11 cycles.
   val nearS0 = VecInit(axisNear).map(v => RegNext(v, 0.U))
   val farS0 = VecInit(axisFar).map(v => RegNext(v, 0.U))
 
+  // Reduction level 1: tMin01=max(near0,near1), tMax01=min(far0,far1)
   val cmpNear01 = Module(new FCMP(cfg))
   cmpNear01.io.a := nearS0(0)
   cmpNear01.io.b := nearS0(1)
@@ -87,8 +103,9 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
   val tMax01 = RegNext(Mux(far01Le, far00Cmp, far01Cmp), 0.U)
 
   val near2S1 = PipeUtils.pipeData(RegNext(nearS0(2), 0.U), cfg.fcmpLatency)
-  val far2S1 = PipeUtils.pipeData(RegNext(farS0(2), 0.U), cfg.fcmpLatency)
+  val far2S1  = PipeUtils.pipeData(RegNext(farS0(2),  0.U), cfg.fcmpLatency)
 
+  // Reduction level 2: tMin=max(tMin01,near2), tMax=min(tMax01,far2)
   val cmpNear012 = Module(new FCMP(cfg))
   cmpNear012.io.a := tMin01
   cmpNear012.io.b := near2S1
@@ -107,6 +124,7 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
   val far2S1Cmp = pipeUInt(far2S1, cfg.fcmpLatency)
   val tMax = RegNext(Mux(far012Le, tMax01Cmp, far2S1Cmp), 0.U)
 
+  // Hit: tMax >= tMin && tMax >= 0
   val cmpRange = Module(new FCMP(cfg))
   cmpRange.io.a := tMin
   cmpRange.io.b := tMax
@@ -116,6 +134,8 @@ class RayAABBRelIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module
   val tMinFinal = pipeUInt(tMin, cfg.fcmpLatency)
   val tMaxFinal = pipeUInt(tMax, cfg.fcmpLatency)
   val tMaxNonNeg = !SimpleFPCompare.ltZero(tMaxFinal, cfg.totalWidth)
+
+  // tNear = (tMin > 0) ? tMin : tMax
   val tMinPos = SimpleFPCompare.gtZero(tMinFinal, cfg.totalWidth)
 
   val tNearComb = Mux(tMinPos, tMinFinal, tMaxFinal)

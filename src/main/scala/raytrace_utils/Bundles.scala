@@ -50,6 +50,11 @@ class TraceResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exte
   val hitT = UInt(cfg.totalWidth.W)
 }
 
+class TraceResultWithSlot(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val slotIdx = UInt(GlobalConfig.ddaTraceSlotBits.W)
+  val result = new TraceResult(cfg, addrWidth)
+}
+
 class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val meta = new RayMeta(addrWidth)
   val hit = Bool()

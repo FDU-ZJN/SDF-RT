@@ -35,4 +35,11 @@ void writeSubgridTriCountHistogramPPM(
     int width = 1024,
     int height = 512);
 
+void writeHistogramPPM(
+    const std::string& path,
+    const std::vector<uint64_t>& histogram,
+    int firstBinLabel = 1,
+    int width = 1024,
+    int height = 512);
+
 #endif // SIM_UTILS_H

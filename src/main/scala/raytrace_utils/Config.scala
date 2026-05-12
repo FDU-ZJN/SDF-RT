@@ -10,7 +10,7 @@ object GlobalConfig {
   val rayDirFifoDepth = 32
   val traceNumWorkers = 8
   val triMemNumBanks = traceNumWorkers
-  val ddaNumWorkers = 2
+  val ddaNumWorkers = 1
   val triRefPackFactor = 16
 
   private var useBlackBoxState = 0
@@ -33,10 +33,6 @@ object GlobalConfig {
     withMemImplMode(if (value) 1 else 0)(body)
   }
 
-  // ============================================================
-  // Float IP BlackBox switch (fudian modules: FADD, FMUL, FCMP, etc.)
-  // Used for FPGA IP integration, disabled in Verilator simulation
-  // ============================================================
   private var useFloatIPState = false
   def useFloatIP: Boolean = useFloatIPState
   def setUseFloatIP(value: Boolean): Unit = { useFloatIPState = value }
@@ -53,16 +49,19 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val ddaRetryQueueDepth = 16
-  val ddaTraceSlotCount = ddaNumWorkers * ddaRetryQueueDepth
-  val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
+  val triBatchQueueDepth = 16
+  val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
 
-  val sdfStepNumWorkers = 2
-  val sdfMemNumBanks = sdfStepNumWorkers
   val sdfRetryQueueDepth = 128
   val sdfFinalQueueDepth = 8
   val simInitToSdfQueueDepth = 32
   val simSdfHitQueueDepth = 128
 
+  // Unused / reserved for future
+  val bvhReqQueueDepth = 16
+  val bvhLeafQueueDepth = 16
+  val bvhMissQueueDepth = 8
+  
   val normalMemDpiLatency = 4
   val triMemDpiLatency = 3
   val triRefMemDpiLatency = 2
@@ -104,7 +103,6 @@ object GlobalConfig {
   val subgridMetaMemAddrWidth = 32
   val subgridMetaMemTriStartWidth = 24
   val subgridMetaMemTriCountWidth = 8
-  val subgridMetaMemNumBanks = ddaNumWorkers * 2
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
@@ -117,6 +115,11 @@ object GlobalConfig {
   val sdfMemUramCount = 64
   val sdfMemLocalGridSize = 64
 
+  // BVH memory (unused currently, but configured for future)
+  val bvhMemAddrWidth = 32
+  val bvhMemNodeBytes = 32  // 6 floats bounds + 4 int32 node info
+  val bvhMemDataWidth = bvhMemNodeBytes * 8  // = 256 bits
+
   // ============================================================
   // Global address width (used across all modules)
   // ============================================================
@@ -126,16 +129,16 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 64
-  val sdfThreshold1 = 0.01f
-  val sdfThreshold2 = 0.02f
-  val sdfThreshold3 = 0.04f
+  val sdfThreshold1 = 0.0075f
+  val sdfThreshold2 = 0.015f
+  val sdfThreshold3 = 0.03f
   val sdfStepScale = 0.6f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f
   val sdfHitBackoffN = 1
 
 
-  val ddaMaxSteps =16
+  val ddaMaxSteps =10
   val triRefMemMaxRefs = Trinum
 
   private def alignUp(value: Int, quantum: Int): Int = {
@@ -157,9 +160,9 @@ object GlobalConfig {
   val triRefMemDepth = alignUp((triRefMemMaxRefs + triRefPackFactor - 1) / triRefPackFactor, bramDepthAlign)
   val normalMemDepth = TriOriginalNum
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
-  val subgridMetaMemBankDepth = alignUp((subgridMetaMemDepth + subgridMetaMemNumBanks - 1) / subgridMetaMemNumBanks, bramDepthAlign)
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
   val sdfLocalMemDepth = LocalCell
+  val bvhMemDepth = 65536          // nouse
 }
 case class FloatConfig(
                         expWidth: Int,
@@ -192,6 +195,15 @@ object FloatConfig {
 
 case class TriPeConfig(
   numPEs: Int = GlobalConfig.triMemNumPEs,
+  cfg: FloatConfig = FloatConfig.FP32
+) {
+  val addrWidth = GlobalConfig.addrWidth
+}
+
+case class BvhPeConfig(
+  stackDepth: Int = 64,
+  reqQueueDepth: Int = GlobalConfig.bvhReqQueueDepth,
+  leafQueueDepth: Int = GlobalConfig.bvhLeafQueueDepth,
   cfg: FloatConfig = FloatConfig.FP32
 ) {
   val addrWidth = GlobalConfig.addrWidth

@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <filesystem>
 #include <iostream>
 #include <vector>
@@ -7,6 +8,7 @@
 
 #include "verilated.h"
 #include "VFpgaTop.h"
+#include "VFpgaTop___024root.h"
 #include "verilated_vcd_c.h"
 
 #include <GlobalConfig.h>
@@ -22,6 +24,48 @@ using namespace rt::config;
 
 uint64_t main_time = 0;
 VerilatedVcdC* tfp = nullptr;
+
+static inline bool getWorkerResultPending(const VFpgaTop___024root* root, int idx) {
+    switch (idx) {
+        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_0;
+        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_1;
+        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_2;
+        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_3;
+        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_4;
+        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_5;
+        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_6;
+        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_7;
+        default: return false;
+    }
+}
+
+static inline bool getWorkerResultHit(const VFpgaTop___024root* root, int idx) {
+    switch (idx) {
+        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_0_hit;
+        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_1_hit;
+        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_2_hit;
+        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_3_hit;
+        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_4_hit;
+        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_5_hit;
+        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_6_hit;
+        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_7_hit;
+        default: return false;
+    }
+}
+
+static inline uint32_t getWorkerCmdIdx(const VFpgaTop___024root* root, int idx) {
+    switch (idx) {
+        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_0;
+        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_1;
+        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_2;
+        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_3;
+        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_4;
+        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_5;
+        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_6;
+        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_7;
+        default: return 0;
+    }
+}
 
 void tick(VFpgaTop* dut) {
     dut->clock = 0;
@@ -71,7 +115,7 @@ int main(int argc, char** argv) {
     const float gridMaxY = bounds[4];
     const float gridMaxZ = bounds[5];
 
-    const array<float, 3> setupOrigin = {0.0f, 0.4f, 2.8f};
+    const array<float, 3> setupOrigin = {0.0f, 0.4f, 1.5f};
     const array<float, 3> gridMin = {gridMinX, gridMinY, gridMinZ};
     const array<float, 3> gridMax = {gridMaxX, gridMaxY, gridMaxZ};
 
@@ -181,6 +225,7 @@ int main(int argc, char** argv) {
     std::cout << "Phase 3: Waiting for frame_done..." << std::endl;
     
     vector<uint8_t> image(framePixels * 3, 0);
+    vector<uint64_t> triPeHitStepHist(16, 0);
     size_t pixelCount = 0;
     int stallCycles = 0;
     uint64_t totalCycles = 0;
@@ -189,6 +234,8 @@ int main(int argc, char** argv) {
     
     // Debug counters
     uint64_t pixelValidCount = 0;
+    std::array<bool, 8> prevWorkerResultPending = {false, false, false, false, false, false, false, false};
+    uint64_t triPeHitOverflow = 0;
 
     while (!frameDone) {
         tick(dut);
@@ -205,6 +252,22 @@ int main(int argc, char** argv) {
         // Debug: count pixel_valid firings
         if (dut->io_pixel_valid) {
             pixelValidCount++;
+        }
+
+        const auto* root = dut->rootp;
+        if (root != nullptr) {
+            for (int i = 0; i < static_cast<int>(prevWorkerResultPending.size()); ++i) {
+                const bool pending = getWorkerResultPending(root, i);
+                if (pending && !prevWorkerResultPending[static_cast<size_t>(i)] && getWorkerResultHit(root, i)) {
+                    const uint32_t cmdIdx = getWorkerCmdIdx(root, i);
+                    if (cmdIdx < triPeHitStepHist.size()) {
+                        triPeHitStepHist[static_cast<size_t>(cmdIdx)] += 1;
+                    } else {
+                        triPeHitOverflow += 1;
+                    }
+                }
+                prevWorkerResultPending[static_cast<size_t>(i)] = pending;
+            }
         }
         
         // Print debug info every 1M cycles
@@ -277,6 +340,20 @@ int main(int argc, char** argv) {
     writePPM(outputPath, image, kWidth, kHeight);
     std::cout << "Image saved successfully." << std::endl;
 
+    std::cout << "Phase 5: Saving TriPE hit-step histogram..." << std::endl;
+    writeHistogramPPM("tripe_hit_step_hist.ppm", triPeHitStepHist, 1);
+    {
+        std::ofstream ofs("tripe_hit_step_hist.csv");
+        ofs << "step,count\n";
+        for (size_t i = 0; i < triPeHitStepHist.size(); ++i) {
+            ofs << (i + 1) << "," << triPeHitStepHist[i] << "\n";
+        }
+        ofs << "overflow," << triPeHitOverflow << "\n";
+    }
+    std::cout << "TriPE hit-step histogram saved. overflow=" << triPeHitOverflow << std::endl;
+    for (size_t i = 0; i < triPeHitStepHist.size(); ++i) {
+        std::cout << "  step " << (i + 1) << ": " << triPeHitStepHist[i] << std::endl;
+    }
 
     // Close VCD file
     if (tfp) {
