@@ -31,8 +31,10 @@ class CommitQueue(cfg: FloatConfig) extends Module {
 
   val allocSpace = depth.U - count
   io.allocFree := allocSpace
-  io.alloc(0).ready := allocSpace =/= 0.U
-  io.alloc(1).ready := allocSpace > 1.U
+  val allocReady0Reg = RegInit(true.B)
+  val allocReady1Reg = RegInit(true.B)
+  io.alloc(0).ready := allocReady0Reg
+  io.alloc(1).ready := allocReady1Reg
   io.allocSlot(0) := allocPtr
   io.allocSlot(1) := allocPtr + 1.U
 
@@ -40,42 +42,55 @@ class CommitQueue(cfg: FloatConfig) extends Module {
   val doAlloc1 = io.alloc(1).fire
   val allocCount = PopCount(Seq(doAlloc0, doAlloc1))
 
-  val wbIdx     = io.writeback.bits.meta.slotId(slotBits - 1, 0)
-  val wb2Idx    = io.writeback2.bits.meta.slotId(slotBits - 1, 0)
-  val wb3Idx    = io.writeback3.bits.meta.slotId(slotBits - 1, 0)
-  val wb4Idx    = io.writeback4.bits.meta.slotId(slotBits - 1, 0)
+  val renderWbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val init0WbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val sdfWbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val init1WbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
 
-  io.writeback.ready  := true.B
-  io.writeback2.ready := true.B
-  io.writeback3.ready := true.B
-  io.writeback4.ready := true.B
+  renderWbQ.io.enq <> io.writeback
+  init0WbQ.io.enq <> io.writeback2
+  sdfWbQ.io.enq <> io.writeback3
+  init1WbQ.io.enq <> io.writeback4
 
-  val doWb2 = io.writeback2.fire
-  val doWb4 = io.writeback4.fire && !(doWb2 && (wb2Idx === wb4Idx))
-  val doWb3 = io.writeback3.fire &&
-    !(doWb2 && (wb2Idx === wb3Idx)) &&
-    !(doWb4 && (wb4Idx === wb3Idx))
-  val doWb1 = io.writeback.fire &&
-    !(doWb2 && (wb2Idx === wbIdx)) &&
-    !(doWb4 && (wb4Idx === wbIdx)) &&
-    !(doWb3 && (wb3Idx === wbIdx))
+  val nonInitGroupValid = sdfWbQ.io.deq.valid || renderWbQ.io.deq.valid
 
-  when(doWb2) {
-    entries(wb2Idx) := io.writeback2.bits
-    done(wb2Idx)    := true.B
+  val physWbValid = Wire(Vec(2, Bool()))
+  val physWbBits = Wire(Vec(2, new RenderResult(cfg, cfg.addrWidth)))
+  val physWbIdx = Wire(Vec(2, UInt(slotBits.W)))
+
+  physWbValid(0) := Mux(nonInitGroupValid, sdfWbQ.io.deq.valid, init0WbQ.io.deq.valid)
+  physWbBits(0) := Mux(nonInitGroupValid, sdfWbQ.io.deq.bits, init0WbQ.io.deq.bits)
+  physWbIdx(0) := physWbBits(0).meta.slotId(slotBits - 1, 0)
+
+  physWbValid(1) := Mux(nonInitGroupValid, renderWbQ.io.deq.valid, init1WbQ.io.deq.valid)
+  physWbBits(1) := Mux(nonInitGroupValid, renderWbQ.io.deq.bits, init1WbQ.io.deq.bits)
+  physWbIdx(1) := physWbBits(1).meta.slotId(slotBits - 1, 0)
+
+  val doPhysWb0 = physWbValid(0)
+  val doPhysWb1 = physWbValid(1)
+
+  init0WbQ.io.deq.ready := !nonInitGroupValid && doPhysWb0
+  init1WbQ.io.deq.ready := !nonInitGroupValid && doPhysWb1
+  sdfWbQ.io.deq.ready := nonInitGroupValid && doPhysWb0
+  renderWbQ.io.deq.ready := nonInitGroupValid && doPhysWb1
+
+  val physWbValidReg = RegInit(VecInit(Seq.fill(2)(false.B)))
+  val physWbBitsReg = Reg(Vec(2, new RenderResult(cfg, cfg.addrWidth)))
+  val physWbIdxReg = Reg(Vec(2, UInt(slotBits.W)))
+
+  for (i <- 0 until 2) {
+    when(physWbValidReg(i)) {
+      entries(physWbIdxReg(i)) := physWbBitsReg(i)
+      done(physWbIdxReg(i))    := true.B
+    }
   }
-  when(doWb4) {
-    entries(wb4Idx) := io.writeback4.bits
-    done(wb4Idx)    := true.B
-  }
-  when(doWb3) {
-    entries(wb3Idx) := io.writeback3.bits
-    done(wb3Idx)    := true.B
-  }
-  when(doWb1) {
-    entries(wbIdx) := io.writeback.bits
-    done(wbIdx)    := true.B
-  }
+
+  physWbValidReg(0) := doPhysWb0
+  physWbBitsReg(0) := physWbBits(0)
+  physWbIdxReg(0) := physWbIdx(0)
+  physWbValidReg(1) := doPhysWb1
+  physWbBitsReg(1) := physWbBits(1)
+  physWbIdxReg(1) := physWbIdx(1)
 
   when(doAlloc0) {
     reserved(allocPtr) := true.B
@@ -115,5 +130,9 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     commitPtr := commitPtr + commitCount
   }
 
-  count := count + allocCount - commitCount
+  val countNext = count + allocCount - commitCount
+  count := countNext
+  val allocSpaceNext = depth.U - countNext
+  allocReady0Reg := allocSpaceNext =/= 0.U
+  allocReady1Reg := allocSpaceNext > 1.U
 }

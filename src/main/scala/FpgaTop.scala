@@ -135,11 +135,20 @@ class FpgaTop(
   val postInitPairValid = postInitQs(0).io.deq.valid && postInitQs(1).io.deq.valid
   val postInitHit0 = postInitQs(0).io.deq.bits.hit
   val postInitHit1 = postInitQs(1).io.deq.bits.hit
+  val initMissWb2ValidReg = RegInit(false.B)
+  val initMissWb2BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
+  val initMissWb4ValidReg = RegInit(false.B)
+  val initMissWb4BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
+  val initMissWb2CanAccept = !initMissWb2ValidReg || commitQueue.io.writeback2.ready
+  val initMissWb4CanAccept = !initMissWb4ValidReg || commitQueue.io.writeback4.ready
   val postInitCanPushHits =
     (!postInitHit0 || postHitQs(0).io.enq.ready) &&
       (!postInitHit1 || postHitQs(1).io.enq.ready)
+  val postInitCanPushMisses =
+    (postInitHit0 || initMissWb2CanAccept) &&
+      (postInitHit1 || initMissWb4CanAccept)
   val postInitCanAlloc = commitQueue.io.alloc(0).ready && commitQueue.io.alloc(1).ready
-  val postInitDispatch = postInitPairValid && postInitCanPushHits && postInitCanAlloc
+  val postInitDispatch = postInitPairValid && postInitCanPushHits && postInitCanPushMisses && postInitCanAlloc
 
   commitQueue.io.alloc(0).valid := postInitDispatch
   commitQueue.io.alloc(0).bits := 0.U
@@ -183,11 +192,6 @@ class FpgaTop(
   commitQueue.io.writeback.bits := renderStage.io.out.bits
   renderStage.io.out.ready := commitQueue.io.writeback.ready
 
-  val initMissWb2ValidReg = RegInit(false.B)
-  val initMissWb2BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
-  val initMissWb4ValidReg = RegInit(false.B)
-  val initMissWb4BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
-
   val wb2 = Wire(new RenderResult(c.cfg, c.addrWidth))
   wb2.meta := postInitQs(0).io.deq.bits.meta
   wb2.meta.slotId := commitQueue.io.allocSlot(0)
@@ -202,10 +206,22 @@ class FpgaTop(
   wb4.hitId := 0.U
   wb4.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
 
-  initMissWb2ValidReg := postInitDispatch && !postInitQs(0).io.deq.bits.hit
-  initMissWb2BitsReg := wb2
-  initMissWb4ValidReg := postInitDispatch && !postInitQs(1).io.deq.bits.hit
-  initMissWb4BitsReg := wb4
+  when(commitQueue.io.writeback2.ready) {
+    initMissWb2ValidReg := false.B
+  }
+  when(commitQueue.io.writeback4.ready) {
+    initMissWb4ValidReg := false.B
+  }
+  when(postInitDispatch && !postInitQs(0).io.deq.bits.hit) {
+    assert(initMissWb2CanAccept, "FpgaTop init miss lane0 writeback buffer overflow")
+    initMissWb2ValidReg := true.B
+    initMissWb2BitsReg := wb2
+  }
+  when(postInitDispatch && !postInitQs(1).io.deq.bits.hit) {
+    assert(initMissWb4CanAccept, "FpgaTop init miss lane1 writeback buffer overflow")
+    initMissWb4ValidReg := true.B
+    initMissWb4BitsReg := wb4
+  }
 
   commitQueue.io.writeback2.valid := initMissWb2ValidReg
   commitQueue.io.writeback2.bits := initMissWb2BitsReg
@@ -219,8 +235,14 @@ class FpgaTop(
   wb3.rgb8 := Cat(0.U(8.W), 0.U(8.W), 128.U(8.W))
   val sdfWriteback3ValidReg = RegInit(false.B)
   val sdfWriteback3BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
-  sdfWriteback3ValidReg := sdfOutValid && !sdfOutHit
-  sdfWriteback3BitsReg := wb3
+  when(commitQueue.io.writeback3.ready) {
+    sdfWriteback3ValidReg := false.B
+  }
+  when(sdfOutValid && !sdfOutHit) {
+    assert(!sdfWriteback3ValidReg || commitQueue.io.writeback3.ready, "FpgaTop sdf miss writeback buffer overflow")
+    sdfWriteback3ValidReg := true.B
+    sdfWriteback3BitsReg := wb3
+  }
   commitQueue.io.writeback3.valid := sdfWriteback3ValidReg
   commitQueue.io.writeback3.bits := sdfWriteback3BitsReg
   sdfStage.io.out.ready := true.B
