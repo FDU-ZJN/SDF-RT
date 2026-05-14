@@ -80,9 +80,15 @@ class CommitQueue(cfg: FloatConfig) extends Module {
 
   for (i <- 0 until 2) {
     when(physWbValidReg(i)) {
+      assert(reserved(physWbIdxReg(i)), "CommitQueue writeback to unreserved slot")
+      assert(!done(physWbIdxReg(i)), "CommitQueue duplicate writeback to completed slot")
       entries(physWbIdxReg(i)) := physWbBitsReg(i)
       done(physWbIdxReg(i))    := true.B
     }
+  }
+
+  when(physWbValidReg(0) && physWbValidReg(1)) {
+    assert(physWbIdxReg(0) =/= physWbIdxReg(1), "CommitQueue two physical writebacks target the same slot")
   }
 
   physWbValidReg(0) := doPhysWb0

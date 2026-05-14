@@ -256,7 +256,7 @@ class FpgaTop(
   val rayIssueCount = WireDefault(0.U(2.W))
   val canLaunchPairReg = RegInit(false.B)
   val canLaunchPairNext = WireDefault(false.B)
-  val issuePairFire = canLaunchPairReg && (state === rendering)
+  val issuePairFire = canLaunchPairReg && (state === rendering) && (remainingPairsReg =/= 0.U)
 
   val validationError = RegInit(false.B)   // Fix 8
   io.validation_error := validationError
@@ -279,12 +279,14 @@ class FpgaTop(
     is(rendering) {
       canLaunchPairReg := canLaunchPairNext
       when(rayIssueCount =/= 0.U) {
+        assert(issuedCount + rayIssueCount <= totalPixels, "FpgaTop issued more rays than totalPixels")
         issuedCount := issuedCount + rayIssueCount
       }
       when(issuePairFire && (remainingPairsReg =/= 0.U)) {
         remainingPairsReg := remainingPairsReg - 1.U
       }
       when(enqFire) {
+        assert(retiredCount + retiredPixelsThisBeat <= totalPixels, "FpgaTop retired more pixels than totalPixels")
         retiredCount := retiredCount + retiredPixelsThisBeat
       }
       when(enqFire && (retiredCount + retiredPixelsThisBeat >= totalPixels)) {

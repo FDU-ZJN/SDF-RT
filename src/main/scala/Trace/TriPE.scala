@@ -8,6 +8,8 @@ import raytrace_utils.fudian._
 class TriPE(val c: TriPeConfig) extends Module {
   require(c.numPEs == 1, s"TriPE two-level fetch currently requires numPEs=1, got ${c.numPEs}")
 
+  private val ctxCount = 2
+  private val ctxW = 1
   private val triIdWidth = GlobalConfig.triRefIdWidth
   private val refPackFactor = GlobalConfig.triRefPackFactor
   private val refPackShift = log2Ceil(refPackFactor)
@@ -17,12 +19,14 @@ class TriPE(val c: TriPeConfig) extends Module {
   val io = IO(new Bundle {
     val ray_in: Ray = Input(new Ray(c.cfg))
     val ray_meta: RayMeta = Input(new RayMeta(c.addrWidth))
+    val ray_ctx = Input(UInt(ctxW.W))
     val ray_valid: Bool = Input(Bool())
 
     val tri_batch_in: TriBatch = Input(new TriBatch(c.addrWidth))
+    val tri_batch_ctx = Input(UInt(ctxW.W))
     val tri_batch_valid: Bool = Input(Bool())
     val end_exec: Bool = Input(Bool())
-    val flush: Bool = Input(Bool())
+    val clear_ctx = Input(Vec(ctxCount, Bool()))
 
     val ref_mem_req = Decoupled(UInt(c.addrWidth.W))
     val ref_mem_resp = Flipped(Decoupled(UInt(GlobalConfig.triRefMemDataWidth.W)))
@@ -31,8 +35,9 @@ class TriPE(val c: TriPeConfig) extends Module {
     val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))
     val mem_resp: DecoupledIO[TriangleBlock] = Flipped(Decoupled(new TriangleBlock(c)))
 
-    val start_ready: Bool = Output(Bool())
-    val output_ready: Bool = Output(Bool())
+    val start_ready = Output(Vec(ctxCount, Bool()))
+    val output_ready = Output(Vec(ctxCount, Bool()))
+    val out_ctx: UInt = Output(UInt(ctxW.W))
     val out_best_hit: Bool = Output(Bool())
     val hit_id: UInt = Output(UInt(c.addrWidth.W))
     val t_best: UInt = Output(UInt(c.cfg.totalWidth.W))
@@ -40,158 +45,183 @@ class TriPE(val c: TriPeConfig) extends Module {
     val out_done: Bool = Output(Bool())
   })
 
-  private val current_batch = RegInit(0.U.asTypeOf(new TriBatch(c.addrWidth)))
-  private val ray_reg = RegInit(0.U.asTypeOf(new Ray(c.cfg)))
-  private val ray_meta_reg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
-  private val batch_ref_idx = RegInit(0.U(c.addrWidth.W))
-  private val batch_refs_remaining = RegInit(0.U(16.W))
-  private val batch_in_progress = RegInit(false.B)
-  private val no_more_batches = RegInit(false.B)
-  private val done_pulse_reg = RegInit(false.B)
-  private val active_epoch = RegInit(false.B)
-  private val result_capture_pending = RegInit(false.B)
-  private val result_hit_reg = RegInit(false.B)
-  private val result_id_reg = RegInit(0.U(c.addrWidth.W))
-  private val result_t_reg = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
-  private val result_meta_reg = RegInit(0.U.asTypeOf(new RayMeta(c.addrWidth)))
+  private val missT = 0x7F7FFFFF.U(c.cfg.totalWidth.W)
+  private val rayReg = Reg(Vec(ctxCount, new Ray(c.cfg)))
+  private val rayMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
+  private val ctxBusy = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val noMoreBatches = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val activeEpoch = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val ref_buffer_a = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
-  private val ref_buffer_b = Reg(Vec(refPackFactor, UInt(triIdWidth.W)))
-  private val ref_buf_idx_a = RegInit(0.U(refPackShift.W))
-  private val ref_buf_idx_b = RegInit(0.U(refPackShift.W))
-  private val ref_buf_count_a = RegInit(0.U(refCountWidth.W))
-  private val ref_buf_count_b = RegInit(0.U(refCountWidth.W))
+  private val batchRefIdx = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
+  private val batchRefsRemaining = RegInit(VecInit(Seq.fill(ctxCount)(0.U(16.W))))
+  private val batchInProgress = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val resultCapturePending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val best_t = RegInit(0x7F7FFFFF.U(c.cfg.totalWidth.W))
-  private val best_id = RegInit(0.U(c.addrWidth.W))
-  private val has_hit = RegInit(false.B)
+  private val refBufferA = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
+  private val refBufferB = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
+  private val refBufIdxA = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
+  private val refBufIdxB = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
+  private val refBufCountA = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
+  private val refBufCountB = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
 
-  private val s_IDLE :: s_BUSY :: Nil = Enum(2)
-  private val state = RegInit(s_IDLE)
+  private val bestT = RegInit(VecInit(Seq.fill(ctxCount)(missT)))
+  private val bestId = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
+  private val hasHit = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val inflightCnt = RegInit(VecInit(Seq.fill(ctxCount)(0.U(10.W))))
+  private val memReqQueuedCnt = RegInit(VecInit(Seq.fill(ctxCount)(0.U(4.W))))
 
-  when(io.flush) {
-    current_batch := 0.U.asTypeOf(new TriBatch(c.addrWidth))
-    batch_ref_idx := 0.U
-    batch_refs_remaining := 0.U
-    batch_in_progress := false.B
-    no_more_batches := false.B
-    done_pulse_reg := false.B
-    result_capture_pending := false.B
-    result_hit_reg := false.B
-    result_id_reg := 0.U
-    result_t_reg := 0x7F7FFFFF.U
-    result_meta_reg := 0.U.asTypeOf(new RayMeta(c.addrWidth))
-    ref_buf_idx_a := 0.U
-    ref_buf_idx_b := 0.U
-    ref_buf_count_a := 0.U
-    ref_buf_count_b := 0.U
-    best_t := 0x7F7FFFFF.U
-    best_id := 0.U
-    has_hit := false.B
-    active_epoch := !active_epoch
-    state := s_IDLE
-  }.elsewhen(state === s_IDLE && io.ray_valid) {
-    state := s_BUSY
-    ray_reg := io.ray_in
-    ray_meta_reg := io.ray_meta
-    no_more_batches := false.B
+  private val resultHitReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val resultIdReg = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
+  private val resultTReg = RegInit(VecInit(Seq.fill(ctxCount)(missT)))
+  private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
+  private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+
+  private def clearContext(idx: Int): Unit = {
+    ctxBusy(idx) := false.B
+    noMoreBatches(idx) := false.B
+    batchRefIdx(idx) := 0.U
+    batchRefsRemaining(idx) := 0.U
+    batchInProgress(idx) := false.B
+    resultCapturePending(idx) := false.B
+    refBufIdxA(idx) := 0.U
+    refBufIdxB(idx) := 0.U
+    refBufCountA(idx) := 0.U
+    refBufCountB(idx) := 0.U
+    bestT(idx) := missT
+    bestId(idx) := 0.U
+    hasHit(idx) := false.B
+    inflightCnt(idx) := 0.U
+    memReqQueuedCnt(idx) := 0.U
+    resultHitReg(idx) := false.B
+    resultIdReg(idx) := 0.U
+    resultTReg(idx) := missT
+    resultMetaReg(idx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+    resultValidReg(idx) := false.B
+    activeEpoch(idx) := !activeEpoch(idx)
   }
 
-  when(io.end_exec && !io.flush) {
-    no_more_batches := true.B
+  private val outSel = Mux(resultValidReg(0), 0.U(ctxW.W), 1.U(ctxW.W))
+
+  for (ctx <- 0 until ctxCount) {
+    when(io.clear_ctx(ctx)) {
+      clearContext(ctx)
+    }
   }
 
-  private val canAcceptBatch =
-    !batch_in_progress && !result_capture_pending && !done_pulse_reg && (state === s_BUSY)
-
-  when(io.tri_batch_valid && canAcceptBatch && !io.flush) {
-    current_batch := io.tri_batch_in
-    batch_ref_idx := io.tri_batch_in.base_addr
-    batch_refs_remaining := io.tri_batch_in.count
-    batch_in_progress := true.B
-    ref_buf_idx_a := 0.U
-    ref_buf_idx_b := 0.U
-    ref_buf_count_a := 0.U
-    ref_buf_count_b := 0.U
-    best_t := 0x7F7FFFFF.U
-    best_id := 0.U
-    has_hit := false.B
+  for (ctx <- 0 until ctxCount) {
+    io.start_ready(ctx) := !ctxBusy(ctx) && !resultValidReg(ctx)
+    io.output_ready(ctx) := ctxBusy(ctx) &&
+      !batchInProgress(ctx) &&
+      !resultCapturePending(ctx) &&
+      !resultValidReg(ctx)
   }
 
-  private val refReqPendingLive = Wire(Bool())
-  private val activeBufSel = Wire(Bool())
-  private val activeBufIdx = Wire(UInt(refPackShift.W))
-  private val activeBufCount = Wire(UInt(refCountWidth.W))
-  private val prefetchBufEmpty = Wire(Bool())
-  private val requestToBufB = Wire(Bool())
-  private val sourceHasData = Wire(Bool())
+  when(io.ray_valid && io.start_ready(io.ray_ctx)) {
+    ctxBusy(io.ray_ctx) := true.B
+    rayReg(io.ray_ctx) := io.ray_in
+    rayMetaReg(io.ray_ctx) := io.ray_meta
+    noMoreBatches(io.ray_ctx) := false.B
+    resultValidReg(io.ray_ctx) := false.B
+  }
 
-  activeBufSel := ref_buf_count_a === 0.U && ref_buf_count_b =/= 0.U
-  activeBufIdx := Mux(activeBufSel, ref_buf_idx_b, ref_buf_idx_a)
-  activeBufCount := Mux(activeBufSel, ref_buf_count_b, ref_buf_count_a)
-  sourceHasData := ref_buf_count_a =/= 0.U || ref_buf_count_b =/= 0.U
-  prefetchBufEmpty := Mux(activeBufSel, ref_buf_count_a === 0.U, ref_buf_count_b === 0.U)
-  requestToBufB := Mux(sourceHasData, !activeBufSel, false.B)
+  when(io.tri_batch_valid && io.output_ready(io.tri_batch_ctx)) {
+    val ctx = io.tri_batch_ctx
+    batchRefIdx(ctx) := io.tri_batch_in.base_addr
+    batchRefsRemaining(ctx) := io.tri_batch_in.count
+    batchInProgress(ctx) := true.B
+    noMoreBatches(ctx) := io.end_exec
+    refBufIdxA(ctx) := 0.U
+    refBufIdxB(ctx) := 0.U
+    refBufCountA(ctx) := 0.U
+    refBufCountB(ctx) := 0.U
+    bestT(ctx) := missT
+    bestId(ctx) := 0.U
+    hasHit(ctx) := false.B
+  }
 
-  private val refWordAddr = batch_ref_idx >> refPackShift
-  private val refWordOff = batch_ref_idx(refPackShift - 1, 0)
-  private val refChunkAvailWide = refPackFactor.U(16.W) - refWordOff
-  private val refChunkCountWide = Mux(batch_refs_remaining < refChunkAvailWide, batch_refs_remaining, refChunkAvailWide)
-  private val refChunkCount = refChunkCountWide(refCountWidth - 1, 0)
-  private val needInitialFill = !sourceHasData
-  private val needPrefetch =
-    sourceHasData &&
-      prefetchBufEmpty &&
-      (activeBufCount <= refPrefetchLowWatermark.U)
-  io.ref_mem_req.valid := batch_in_progress &&
-    (batch_refs_remaining =/= 0.U) &&
-    !refReqPendingLive &&
-    !io.flush &&
-    (needInitialFill || needPrefetch)
-  io.ref_mem_req.bits := refWordAddr
+  private val refReqPipeLen = GlobalConfig.triRefMemDpiLatency
+  private val refReqLivePipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
+  private val refReqCtxPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(ctxW.W))))
+  private val refReqEpochPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
+  private val refReqOffsetPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
+  private val refReqCountPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
+  private val refReqTargetBPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
+
+  private val refPending = Wire(Vec(ctxCount, Bool()))
+  for (ctx <- 0 until ctxCount) {
+    refPending(ctx) := refReqLivePipe.zip(refReqCtxPipe).map { case (v, c) => v && c === ctx.U }.reduce(_ || _)
+  }
+
+  private val activeBufSel = Wire(Vec(ctxCount, Bool()))
+  private val activeBufIdx = Wire(Vec(ctxCount, UInt(refPackShift.W)))
+  private val activeBufCount = Wire(Vec(ctxCount, UInt(refCountWidth.W)))
+  private val sourceHasData = Wire(Vec(ctxCount, Bool()))
+  private val prefetchBufEmpty = Wire(Vec(ctxCount, Bool()))
+  private val requestToBufB = Wire(Vec(ctxCount, Bool()))
+  private val refWordAddr = Wire(Vec(ctxCount, UInt(c.addrWidth.W)))
+  private val refWordOff = Wire(Vec(ctxCount, UInt(refPackShift.W)))
+  private val refChunkCount = Wire(Vec(ctxCount, UInt(refCountWidth.W)))
+  private val refCanReq = Wire(Vec(ctxCount, Bool()))
+  private val memCanEnq = Wire(Vec(ctxCount, Bool()))
+  private val geomTriId = Wire(Vec(ctxCount, UInt(triIdWidth.W)))
+
+  for (ctx <- 0 until ctxCount) {
+    activeBufSel(ctx) := refBufCountA(ctx) === 0.U && refBufCountB(ctx) =/= 0.U
+    activeBufIdx(ctx) := Mux(activeBufSel(ctx), refBufIdxB(ctx), refBufIdxA(ctx))
+    activeBufCount(ctx) := Mux(activeBufSel(ctx), refBufCountB(ctx), refBufCountA(ctx))
+    sourceHasData(ctx) := refBufCountA(ctx) =/= 0.U || refBufCountB(ctx) =/= 0.U
+    prefetchBufEmpty(ctx) := Mux(activeBufSel(ctx), refBufCountA(ctx) === 0.U, refBufCountB(ctx) === 0.U)
+    requestToBufB(ctx) := Mux(sourceHasData(ctx), !activeBufSel(ctx), false.B)
+    refWordAddr(ctx) := batchRefIdx(ctx) >> refPackShift
+    refWordOff(ctx) := batchRefIdx(ctx)(refPackShift - 1, 0)
+    val refChunkAvailWide = refPackFactor.U(16.W) - refWordOff(ctx)
+    val refChunkCountWide = Mux(batchRefsRemaining(ctx) < refChunkAvailWide, batchRefsRemaining(ctx), refChunkAvailWide)
+    refChunkCount(ctx) := refChunkCountWide(refCountWidth - 1, 0)
+    val needInitialFill = !sourceHasData(ctx)
+    val needPrefetch = sourceHasData(ctx) && prefetchBufEmpty(ctx) && (activeBufCount(ctx) <= refPrefetchLowWatermark.U)
+    refCanReq(ctx) := batchInProgress(ctx) &&
+      batchRefsRemaining(ctx) =/= 0.U &&
+      !refPending(ctx) &&
+      (needInitialFill || needPrefetch)
+    geomTriId(ctx) := Mux(activeBufSel(ctx), refBufferB(ctx)(activeBufIdx(ctx)), refBufferA(ctx)(activeBufIdx(ctx)))
+    memCanEnq(ctx) := batchInProgress(ctx) && sourceHasData(ctx)
+  }
+
+  private val refRr = RegInit(false.B)
+  private val refSel = Wire(UInt(ctxW.W))
+  private val refReqValid = refCanReq.asUInt.orR
+  refSel := Mux(refCanReq(0) && (!refRr || !refCanReq(1)), 0.U, 1.U)
+  io.ref_mem_req.valid := refReqValid
+  io.ref_mem_req.bits := refWordAddr(refSel)
 
   when(io.ref_mem_req.fire) {
-    batch_ref_idx := batch_ref_idx + refChunkCount
-    batch_refs_remaining := batch_refs_remaining - refChunkCount
+    batchRefIdx(refSel) := batchRefIdx(refSel) + refChunkCount(refSel)
+    batchRefsRemaining(refSel) := batchRefsRemaining(refSel) - refChunkCount(refSel)
+    refRr := !refSel(0)
   }
 
   io.ref_mem_resp.ready := true.B
-
-  private val refReqPipeLen = GlobalConfig.triRefMemDpiLatency
-  private val ref_req_live_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
-  private val ref_req_epoch_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
-  private val ref_req_offset_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
-  private val ref_req_count_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
-  private val ref_req_target_b_pipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
-  when(io.flush) {
-    for (i <- 0 until refReqPipeLen) {
-      ref_req_live_pipe(i) := false.B
-      ref_req_epoch_pipe(i) := false.B
-      ref_req_offset_pipe(i) := 0.U
-      ref_req_count_pipe(i) := 0.U
-      ref_req_target_b_pipe(i) := false.B
-    }
-  }.otherwise {
-    ref_req_live_pipe(0) := io.ref_mem_req.fire
-    ref_req_epoch_pipe(0) := Mux(io.ref_mem_req.fire, active_epoch, false.B)
-    ref_req_offset_pipe(0) := Mux(io.ref_mem_req.fire, refWordOff, 0.U)
-    ref_req_count_pipe(0) := Mux(io.ref_mem_req.fire, refChunkCount, 0.U)
-    ref_req_target_b_pipe(0) := Mux(io.ref_mem_req.fire, requestToBufB, false.B)
-    for (i <- 1 until refReqPipeLen) {
-      ref_req_live_pipe(i) := ref_req_live_pipe(i - 1)
-      ref_req_epoch_pipe(i) := ref_req_epoch_pipe(i - 1)
-      ref_req_offset_pipe(i) := ref_req_offset_pipe(i - 1)
-      ref_req_count_pipe(i) := ref_req_count_pipe(i - 1)
-      ref_req_target_b_pipe(i) := ref_req_target_b_pipe(i - 1)
-    }
+  refReqLivePipe(0) := io.ref_mem_req.fire
+  refReqCtxPipe(0) := Mux(io.ref_mem_req.fire, refSel, 0.U)
+  refReqEpochPipe(0) := Mux(io.ref_mem_req.fire, activeEpoch(refSel), false.B)
+  refReqOffsetPipe(0) := Mux(io.ref_mem_req.fire, refWordOff(refSel), 0.U)
+  refReqCountPipe(0) := Mux(io.ref_mem_req.fire, refChunkCount(refSel), 0.U)
+  refReqTargetBPipe(0) := Mux(io.ref_mem_req.fire, requestToBufB(refSel), false.B)
+  for (i <- 1 until refReqPipeLen) {
+    refReqLivePipe(i) := refReqLivePipe(i - 1)
+    refReqCtxPipe(i) := refReqCtxPipe(i - 1)
+    refReqEpochPipe(i) := refReqEpochPipe(i - 1)
+    refReqOffsetPipe(i) := refReqOffsetPipe(i - 1)
+    refReqCountPipe(i) := refReqCountPipe(i - 1)
+    refReqTargetBPipe(i) := refReqTargetBPipe(i - 1)
   }
-  refReqPendingLive := ref_req_live_pipe.asUInt.orR
 
-  private val ref_resp_live =
+  private val refRespCtx = refReqCtxPipe.last
+  private val refRespLive =
     io.ref_mem_resp.fire &&
-      ref_req_live_pipe.last &&
-      (ref_req_epoch_pipe.last === active_epoch) &&
-      !io.flush
+      refReqLivePipe.last &&
+      (refReqEpochPipe.last === activeEpoch(refRespCtx)) &&
+      !io.clear_ctx(refRespCtx)
 
   private val refWordIds = Wire(Vec(refPackFactor, UInt(triIdWidth.W)))
   for (i <- 0 until refPackFactor) {
@@ -202,156 +232,177 @@ class TriPE(val c: TriPeConfig) extends Module {
     compactedIds(i) := 0.U
     for (off <- 0 until refPackFactor) {
       if (off + i < refPackFactor) {
-        when(ref_req_offset_pipe.last === off.U) {
+        when(refReqOffsetPipe.last === off.U) {
           compactedIds(i) := refWordIds(off + i)
         }
       }
     }
   }
 
-  when(ref_resp_live) {
-    when(ref_req_target_b_pipe.last) {
+  when(refRespLive) {
+    when(refReqTargetBPipe.last) {
       for (i <- 0 until refPackFactor) {
-        ref_buffer_b(i) := compactedIds(i)
+        refBufferB(refRespCtx)(i) := compactedIds(i)
       }
-      ref_buf_idx_b := 0.U
-      ref_buf_count_b := ref_req_count_pipe.last
+      refBufIdxB(refRespCtx) := 0.U
+      refBufCountB(refRespCtx) := refReqCountPipe.last
     }.otherwise {
       for (i <- 0 until refPackFactor) {
-        ref_buffer_a(i) := compactedIds(i)
+        refBufferA(refRespCtx)(i) := compactedIds(i)
       }
-      ref_buf_idx_a := 0.U
-      ref_buf_count_a := ref_req_count_pipe.last
+      refBufIdxA(refRespCtx) := 0.U
+      refBufCountA(refRespCtx) := refReqCountPipe.last
     }
   }
 
-  private val geomTriId = Mux(activeBufSel, ref_buffer_b(activeBufIdx), ref_buffer_a(activeBufIdx))
-
   class MemReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+    val ctx = UInt(ctxW.W)
     val epoch = Bool()
   }
 
-  val memReqQ = Module(new Queue(new MemReq, 2))
-  memReqQ.io.enq.valid := batch_in_progress && sourceHasData && !io.flush
-  memReqQ.io.enq.bits.addr := geomTriId
-  memReqQ.io.enq.bits.epoch := active_epoch
+  val memReqQ = Module(new Queue(new MemReq, 4))
+  private val memRr = RegInit(false.B)
+  private val memSel = Wire(UInt(ctxW.W))
+  private val memEnqValid = memCanEnq.asUInt.orR
+  memSel := Mux(memCanEnq(0) && (!memRr || !memCanEnq(1)), 0.U, 1.U)
 
-  val memReqStale = memReqQ.io.deq.valid && (memReqQ.io.deq.bits.epoch =/= active_epoch)
-  val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale && !io.flush
+  memReqQ.io.enq.valid := memEnqValid
+  memReqQ.io.enq.bits.addr := geomTriId(memSel)
+  memReqQ.io.enq.bits.ctx := memSel
+  memReqQ.io.enq.bits.epoch := activeEpoch(memSel)
+
+  when(memReqQ.io.enq.fire) {
+    when(activeBufSel(memSel)) {
+      refBufIdxB(memSel) := refBufIdxB(memSel) + 1.U
+      refBufCountB(memSel) := refBufCountB(memSel) - 1.U
+    }.otherwise {
+      refBufIdxA(memSel) := refBufIdxA(memSel) + 1.U
+      refBufCountA(memSel) := refBufCountA(memSel) - 1.U
+    }
+    memRr := !memSel(0)
+  }
+
+  val memReqStale = memReqQ.io.deq.valid &&
+    ((memReqQ.io.deq.bits.epoch =/= activeEpoch(memReqQ.io.deq.bits.ctx)) || io.clear_ctx(memReqQ.io.deq.bits.ctx))
+  val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale
   val memReqToMemReady = io.mem_req.ready && io.mem_req_mask.ready
+  val memReqDequeued = memReqQ.io.deq.fire
 
   io.mem_req.valid := memReqToMemValid
   io.mem_req.bits := memReqQ.io.deq.bits.addr
   io.mem_req_mask.valid := memReqToMemValid
   io.mem_req_mask.bits := 1.U
-  memReqQ.io.deq.ready := io.flush || memReqStale || (memReqToMemValid && memReqToMemReady)
+  memReqQ.io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
 
-  when(memReqQ.io.enq.fire && !io.flush) {
-    when(activeBufSel) {
-      ref_buf_idx_b := ref_buf_idx_b + 1.U
-      ref_buf_count_b := ref_buf_count_b - 1.U
-    }.otherwise {
-      ref_buf_idx_a := ref_buf_idx_a + 1.U
-      ref_buf_count_a := ref_buf_count_a - 1.U
+  for (ctx <- 0 until ctxCount) {
+    val inc = memReqQ.io.enq.fire && memSel === ctx.U
+    val dec = memReqDequeued && memReqQ.io.deq.bits.ctx === ctx.U
+    when(io.clear_ctx(ctx)) {
+      memReqQueuedCnt(ctx) := 0.U
+    }.elsewhen(inc || dec) {
+      memReqQueuedCnt(ctx) := memReqQueuedCnt(ctx) + inc.asUInt - dec.asUInt
     }
   }
 
   io.mem_resp.ready := true.B
 
   private val memReqPipeLen = GlobalConfig.triMemDpiLatency
-  private val mem_req_live_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
-  private val mem_req_epoch_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
-  private val memReqIssued = memReqQ.io.deq.fire && !memReqStale && !io.flush
-  when(io.flush) {
-    for (i <- 0 until memReqPipeLen) {
-      mem_req_live_pipe(i) := false.B
-      mem_req_epoch_pipe(i) := false.B
-    }
-  }.otherwise {
-    mem_req_live_pipe(0) := memReqIssued
-    mem_req_epoch_pipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.epoch, false.B)
-    for (i <- 1 until memReqPipeLen) {
-      mem_req_live_pipe(i) := mem_req_live_pipe(i - 1)
-      mem_req_epoch_pipe(i) := mem_req_epoch_pipe(i - 1)
-    }
+  private val memReqLivePipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  private val memReqCtxPipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(0.U(ctxW.W))))
+  private val memReqEpochPipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  private val memReqIssued = memReqQ.io.deq.fire && !memReqStale
+  memReqLivePipe(0) := memReqIssued
+  memReqCtxPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.ctx, 0.U)
+  memReqEpochPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.epoch, false.B)
+  for (i <- 1 until memReqPipeLen) {
+    memReqLivePipe(i) := memReqLivePipe(i - 1)
+    memReqCtxPipe(i) := memReqCtxPipe(i - 1)
+    memReqEpochPipe(i) := memReqEpochPipe(i - 1)
   }
-  private val mem_req_live = mem_req_live_pipe.last
-  private val mem_req_epoch = mem_req_epoch_pipe.last
-  private val mem_resp_live =
+
+  private val memLiveForCtx = Wire(Vec(ctxCount, Bool()))
+  for (ctx <- 0 until ctxCount) {
+    memLiveForCtx(ctx) := memReqLivePipe.zip(memReqCtxPipe).map { case (v, c) => v && c === ctx.U }.reduce(_ || _)
+  }
+
+  private val memRespCtx = memReqCtxPipe.last
+  private val memRespLive =
     io.mem_resp.fire &&
-      mem_req_live &&
-      (mem_req_epoch === active_epoch) &&
-      !io.flush
+      memReqLivePipe.last &&
+      (memReqEpochPipe.last === activeEpoch(memRespCtx)) &&
+      !io.clear_ctx(memRespCtx)
 
   private val pe = Module(new RayTriangleIntersection(c.cfg))
-  pe.io.ray := ray_reg
+  pe.io.ray := rayReg(memRespCtx)
   pe.io.tri := io.mem_resp.bits.tris(0)
-  pe.io.in_valid := mem_resp_live && io.mem_resp.bits.mask(0)
+  pe.io.in_valid := memRespLive && io.mem_resp.bits.mask(0)
+
+  private val peLatency =
+    c.cfg.faddLatency + (c.cfg.fmulLatency + c.cfg.faddLatency) + (c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
+      math.max(c.cfg.fdivLatency, c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
+      c.cfg.fmulLatency + c.cfg.faddLatency
+  private val peCtxOut = PipeUtils.pipeData(memRespCtx, peLatency)
 
   val fcmp = Module(new FCMP(c.cfg))
   fcmp.io.a := pe.io.t
-  fcmp.io.b := best_t
+  fcmp.io.b := bestT(peCtxOut)
   fcmp.io.signaling := false.B
-  when(pe.io.out_valid && pe.io.hit) {
-    when(fcmp.io.lt || !has_hit) {
-      best_t := pe.io.t
-      best_id := pe.io.id
-      has_hit := true.B
+
+  for (ctx <- 0 until ctxCount) {
+    val incoming = memRespLive && io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
+    val outgoing = pe.io.out_valid && peCtxOut === ctx.U
+    when(io.clear_ctx(ctx)) {
+      inflightCnt(ctx) := 0.U
+    }.otherwise {
+      inflightCnt(ctx) := inflightCnt(ctx) + incoming.asUInt - outgoing.asUInt
     }
   }
 
-  private val inflight_cnt = RegInit(0.U(10.W))
-  private val incoming_count = Mux(mem_resp_live && io.mem_resp.bits.mask(0), 1.U(10.W), 0.U(10.W))
-  private val outgoing_count = Mux(pe.io.out_valid, 1.U(10.W), 0.U(10.W))
-  private val inflight_next = inflight_cnt + incoming_count - outgoing_count
-  private val batch_source_drained =
-    (batch_refs_remaining === 0.U) &&
-      (ref_buf_count_a === 0.U) &&
-      (ref_buf_count_b === 0.U) &&
-      !refReqPendingLive &&
-      !memReqQ.io.deq.valid &&
-      !mem_req_live_pipe.asUInt.orR
-  private val batch_done_now =
-    batch_in_progress &&
-      batch_source_drained &&
-      (inflight_next === 0.U)
-
-  when(io.flush) {
-    inflight_cnt := 0.U
-    done_pulse_reg := false.B
-  }.otherwise {
-    inflight_cnt := inflight_next
-    done_pulse_reg := false.B
+  when(pe.io.out_valid && pe.io.hit) {
+    when(fcmp.io.lt || !hasHit(peCtxOut)) {
+      bestT(peCtxOut) := pe.io.t
+      bestId(peCtxOut) := pe.io.id
+      hasHit(peCtxOut) := true.B
+    }
   }
 
-  when(batch_done_now && !io.flush) {
-    batch_in_progress := false.B
-    result_capture_pending := true.B
+  for (ctx <- 0 until ctxCount) {
+    val incoming = memRespLive && io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
+    val outgoing = pe.io.out_valid && peCtxOut === ctx.U
+    val inflightNext = inflightCnt(ctx) + incoming.asUInt - outgoing.asUInt
+    val batchSourceDrained =
+      batchRefsRemaining(ctx) === 0.U &&
+        refBufCountA(ctx) === 0.U &&
+        refBufCountB(ctx) === 0.U &&
+        !refPending(ctx) &&
+        memReqQueuedCnt(ctx) === 0.U &&
+        !memLiveForCtx(ctx)
+    val batchDoneNow = batchInProgress(ctx) && batchSourceDrained && inflightNext === 0.U
+
+    when(resultValidReg(ctx) && outSel === ctx.U && !io.clear_ctx(ctx)) {
+      resultValidReg(ctx) := false.B
+    }
+
+    when(batchDoneNow && !resultCapturePending(ctx) && !resultValidReg(ctx) && !io.clear_ctx(ctx)) {
+      batchInProgress(ctx) := false.B
+      resultCapturePending(ctx) := true.B
+    }
+
+    when(resultCapturePending(ctx) && !resultValidReg(ctx) && !io.clear_ctx(ctx)) {
+      resultCapturePending(ctx) := false.B
+      resultHitReg(ctx) := hasHit(ctx)
+      resultIdReg(ctx) := bestId(ctx)
+      resultTReg(ctx) := bestT(ctx)
+      resultMetaReg(ctx) := rayMetaReg(ctx)
+      resultValidReg(ctx) := true.B
+    }
   }
 
-  when(state === s_BUSY &&
-    no_more_batches &&
-    !io.tri_batch_valid &&
-    !batch_in_progress &&
-    !io.flush) {
-    state := s_IDLE
-  }
-
-  when(result_capture_pending && !io.flush) {
-    result_capture_pending := false.B
-    result_hit_reg := has_hit
-    result_id_reg := best_id
-    result_t_reg := best_t
-    result_meta_reg := ray_meta_reg
-    done_pulse_reg := true.B
-  }
-
-  io.start_ready := state === s_IDLE
-  io.output_ready := canAcceptBatch
-  io.out_best_hit := result_hit_reg
-  io.hit_id := result_id_reg
-  io.t_best := result_t_reg
-  io.out_meta := result_meta_reg
-  io.out_done := done_pulse_reg
+  io.out_done := resultValidReg.asUInt.orR
+  io.out_ctx := outSel
+  io.out_best_hit := resultHitReg(outSel)
+  io.hit_id := resultIdReg(outSel)
+  io.t_best := resultTReg(outSel)
+  io.out_meta := resultMetaReg(outSel)
 }

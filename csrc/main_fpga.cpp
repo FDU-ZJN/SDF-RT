@@ -26,31 +26,44 @@ uint64_t main_time = 0;
 VerilatedVcdC* tfp = nullptr;
 
 static inline bool getWorkerResultPending(const VFpgaTop___024root* root, int idx) {
+    constexpr uint8_t kResultPendingState = 5;
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_0;
-        case 1: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_1;
-        case 2: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_2;
-        case 3: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_3;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__ctxState_0_0 == kResultPendingState;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__ctxState_0_1 == kResultPendingState;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__ctxState_1_0 == kResultPendingState;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__ctxState_1_1 == kResultPendingState;
+        case 4: return root->FpgaTop__DOT__traceController__DOT__ctxState_2_0 == kResultPendingState;
+        case 5: return root->FpgaTop__DOT__traceController__DOT__ctxState_2_1 == kResultPendingState;
+        case 6: return root->FpgaTop__DOT__traceController__DOT__ctxState_3_0 == kResultPendingState;
+        case 7: return root->FpgaTop__DOT__traceController__DOT__ctxState_3_1 == kResultPendingState;
         default: return false;
     }
 }
 
 static inline bool getWorkerResultHit(const VFpgaTop___024root* root, int idx) {
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__traceController__DOT__workerResult_0_hit;
-        case 1: return root->FpgaTop__DOT__traceController__DOT__workerResult_1_hit;
-        case 2: return root->FpgaTop__DOT__traceController__DOT__workerResult_2_hit;
-        case 3: return root->FpgaTop__DOT__traceController__DOT__workerResult_3_hit;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__ctxResult_0_0_hit;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__ctxResult_0_1_hit;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__ctxResult_1_0_hit;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__ctxResult_1_1_hit;
+        case 4: return root->FpgaTop__DOT__traceController__DOT__ctxResult_2_0_hit;
+        case 5: return root->FpgaTop__DOT__traceController__DOT__ctxResult_2_1_hit;
+        case 6: return root->FpgaTop__DOT__traceController__DOT__ctxResult_3_0_hit;
+        case 7: return root->FpgaTop__DOT__traceController__DOT__ctxResult_3_1_hit;
         default: return false;
     }
 }
 
 static inline uint32_t getWorkerCmdIdx(const VFpgaTop___024root* root, int idx) {
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_0;
-        case 1: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_1;
-        case 2: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_2;
-        case 3: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_3;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_0_0;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_0_1;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_1_0;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_1_1;
+        case 4: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_2_0;
+        case 5: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_2_1;
+        case 6: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_3_0;
+        case 7: return root->FpgaTop__DOT__traceController__DOT__ctxCmdIdx_3_1;
         default: return 0;
     }
 }
@@ -233,7 +246,7 @@ int main(int argc, char** argv) {
     
     // Debug counters
     uint64_t pixelValidCount = 0;
-    std::array<bool, 4> prevWorkerResultPending = {false, false, false, false};
+    std::array<bool, 8> prevWorkerResultPending = {false, false, false, false, false, false, false, false};
     uint64_t triPeHitOverflow = 0;
 
     while (!frameDone) {

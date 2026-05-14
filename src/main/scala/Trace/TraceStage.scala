@@ -30,14 +30,17 @@ class TraceStage(c: TriPeConfig = TriPeConfig()) extends Module {
 
   pe.io.ray_in := io.issue_in.bits.ray
   pe.io.ray_meta := io.issue_in.bits.meta
+  pe.io.ray_ctx := 0.U
   pe.io.ray_valid := io.issue_in.fire
-  io.issue_in.ready := pe.io.start_ready && !io.flush
+  io.issue_in.ready := pe.io.start_ready(0) && !io.flush
 
   pe.io.tri_batch_in := io.tri_batch_in.bits
+  pe.io.tri_batch_ctx := 0.U
   pe.io.tri_batch_valid := io.tri_batch_in.valid && !io.flush
-  io.tri_batch_in.ready := pe.io.output_ready && !io.flush
+  io.tri_batch_in.ready := pe.io.output_ready(0) && !io.flush
   pe.io.end_exec := io.end_exec && !io.flush
-  pe.io.flush := io.flush
+  pe.io.clear_ctx(0) := io.flush
+  pe.io.clear_ctx(1) := false.B
 
   val peResult = Wire(new TraceResult(c.cfg, c.addrWidth))
   peResult.meta := pe.io.out_meta

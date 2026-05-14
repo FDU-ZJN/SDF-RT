@@ -96,6 +96,7 @@ class DdaScheduler(
   completionQ.io.deq.ready := io.trace_job_out.ready
 
   when(io.slot_release.valid) {
+    assert(!freeSlots(io.slot_release.bits), "DdaScheduler duplicate or invalid trace slot release")
     freeSlots(io.slot_release.bits) := true.B
   }
 }
