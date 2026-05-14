@@ -8,7 +8,9 @@ import raytrace_utils.fudian._
 class RayDirCalc(
   cfg: FloatConfig = FloatConfig.FP32,
   width: Int = GlobalConfig.frameWidth,
-  height: Int = GlobalConfig.frameHeight
+  height: Int = GlobalConfig.frameHeight,
+  laneId: Int = 0,
+  numLanes: Int = 1
 ) extends Module {
   val io = IO(new Bundle {
     val clear     = Input(Bool())
@@ -27,125 +29,129 @@ class RayDirCalc(
   private def f32(v: Float): BigInt =
     BigInt(java.lang.Float.floatToRawIntBits(v) & 0xFFFFFFFFL)
 
-  val twoFp    = f32(2.0f).U(cfg.totalWidth.W)
-  val invHFp   = f32(1.0f / height.toFloat).U(cfg.totalWidth.W)
-  val negInvHFp = f32(-1.0f / height.toFloat).U(cfg.totalWidth.W)
-  val negWFp   = f32((-width).toFloat).U(cfg.totalWidth.W)
-  val negHFp   = f32((-height).toFloat).U(cfg.totalWidth.W)
-  val neg1_8Fp = f32(-1.8f).U(cfg.totalWidth.W)
-  val z2Fp     = f32(3.24f).U(cfg.totalWidth.W)   // (-1.8)² = 3.24, pre-computed
+  require(height % 5 == 0, "RayDirCalc integer normalization requires height to be divisible by 5 for z=-1.8")
+  require(math.max(width, height) <= 65535, "RayDirCalc integer normalization requires 16-bit numerator magnitude")
+
+  private val zScaledInt = -(9 * height / 5)
+  private val zScaledAbs = math.abs(zScaledInt)
+  private val zScaledSquared = BigInt(zScaledAbs) * BigInt(zScaledAbs)
+  val zScaledFp = f32(zScaledInt.toFloat).U(cfg.totalWidth.W)
+
+  private def unsignedToFp32(value: UInt): UInt = {
+    val width = value.getWidth
+    val isZero = value === 0.U
+    val msbOH = PriorityEncoderOH(Reverse(value))
+    val msbFromTop = OHToUInt(msbOH)
+    val msbIdx = (width - 1).U - msbFromTop
+    val exp = (127.U(8.W) + msbIdx)(7, 0)
+    val aligned = (value << ((width - 1).U - msbIdx))(width - 1, 0)
+    val frac = if (width >= 24) aligned(width - 2, width - 24) else Cat(aligned(width - 2, 0), 0.U((24 - width).W))
+
+    Mux(isZero, 0.U(32.W), Cat(0.U(1.W), exp, frac))
+  }
 
   // Pipeline always accepts
   io.in_ready := true.B
 
-  val pixelXReg = RegInit(0.U(16.W))
-  val pixelYReg = RegInit(0.U(16.W))
+  require(laneId >= 0 && laneId < numLanes, s"laneId $laneId must be in [0, $numLanes)")
+
+  private val pixelCoordW = log2Ceil(math.max(width, height) + numLanes + 1)
+  private val startX = (laneId % width).U(pixelCoordW.W)
+  private val startY = (laneId / width).U(pixelCoordW.W)
+  private val widthU = width.U(pixelCoordW.W)
+  private val laneStride = numLanes.U(pixelCoordW.W)
+
+  val pixelXReg = RegInit(startX)
+  val pixelYReg = RegInit(startY)
   when(io.clear) {
-    pixelXReg := 0.U
-    pixelYReg := 0.U
+    pixelXReg := startX
+    pixelYReg := startY
   }.elsewhen(io.in_valid) {
-    when(pixelXReg === (width - 1).U) {
-      pixelXReg := 0.U
+    val nextX = pixelXReg + laneStride
+    when(nextX >= widthU) {
+      pixelXReg := nextX - widthU
       pixelYReg := pixelYReg + 1.U
     }.otherwise {
-      pixelXReg := pixelXReg + 1.U
+      pixelXReg := nextX
     }
   }
 
-  val intToFP_x = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_x.io.int  := pixelXReg
+  private val numerW = pixelCoordW + 1
+  require(numerW <= 16, "RayDirCalc IMUL path requires numerators to fit into 16 bits")
+  private val widthExt = width.U(numerW.W)
+  private val heightExt = height.U(numerW.W)
+  val x2Int = (pixelXReg << 1).pad(numerW)
+  val y2Int = (pixelYReg << 1).pad(numerW)
+  val numerXSign = x2Int < widthExt
+  val numerYSign = y2Int > heightExt
+  val numerXMag = Wire(UInt(numerW.W))
+  val numerYMag = Wire(UInt(numerW.W))
+  numerXMag := Mux(numerXSign, widthExt - x2Int, x2Int - widthExt)
+  numerYMag := Mux(numerYSign, y2Int - heightExt, heightExt - y2Int)
 
-  val intToFP_y = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  intToFP_y.io.int  := pixelYReg
-
-  val xFp = intToFP_x.io.result
-  val yFp = intToFP_y.io.result
-
-  // =========================================================================
-  // S1: FMUL — 2*x, 2*y  (latency +8, cumulative 8)
-  // =========================================================================
-  val mul2x = Module(new FMUL(cfg))
-  mul2x.io.a := xFp
-  mul2x.io.b := twoFp
-
-  val mul2y = Module(new FMUL(cfg))
-  mul2y.io.a := yFp
-  mul2y.io.b := twoFp
-
-  // =========================================================================
-  // S2: FADD — 2x - w, 2y - h  (latency +7, cumulative 15)
-  // =========================================================================
-  val subW = Module(new FADD(cfg))
-  subW.io.a := mul2x.io.result
-  subW.io.b := negWFp
-
-  val subH = Module(new FADD(cfg))
-  subH.io.a := mul2y.io.result
-  subH.io.b := negHFp
+  val numerXSignReg = Reg(Bool())
+  val numerYSignReg = Reg(Bool())
+  val numerXMagReg = Reg(UInt(numerW.W))
+  val numerYMagReg = Reg(UInt(numerW.W))
+  numerXSignReg := numerXSign
+  numerYSignReg := numerYSign
+  numerXMagReg := numerXMag
+  numerYMagReg := numerYMag
 
   // =========================================================================
-  // S3: FMUL — u = (2x-w)/h, v = -(2y-h)/h  (latency +8, cumulative 23)
-  //       Division replaced by multiplication with pre-computed 1/h.
+  // S1: integer numerator — A=(2*x-w), B=(h-2*y)  (latency +1, cumulative 1)
   // =========================================================================
-  val mulU = Module(new FMUL(cfg))
-  mulU.io.a := subW.io.res
-  mulU.io.b := invHFp
-
-  val mulV = Module(new FMUL(cfg))
-  mulV.io.a := subH.io.res
-  mulV.io.b := negInvHFp
-
-  val u = mulU.io.result  // available at cumulative 23
-  val v = mulV.io.result
+  val numerLatency = 1
 
   // =========================================================================
-  // S4: FMUL — u², v²  (latency +8, cumulative 31)
-  //       z² = 3.24 is pre-computed constant (available from t=0)
+  // S2: IMUL — A², B²  (latency +1, cumulative 2)
   // =========================================================================
-  val mulU2 = Module(new FMUL(cfg))
-  mulU2.io.a := u
-  mulU2.io.b := u
+  val mulA2 = Module(new IMUL(cfg.useFloatIP))
+  val numerXMag16 = numerXMagReg.pad(16)
+  mulA2.io.a := numerXMag16
+  mulA2.io.b := numerXMag16
 
-  val mulV2 = Module(new FMUL(cfg))
-  mulV2.io.a := v
-  mulV2.io.b := v
+  val mulB2 = Module(new IMUL(cfg.useFloatIP))
+  val numerYMag16 = numerYMagReg.pad(16)
+  mulB2.io.a := numerYMag16
+  mulB2.io.b := numerYMag16
+
+  val numerFpLatency = numerLatency + 1
+  val aMagFp = unsignedToFp32(numerXMagReg)
+  val bMagFp = unsignedToFp32(numerYMagReg)
+  val aFp = RegNext(Cat(numerXSignReg, aMagFp(cfg.totalWidth - 2, 0)))
+  val bFp = RegNext(Cat(numerYSignReg, bMagFp(cfg.totalWidth - 2, 0)))
 
   // =========================================================================
-  // S5: FADD — u² + v²  (latency +7, cumulative 38)
+  // S3: integer sumSq = A² + B² + (z*h)², then register and IntToFP
   // =========================================================================
-  val addUV2 = Module(new FADD(cfg))
-  addUV2.io.a := mulU2.io.result
-  addUV2.io.b := mulV2.io.result
+  val sumSqInt = Wire(UInt(32.W))
+  sumSqInt := mulA2.io.p + mulB2.io.p + zScaledSquared.U(32.W)
 
-  // =========================================================================
-  // S6: FADD — sumSq = (u²+v²) + z²  (latency +7, cumulative 45)
-  //       z² is constant, always valid; no alignment delay needed
-  // =========================================================================
-  val addSum = Module(new FADD(cfg))
-  addSum.io.a := addUV2.io.res
-  addSum.io.b := z2Fp
+  val sumSqIntReg = Reg(UInt(32.W))
+  sumSqIntReg := sumSqInt
 
-  val sumSq = addSum.io.res  // available at cumulative 45
+  val sumSqLatency = numerLatency + 3
+  val sumSq = RegNext(unsignedToFp32(sumSqIntReg))
 
   val fsqrt = Module(new FSQRT(cfg))
   fsqrt.io.in := sumSq
 
-  val invLen = fsqrt.io.out  // available at cumulative 74
+  val invLen = fsqrt.io.out
 
-  val uvLatency = cfg.fmulLatency + cfg.faddLatency + cfg.fmulLatency
-  val invLenLatency = 3 * cfg.fmulLatency + 3 * cfg.faddLatency + cfg.fsqrtLatency
-  require(invLenLatency >= uvLatency, "RayDirCalc timing error: invLen must arrive after u/v")
+  val invLenLatency = sumSqLatency + cfg.fsqrtLatency
+  require(invLenLatency >= numerFpLatency, "RayDirCalc timing error: invLen must arrive after numerators")
 
-  val uDelayed = PipeUtils.pipeData(u, invLenLatency - uvLatency)
-  val vDelayed = PipeUtils.pipeData(v, invLenLatency - uvLatency)
-  val zDelayed = PipeUtils.pipeData(neg1_8Fp, invLenLatency)
+  val aDelayed = PipeUtils.pipeData(aFp, invLenLatency - numerFpLatency)
+  val bDelayed = PipeUtils.pipeData(bFp, invLenLatency - numerFpLatency)
+  val zDelayed = PipeUtils.pipeData(zScaledFp, invLenLatency)
 
   val mulDirX = Module(new FMUL(cfg))
-  mulDirX.io.a := uDelayed
+  mulDirX.io.a := aDelayed
   mulDirX.io.b := invLen
 
   val mulDirY = Module(new FMUL(cfg))
-  mulDirY.io.a := vDelayed
+  mulDirY.io.a := bDelayed
   mulDirY.io.b := invLen
 
   val mulDirZ = Module(new FMUL(cfg))
@@ -156,7 +162,7 @@ class RayDirCalc(
   // Output
   // =========================================================================
   val totalLatency = invLenLatency + cfg.fmulLatency
-  require(totalLatency == 4 * cfg.fmulLatency + 3 * cfg.faddLatency + cfg.fsqrtLatency,
+  require(totalLatency == sumSqLatency + cfg.fsqrtLatency + cfg.fmulLatency,
     "RayDirCalc timing error: total latency mismatch")
 
   io.dir_x := mulDirX.io.result

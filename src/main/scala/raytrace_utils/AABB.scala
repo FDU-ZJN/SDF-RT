@@ -17,18 +17,14 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val out_valid = Output(Bool())
   })
 
-  val fpOne = cfg.oneBigInt.U(cfg.totalWidth.W)
-  val fpEps = java.lang.Float.floatToIntBits(1e-9f).U(cfg.totalWidth.W)
-
   def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
 
-  // Parallel per-axis setup: dir' = dir + eps, then invDir = 1 / dir'.
+  // Parallel per-axis setup: invDir = 1 / dir.
   val dirs = Seq(io.ray.dir.x, io.ray.dir.y, io.ray.dir.z)
   val mins = Seq(io.aabb.min.x, io.aabb.min.y, io.aabb.min.z)
   val maxs = Seq(io.aabb.max.x, io.aabb.max.y, io.aabb.max.z)
   val origs = Seq(io.ray.origin.x, io.ray.origin.y, io.ray.origin.z)
 
-  val dirPlusEps = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val invDir = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val t0 = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
   val t1 = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
@@ -36,13 +32,8 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val axisFar = Seq.fill(3)(Wire(UInt(cfg.totalWidth.W)))
 
   for (i <- 0 until 3) {
-    val addDirEps = Module(new FADD(cfg))
-    addDirEps.io.a := dirs(i)
-    addDirEps.io.b := fpEps
-    dirPlusEps(i) := addDirEps.io.res
-
     val div = Module(new FRQ(cfg))
-    div.io.in := dirPlusEps(i)
+    div.io.in := dirs(i)
     div.io.in_valid := io.in_valid
     invDir(i) := div.io.result
 
@@ -54,8 +45,9 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     subMax.io.a := maxs(i)
     subMax.io.b := neg(origs(i))
 
-    val subMinAligned = PipeUtils.pipeData(subMin.io.res, cfg.fdivLatency)
-    val subMaxAligned = PipeUtils.pipeData(subMax.io.res, cfg.fdivLatency)
+    val subAlignLatency = math.max(0, cfg.fdivLatency - cfg.faddLatency)
+    val subMinAligned = PipeUtils.pipeData(subMin.io.res, subAlignLatency)
+    val subMaxAligned = PipeUtils.pipeData(subMax.io.res, subAlignLatency)
 
     val mul0 = Module(new FMUL(cfg))
     mul0.io.a := subMinAligned
@@ -145,6 +137,6 @@ class RayAABBIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   io.tFar := RegNext(tMaxFinal, 0.U)
   io.hit := RegNext(hitComb, false.B)
 
-  val totalLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
-  io.out_valid := PipeUtils.pipeData(io.in_valid, totalLatency)
+  val totalLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
+  io.out_valid := PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
 }

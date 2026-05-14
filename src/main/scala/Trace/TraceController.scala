@@ -35,6 +35,7 @@ class TraceController(
   val workerResultPending = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   val workerResult = Reg(Vec(numWorkers, new TraceResult(c.cfg, c.addrWidth)))
   val slotFlushPending = RegInit(VecInit(Seq.fill(slotCount)(false.B)))
+  val jobQ = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds), 2, pipe = true))
 
   val missT = "h7F7FFFFF".U(c.cfg.totalWidth.W)
   val workerFree = Wire(Vec(numWorkers, Bool()))
@@ -54,7 +55,8 @@ class TraceController(
 
   val hasFreeWorker = workerFree.asUInt.orR
   val allocOH = PriorityEncoderOH(workerFree)
-  io.job_in.ready := hasFreeWorker
+  jobQ.io.enq <> io.job_in
+  jobQ.io.deq.ready := hasFreeWorker
 
   io.slot_release.valid := false.B
   io.slot_release.bits := 0.U
@@ -93,13 +95,13 @@ class TraceController(
     assert(cmdWriteReady, "TraceController cmd queue overflow")
   }
 
-  when(io.job_in.fire) {
+  when(jobQ.io.deq.fire) {
     for (i <- 0 until numWorkers) {
       when(allocOH(i)) {
-        workerJob(i) := io.job_in.bits
+        workerJob(i) := jobQ.io.deq.bits
         workerCmdIdx(i) := 0.U
-        when(io.job_in.bits.cmdCount === 0.U) {
-          workerResult(i).meta := io.job_in.bits.meta
+        when(jobQ.io.deq.bits.cmdCount === 0.U) {
+          workerResult(i).meta := jobQ.io.deq.bits.meta
           workerResult(i).hit := false.B
           workerResult(i).hitId := 0.U
           workerResult(i).hitT := missT

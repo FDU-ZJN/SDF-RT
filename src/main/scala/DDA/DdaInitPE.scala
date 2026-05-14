@@ -20,11 +20,10 @@ class DdaInitPE(
   private val positionLatency = cfg.fmulLatency + cfg.faddLatency
   private val mapLatency = positionLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
   private val distSelectLatency = mapLatency + cfg.faddLatency + cfg.faddLatency
-  private val deltaLatency = cfg.fmulLatency + cfg.fcmpLatency + cfg.fdivLatency
+  private val deltaLatency = cfg.fmulLatency + cfg.fdivLatency
   private val tMaxInputLatency = math.max(distSelectLatency, deltaLatency)
   private val totalInitLatency = tMaxInputLatency + cfg.fmulLatency
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
-  private val fpEps = java.lang.Float.floatToRawIntBits(1.0e-9f).U(cfg.totalWidth.W)
 
   private def alignToTarget(x: UInt, pathLatency: Int, targetLatency: Int): UInt =
     pipeUInt(x, math.max(0, targetLatency - pathLatency))
@@ -156,34 +155,14 @@ class DdaInitPE(
   val absDsdtY = fpAbs(dsdtMulY.io.result)
   val absDsdtZ = fpAbs(dsdtMulZ.io.result)
 
-  val cmpEpsX = Module(new FCMP(cfg))
-  val cmpEpsY = Module(new FCMP(cfg))
-  val cmpEpsZ = Module(new FCMP(cfg))
-  cmpEpsX.io.a := absDsdtX
-  cmpEpsX.io.b := fpEps
-  cmpEpsX.io.signaling := false.B
-  cmpEpsY.io.a := absDsdtY
-  cmpEpsY.io.b := fpEps
-  cmpEpsY.io.signaling := false.B
-  cmpEpsZ.io.a := absDsdtZ
-  cmpEpsZ.io.b := fpEps
-  cmpEpsZ.io.signaling := false.B
-
-  val absDsdtXAligned = pipeUInt(absDsdtX, cfg.fcmpLatency)
-  val absDsdtYAligned = pipeUInt(absDsdtY, cfg.fcmpLatency)
-  val absDsdtZAligned = pipeUInt(absDsdtZ, cfg.fcmpLatency)
-  val denomX = Mux(cmpEpsX.io.le, fpEps, absDsdtXAligned)
-  val denomY = Mux(cmpEpsY.io.le, fpEps, absDsdtYAligned)
-  val denomZ = Mux(cmpEpsZ.io.le, fpEps, absDsdtZAligned)
-
   val deltaDivX = Module(new FRQ(cfg))
   val deltaDivY = Module(new FRQ(cfg))
   val deltaDivZ = Module(new FRQ(cfg))
-  deltaDivX.io.in := denomX
+  deltaDivX.io.in := absDsdtX
   deltaDivX.io.in_valid := inFire
-  deltaDivY.io.in := denomY
+  deltaDivY.io.in := absDsdtY
   deltaDivY.io.in_valid := inFire
-  deltaDivZ.io.in := denomZ
+  deltaDivZ.io.in := absDsdtZ
   deltaDivZ.io.in_valid := inFire
 
   val distToMulX = alignToTarget(distX, distSelectLatency, tMaxInputLatency)

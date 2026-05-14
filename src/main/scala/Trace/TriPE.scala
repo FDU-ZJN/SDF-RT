@@ -226,12 +226,28 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   private val geomTriId = Mux(activeBufSel, ref_buffer_b(activeBufIdx), ref_buffer_a(activeBufIdx))
-  io.mem_req.valid := batch_in_progress && sourceHasData && !io.flush
-  io.mem_req.bits := geomTriId
-  io.mem_req_mask.valid := io.mem_req.valid
-  io.mem_req_mask.bits := 1.U
 
-  when(io.mem_req.fire && !io.flush) {
+  class MemReq extends Bundle {
+    val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+    val epoch = Bool()
+  }
+
+  val memReqQ = Module(new Queue(new MemReq, 2))
+  memReqQ.io.enq.valid := batch_in_progress && sourceHasData && !io.flush
+  memReqQ.io.enq.bits.addr := geomTriId
+  memReqQ.io.enq.bits.epoch := active_epoch
+
+  val memReqStale = memReqQ.io.deq.valid && (memReqQ.io.deq.bits.epoch =/= active_epoch)
+  val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale && !io.flush
+  val memReqToMemReady = io.mem_req.ready && io.mem_req_mask.ready
+
+  io.mem_req.valid := memReqToMemValid
+  io.mem_req.bits := memReqQ.io.deq.bits.addr
+  io.mem_req_mask.valid := memReqToMemValid
+  io.mem_req_mask.bits := 1.U
+  memReqQ.io.deq.ready := io.flush || memReqStale || (memReqToMemValid && memReqToMemReady)
+
+  when(memReqQ.io.enq.fire && !io.flush) {
     when(activeBufSel) {
       ref_buf_idx_b := ref_buf_idx_b + 1.U
       ref_buf_count_b := ref_buf_count_b - 1.U
@@ -246,14 +262,15 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val memReqPipeLen = GlobalConfig.triMemDpiLatency
   private val mem_req_live_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
   private val mem_req_epoch_pipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  private val memReqIssued = memReqQ.io.deq.fire && !memReqStale && !io.flush
   when(io.flush) {
     for (i <- 0 until memReqPipeLen) {
       mem_req_live_pipe(i) := false.B
       mem_req_epoch_pipe(i) := false.B
     }
   }.otherwise {
-    mem_req_live_pipe(0) := io.mem_req.fire
-    mem_req_epoch_pipe(0) := Mux(io.mem_req.fire, active_epoch, false.B)
+    mem_req_live_pipe(0) := memReqIssued
+    mem_req_epoch_pipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.epoch, false.B)
     for (i <- 1 until memReqPipeLen) {
       mem_req_live_pipe(i) := mem_req_live_pipe(i - 1)
       mem_req_epoch_pipe(i) := mem_req_epoch_pipe(i - 1)
@@ -293,6 +310,7 @@ class TriPE(val c: TriPeConfig) extends Module {
       (ref_buf_count_a === 0.U) &&
       (ref_buf_count_b === 0.U) &&
       !refReqPendingLive &&
+      !memReqQ.io.deq.valid &&
       !mem_req_live_pipe.asUInt.orR
   private val batch_done_now =
     batch_in_progress &&

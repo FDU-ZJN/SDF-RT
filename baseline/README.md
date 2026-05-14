@@ -42,6 +42,14 @@ make run
 ./cuda_bvh --frames 100
 ```
 
+如果你希望只固定启动一小批 CUDA 线程，例如 `300` 个：
+
+```bash
+./cuda_bvh --fixed-threads 300
+```
+
+这个参数限制的是 kernel launch 出去的 CUDA 线程数，不是 GPU 硬件层面可被精确绑定的 `300` 个 CUDA core。程序会用这固定数量的线程通过 grid-stride 方式跑完整张图。
+
 ## 输出
 
 程序会打印：

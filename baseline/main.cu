@@ -73,6 +73,7 @@ struct Options {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     int frames = kDefaultFrames;
+    int fixedThreads = 0;
     std::string objPath = kDefaultObjPath;
     std::string outPath = kDefaultOutPath;
 };
@@ -81,6 +82,20 @@ inline void checkCuda(cudaError_t err, const char* what) {
     if (err != cudaSuccess) {
         throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
     }
+}
+
+dim3 makeExactThreadBlock(int totalThreads) {
+    if (totalThreads <= 0) {
+        throw std::runtime_error("--fixed-threads must be positive");
+    }
+    const int maxThreadsPerBlock = 1024;
+    const int start = std::min(totalThreads, maxThreadsPerBlock);
+    for (int blockSize = start; blockSize >= 1; --blockSize) {
+        if (totalThreads % blockSize == 0) {
+            return dim3(static_cast<unsigned int>(blockSize), 1, 1);
+        }
+    }
+    throw std::runtime_error("failed to derive exact CUDA launch shape");
 }
 
 inline Vec3 makeVec3(float x, float y, float z) { return Vec3{x, y, z}; }
@@ -455,94 +470,98 @@ __global__ void renderKernel(const Triangle* triangles,
                              int width,
                              int height,
                              uint8_t* image) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) return;
-    const int idx = y * width + x;
+    const int idx0 = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int stride = static_cast<int>(blockDim.x * gridDim.x);
+    const int pixelCount = width * height;
 
-    const float u = (2.0f * static_cast<float>(x) - static_cast<float>(width)) / static_cast<float>(height);
-    const float v = -(2.0f * static_cast<float>(y) - static_cast<float>(height)) / static_cast<float>(height);
-    Vec3 dir = d_makeVec3(u, v, kCameraDirZ);
-    const float invLen = rsqrtf(d_dot(dir, dir));
-    dir.x *= invLen;
-    dir.y *= invLen;
-    dir.z *= invLen;
+    for (int idx = idx0; idx < pixelCount; idx += stride) {
+        const int x = idx % width;
+        const int y = idx / width;
 
-    int stack[kMaxStackDepth];
-    int sp = 0;
-    if (nodeCount > 0) stack[sp++] = 0;
+        const float u = (2.0f * static_cast<float>(x) - static_cast<float>(width)) / static_cast<float>(height);
+        const float v = -(2.0f * static_cast<float>(y) - static_cast<float>(height)) / static_cast<float>(height);
+        Vec3 dir = d_makeVec3(u, v, kCameraDirZ);
+        const float invLen = rsqrtf(d_dot(dir, dir));
+        dir.x *= invLen;
+        dir.y *= invLen;
+        dir.z *= invLen;
 
-    float bestT = -1.0f;
-    int bestTriId = -1;
+        int stack[kMaxStackDepth];
+        int sp = 0;
+        if (nodeCount > 0) stack[sp++] = 0;
 
-    while (sp > 0) {
-        const int curIdx = stack[--sp];
-        if (curIdx < 0 || curIdx >= nodeCount) continue;
-        const BVHNode node = nodes[curIdx];
-        float tAabb = 0.0f;
-        if (!rayAabbIntersect(origin, dir, node.bounds, tAabb)) continue;
-        if (bestT >= 0.0f && tAabb >= bestT) continue;
+        float bestT = -1.0f;
+        int bestTriId = -1;
 
-        if (node.left < 0 && node.right < 0) {
-            for (int i = 0; i < node.triCount; ++i) {
-                const int triIdx = node.triStart + i;
-                float t = 0.0f;
-                if (rayTriangleIntersect(origin, dir, triangles[triIdx], t) && (bestT < 0.0f || t < bestT)) {
-                    bestT = t;
-                    bestTriId = triIdx;
+        while (sp > 0) {
+            const int curIdx = stack[--sp];
+            if (curIdx < 0 || curIdx >= nodeCount) continue;
+            const BVHNode node = nodes[curIdx];
+            float tAabb = 0.0f;
+            if (!rayAabbIntersect(origin, dir, node.bounds, tAabb)) continue;
+            if (bestT >= 0.0f && tAabb >= bestT) continue;
+
+            if (node.left < 0 && node.right < 0) {
+                for (int i = 0; i < node.triCount; ++i) {
+                    const int triIdx = node.triStart + i;
+                    float t = 0.0f;
+                    if (rayTriangleIntersect(origin, dir, triangles[triIdx], t) && (bestT < 0.0f || t < bestT)) {
+                        bestT = t;
+                        bestTriId = triIdx;
+                    }
                 }
+                continue;
             }
-            continue;
-        }
 
-        float tLeft = 1e9f;
-        float tRight = 1e9f;
-        bool hitLeft = false;
-        bool hitRight = false;
-        if (node.left >= 0) {
-            hitLeft = rayAabbIntersect(origin, dir, nodes[node.left].bounds, tLeft);
-            if (bestT >= 0.0f && tLeft >= bestT) hitLeft = false;
-        }
-        if (node.right >= 0) {
-            hitRight = rayAabbIntersect(origin, dir, nodes[node.right].bounds, tRight);
-            if (bestT >= 0.0f && tRight >= bestT) hitRight = false;
-        }
-
-        if (hitLeft && hitRight) {
-            if (tLeft <= tRight) {
-                if (sp + 2 <= kMaxStackDepth) {
-                    stack[sp++] = node.right;
-                    stack[sp++] = node.left;
-                }
-            } else {
-                if (sp + 2 <= kMaxStackDepth) {
-                    stack[sp++] = node.left;
-                    stack[sp++] = node.right;
-                }
+            float tLeft = 1e9f;
+            float tRight = 1e9f;
+            bool hitLeft = false;
+            bool hitRight = false;
+            if (node.left >= 0) {
+                hitLeft = rayAabbIntersect(origin, dir, nodes[node.left].bounds, tLeft);
+                if (bestT >= 0.0f && tLeft >= bestT) hitLeft = false;
             }
-        } else if (hitLeft) {
-            if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.left;
-        } else if (hitRight) {
-            if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.right;
+            if (node.right >= 0) {
+                hitRight = rayAabbIntersect(origin, dir, nodes[node.right].bounds, tRight);
+                if (bestT >= 0.0f && tRight >= bestT) hitRight = false;
+            }
+
+            if (hitLeft && hitRight) {
+                if (tLeft <= tRight) {
+                    if (sp + 2 <= kMaxStackDepth) {
+                        stack[sp++] = node.right;
+                        stack[sp++] = node.left;
+                    }
+                } else {
+                    if (sp + 2 <= kMaxStackDepth) {
+                        stack[sp++] = node.left;
+                        stack[sp++] = node.right;
+                    }
+                }
+            } else if (hitLeft) {
+                if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.left;
+            } else if (hitRight) {
+                if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.right;
+            }
         }
-    }
 
-    uint8_t r = 0, g = 0, b = 0;
-    if (bestTriId >= 0) {
-        const Vec3 n = normals[bestTriId];
-        const float diff = fmaxf(n.x * kLightDirX + n.y * kLightDirY + n.z * kLightDirZ, 0.0f);
-        const float shade = diff + kAmbient;
-        const float cr = fminf(fmaxf(kBaseColorR * shade, 0.0f), 1.0f);
-        const float cg = fminf(fmaxf(kBaseColorG * shade, 0.0f), 1.0f);
-        const float cb = fminf(fmaxf(kBaseColorB * shade, 0.0f), 1.0f);
-        r = fp32ToByteLikeRenderPE(cr);
-        g = fp32ToByteLikeRenderPE(cg);
-        b = fp32ToByteLikeRenderPE(cb);
-    }
+        uint8_t r = 0, g = 0, b = 0;
+        if (bestTriId >= 0) {
+            const Vec3 n = normals[bestTriId];
+            const float diff = fmaxf(n.x * kLightDirX + n.y * kLightDirY + n.z * kLightDirZ, 0.0f);
+            const float shade = diff + kAmbient;
+            const float cr = fminf(fmaxf(kBaseColorR * shade, 0.0f), 1.0f);
+            const float cg = fminf(fmaxf(kBaseColorG * shade, 0.0f), 1.0f);
+            const float cb = fminf(fmaxf(kBaseColorB * shade, 0.0f), 1.0f);
+            r = fp32ToByteLikeRenderPE(cr);
+            g = fp32ToByteLikeRenderPE(cg);
+            b = fp32ToByteLikeRenderPE(cb);
+        }
 
-    image[idx * 3 + 0] = r;
-    image[idx * 3 + 1] = g;
-    image[idx * 3 + 2] = b;
+        image[idx * 3 + 0] = r;
+        image[idx * 3 + 1] = g;
+        image[idx * 3 + 2] = b;
+    }
 }
 
 Options parseArgs(int argc, char** argv) {
@@ -556,6 +575,7 @@ Options parseArgs(int argc, char** argv) {
         if (arg == "--width") opt.width = std::stoi(needValue("--width"));
         else if (arg == "--height") opt.height = std::stoi(needValue("--height"));
         else if (arg == "--frames") opt.frames = std::stoi(needValue("--frames"));
+        else if (arg == "--fixed-threads") opt.fixedThreads = std::stoi(needValue("--fixed-threads"));
         else if (arg == "--obj") opt.objPath = needValue("--obj");
         else if (arg == "--out") opt.outPath = needValue("--out");
         else throw std::runtime_error("unknown argument: " + arg);
@@ -570,6 +590,7 @@ int main(int argc, char** argv) {
         const Options opt = parseArgs(argc, argv);
         std::printf("CUDA BVH baseline %dx%d\n", opt.width, opt.height);
         std::printf("Benchmark frames: %d\n", opt.frames);
+        std::printf("Fixed CUDA threads: %d\n", opt.fixedThreads);
         std::printf("Loading model: %s\n", opt.objPath.c_str());
         std::printf("Camera origin: (%f, %f, %f)\n", kCameraOriginX, kCameraOriginY, kCameraOriginZ);
         std::printf("Ray dir model: normalize((2x-w)/h, -(2y-h)/h, %f)\n", kCameraDirZ);
@@ -615,8 +636,11 @@ int main(int argc, char** argv) {
         checkCuda(cudaMemcpy(dNodes, nodes.data(), nodes.size() * sizeof(BVHNode), cudaMemcpyHostToDevice), "copy nodes");
 
         const Vec3 origin = makeVec3(kCameraOriginX, kCameraOriginY, kCameraOriginZ);
-        dim3 block(16, 16);
-        dim3 grid((opt.width + block.x - 1) / block.x, (opt.height + block.y - 1) / block.y);
+        const int launchThreads = opt.fixedThreads > 0 ? opt.fixedThreads : static_cast<int>(pixelCount);
+        const dim3 block = makeExactThreadBlock(launchThreads);
+        const dim3 grid(static_cast<unsigned int>(launchThreads / static_cast<int>(block.x)), 1, 1);
+        std::printf("CUDA launch: grid=(%u,%u,%u) block=(%u,%u,%u) totalThreads=%d\n",
+                    grid.x, grid.y, grid.z, block.x, block.y, block.z, launchThreads);
 
         cudaEvent_t evStart, evStop;
         checkCuda(cudaEventCreate(&evStart), "cudaEventCreate start");

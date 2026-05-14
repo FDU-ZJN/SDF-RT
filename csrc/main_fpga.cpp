@@ -27,42 +27,30 @@ VerilatedVcdC* tfp = nullptr;
 
 static inline bool getWorkerResultPending(const VFpgaTop___024root* root, int idx) {
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_0;
-        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_1;
-        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_2;
-        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_3;
-        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_4;
-        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_5;
-        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_6;
-        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResultPending_7;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_0;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_1;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_2;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__workerResultPending_3;
         default: return false;
     }
 }
 
 static inline bool getWorkerResultHit(const VFpgaTop___024root* root, int idx) {
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_0_hit;
-        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_1_hit;
-        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_2_hit;
-        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_3_hit;
-        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_4_hit;
-        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_5_hit;
-        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_6_hit;
-        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerResult_7_hit;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__workerResult_0_hit;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__workerResult_1_hit;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__workerResult_2_hit;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__workerResult_3_hit;
         default: return false;
     }
 }
 
 static inline uint32_t getWorkerCmdIdx(const VFpgaTop___024root* root, int idx) {
     switch (idx) {
-        case 0: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_0;
-        case 1: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_1;
-        case 2: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_2;
-        case 3: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_3;
-        case 4: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_4;
-        case 5: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_5;
-        case 6: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_6;
-        case 7: return root->FpgaTop__DOT__simTop__DOT__traceController__DOT__workerCmdIdx_7;
+        case 0: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_0;
+        case 1: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_1;
+        case 2: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_2;
+        case 3: return root->FpgaTop__DOT__traceController__DOT__workerCmdIdx_3;
         default: return 0;
     }
 }
@@ -79,6 +67,17 @@ void tick(VFpgaTop* dut) {
     main_time++;
     if (tfp != nullptr) {
         tfp->dump(main_time);
+    }
+}
+
+static inline uint32_t extractPackedRgb48Lane(const QData packed, int lane) {
+    switch (lane) {
+        case 0:
+            return static_cast<uint32_t>(packed & 0x00FFFFFFULL);
+        case 1:
+            return static_cast<uint32_t>((packed >> 24) & 0x00FFFFFFULL);
+        default:
+            return 0;
     }
 }
 
@@ -115,7 +114,7 @@ int main(int argc, char** argv) {
     const float gridMaxY = bounds[4];
     const float gridMaxZ = bounds[5];
 
-    const array<float, 3> setupOrigin = {0.0f, 0.4f, 1.5f};
+    const array<float, 3> setupOrigin = {0.0f, 0.4f, 2.8f};
     const array<float, 3> gridMin = {gridMinX, gridMinY, gridMinZ};
     const array<float, 3> gridMax = {gridMaxX, gridMaxY, gridMaxZ};
 
@@ -234,7 +233,7 @@ int main(int argc, char** argv) {
     
     // Debug counters
     uint64_t pixelValidCount = 0;
-    std::array<bool, 8> prevWorkerResultPending = {false, false, false, false, false, false, false, false};
+    std::array<bool, 4> prevWorkerResultPending = {false, false, false, false};
     uint64_t triPeHitOverflow = 0;
 
     while (!frameDone) {
@@ -251,7 +250,7 @@ int main(int argc, char** argv) {
         
         // Debug: count pixel_valid firings
         if (dut->io_pixel_valid) {
-            pixelValidCount++;
+            pixelValidCount += static_cast<uint64_t>(__builtin_popcount(static_cast<unsigned>(dut->io_pixel_valid)));
         }
 
         const auto* root = dut->rootp;
@@ -283,22 +282,28 @@ int main(int argc, char** argv) {
         
         // Collect pixel data in stream order. Do not reorder by pixel_x/pixel_y.
         if (dut->io_pixel_valid) {
-            if (pixelCount >= framePixels) {
-                std::cerr << "\nError: received more pixels than expected (" << framePixels << ")." << endl;
-                delete dut;
-                return 5;
+            const uint32_t validMask = dut->io_pixel_valid & 0x3;
+            for (int lane = 0; lane < 2; ++lane) {
+                if (((validMask >> lane) & 0x1U) == 0U) {
+                    continue;
+                }
+                if (pixelCount >= framePixels) {
+                    std::cerr << "\nError: received more pixels than expected (" << framePixels << ")." << endl;
+                    delete dut;
+                    return 5;
+                }
+
+                const uint32_t rgb8 = extractPackedRgb48Lane(dut->io_pixel_rgb8, lane);
+                const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
+                const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
+                const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
+
+                const size_t idx = pixelCount * 3;
+                image[idx + 0] = r;
+                image[idx + 1] = g;
+                image[idx + 2] = b;
+                pixelCount++;
             }
-
-            const uint32_t rgb8 = dut->io_pixel_rgb8;
-            const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
-            const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
-            const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
-
-            const size_t idx = pixelCount * 3;
-            image[idx + 0] = r;
-            image[idx + 1] = g;
-            image[idx + 2] = b;
-            pixelCount++;
 
             stallCycles = 0;
         }

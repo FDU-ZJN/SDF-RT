@@ -2,8 +2,10 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
-import Render.NormalMemWriteIO
-import SDF.SdfMemWriteIO
+import DDA.DDA
+import Render.{NormalMemWriteIO, RenderStage}
+import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
+import Trace.TraceController
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
@@ -15,6 +17,13 @@ class FpgaTop(
                pixelQueueDepth: Int = GlobalConfig.pixelQueueDepth
              ) extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32.copy())
+  private val sdfCfg = SdfPeConfig(cfg = c.cfg)
+  private val postHitQueueDepth = 2
+  private val initOutLatency = 4 + c.cfg.fdivLatency + c.cfg.fmulLatency + (4 * c.cfg.fcmpLatency) + 1
+  private val rayDirLatency = 4 + c.cfg.fsqrtLatency + c.cfg.fmulLatency
+  private val postInitQueueDepth = rayDirLatency + initOutLatency + 32
+  require(postInitQueueDepth > rayDirLatency + initOutLatency + 2,
+    "postInitQueueDepth must absorb the non-backpressurable RayDir+Init pipeline tail")
 
   val io = IO(new Bundle {
     val setup_valid      = Input(Bool())
@@ -25,10 +34,10 @@ class FpgaTop(
 
     val frame_start      = Input(Bool())
 
-    val pixel_valid      = Output(Bool())
+    val pixel_valid      = Output(UInt(2.W))
     val pixel_ready      = Input(Bool())
-    val pixel_rgb8       = Output(UInt(24.W))
-    val pixel_hit_id     = Output(UInt(c.addrWidth.W))
+    val pixel_rgb8       = Output(UInt((24 * 2).W))
+    val pixel_hit_id     = Output(UInt((c.addrWidth * 2).W))
 
     val frame_done       = Output(Bool())
     val busy             = Output(Bool())
@@ -41,8 +50,18 @@ class FpgaTop(
     val normal_mem_wr = Flipped(new NormalMemWriteIO)
   })
 
-  val simTop     = Module(new SimTop)
-  val rayDirCalc = Module(new RayDirCalc(c.cfg))
+  val rayDirCalcs = Seq.tabulate(2)(lane => Module(new RayDirCalc(c.cfg, width, height, laneId = lane, numLanes = 2)))
+  val initStages = Seq.fill(2)(Module(new InitStage(c.cfg, c.addrWidth)))
+  val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
+  val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
+  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
+  val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
+  val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
+  val renderStage = Module(new RenderStage(c.cfg))
+  val commitQueue = Module(new CommitQueue(c.cfg))
+  val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), postHitQueueDepth)))
+  val postHitArb = Module(new RRArbiter(new RayIssue(c.cfg, c.addrWidth), 2))
+  val postInitQs = Seq.fill(2)(Module(new Queue(new InitStageResp(c.cfg, c.addrWidth), postInitQueueDepth)))
 
   val setupReg        = RegInit(false.B)
   val setupOriginReg  = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
@@ -54,26 +73,44 @@ class FpgaTop(
     setupGridMinReg := io.setup_grid_min
     setupGridMaxReg := io.setup_grid_max
     setupReg        := true.B
-  }.elsewhen(simTop.io.setup_finish) {
+  }.elsewhen(setupUnit.io.setup_finish) {
     setupReg := false.B
   }
 
-  simTop.io.setup_valid    := setupReg
-  simTop.io.setup_origin   := setupOriginReg
-  simTop.io.setup_grid_min := setupGridMinReg
-  simTop.io.setup_grid_max := setupGridMaxReg
-  io.setup_ready           := !setupReg
+  setupUnit.io.setup_valid := setupReg
+  setupUnit.io.setup_origin := setupOriginReg
+  setupUnit.io.setup_grid_min := setupGridMinReg
+  setupUnit.io.setup_grid_max := setupGridMaxReg
+  io.setup_ready := !setupReg
   
-  // Connect SDF memory write port
-  simTop.io.sdf_mem_wr <> io.sdf_mem_wr
-  simTop.io.normal_mem_wr <> io.normal_mem_wr
+  for (lane <- 0 until 2) {
+    initStages(lane).io.setup_origin := setupUnit.io.origin
+    initStages(lane).io.setup_grid_min := setupUnit.io.gridMin
+    initStages(lane).io.setup_grid_max := setupUnit.io.gridMax
+  }
+
+  sdfStage.io.grid_min := setupUnit.io.gridMin
+  sdfStage.io.inv_voxel := setupUnit.io.invVoxel
+  sdfStage.io.sdf_mem_wr <> io.sdf_mem_wr
+
+  ddaStage.io.grid_min := setupUnit.io.gridMin
+  ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
+  ddaStage.io.slot_release := traceController.io.slot_release
+  traceController.io.cmd_write.valid := ddaStage.io.cmd_write.valid
+  traceController.io.cmd_write.bits := ddaStage.io.cmd_write.bits
+  traceJobQueue.io.enq <> ddaStage.io.trace_job_out
+  when(traceJobQueue.io.enq.valid) {
+    assert(traceJobQueue.io.enq.ready, "FpgaTop traceJobQueue overflow")
+  }
+  traceController.io.job_in <> traceJobQueue.io.deq
+  renderStage.io.in <> traceController.io.result_out
+  renderStage.io.normal_mem_wr <> io.normal_mem_wr
 
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)
 
   val pixelCountW   = log2Ceil(width * height + 1)
   val totalPixels   = (width * height).U(pixelCountW.W)
-  val totalPixels1  = (width * height - 1).U(pixelCountW.W)
   val frameCountReg = RegInit(0.U(32.W))
   io.frame_count := frameCountReg
 
@@ -83,150 +120,233 @@ class FpgaTop(
   val frameDonePulse = WireInit(false.B)
   io.frame_done := frameDonePulse
 
-  val rayDirFifoDepth = GlobalConfig.rayDirFifoDepth
-  val rayTrackW = log2Ceil(width * height + rayDirFifoDepth + 1)
+  val setupReady = setupUnit.io.setup_finish
+  val inputPair = WireDefault(false.B)
+
+  for (lane <- 0 until 2) {
+    initStages(lane).io.in.valid := inputPair
+    initStages(lane).io.in.bits.rd := 0.U.asTypeOf(new Vec3(c.cfg))
+    initStages(lane).io.in.bits.meta.slotId := 0.U
+    initStages(lane).io.in.bits.meta.pixelX := 0.U
+    initStages(lane).io.in.bits.meta.pixelY := 0.U
+    postInitQs(lane).io.enq <> initStages(lane).io.out
+  }
+
+  val postInitPairValid = postInitQs(0).io.deq.valid && postInitQs(1).io.deq.valid
+  val postInitHit0 = postInitQs(0).io.deq.bits.hit
+  val postInitHit1 = postInitQs(1).io.deq.bits.hit
+  val postInitCanPushHits =
+    (!postInitHit0 || postHitQs(0).io.enq.ready) &&
+      (!postInitHit1 || postHitQs(1).io.enq.ready)
+  val postInitCanAlloc = commitQueue.io.alloc(0).ready && commitQueue.io.alloc(1).ready
+  val postInitDispatch = postInitPairValid && postInitCanPushHits && postInitCanAlloc
+
+  commitQueue.io.alloc(0).valid := postInitDispatch
+  commitQueue.io.alloc(0).bits := 0.U
+  commitQueue.io.alloc(1).valid := postInitDispatch
+  commitQueue.io.alloc(1).bits := 0.U
+  when(postInitDispatch) {
+    assert(commitQueue.io.alloc(0).ready, "FpgaTop postInit commit alloc0 overflow")
+    assert(commitQueue.io.alloc(1).ready, "FpgaTop postInit commit alloc1 overflow")
+  }
+
+  for (lane <- 0 until 2) {
+    val hitPush = postInitDispatch && postInitQs(lane).io.deq.bits.hit
+    postHitQs(lane).io.enq.valid := hitPush
+    postHitQs(lane).io.enq.bits.ray := postInitQs(lane).io.deq.bits.ray
+    postHitQs(lane).io.enq.bits.meta := postInitQs(lane).io.deq.bits.meta
+    postHitQs(lane).io.enq.bits.meta.slotId := commitQueue.io.allocSlot(lane)
+    postHitArb.io.in(lane) <> postHitQs(lane).io.deq
+    postInitQs(lane).io.deq.ready := postInitDispatch
+    when(hitPush) {
+      assert(postHitQs(lane).io.enq.ready, s"FpgaTop postHitQ lane $lane overflow")
+    }
+  }
+
+  sdfStage.io.issue_in <> postHitArb.io.out
+
+  val sdfOut = sdfStage.io.out.bits
+  val sdfOutValid = sdfStage.io.out.valid
+  val sdfOutHit = sdfOut.hit
+
+  val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), GlobalConfig.simSdfHitQueueDepth))
+  sdfHitQ.io.enq.valid := sdfOutValid && sdfOutHit
+  sdfHitQ.io.enq.bits.ray := sdfOut.ray
+  sdfHitQ.io.enq.bits.meta := sdfOut.meta
+  sdfHitQ.io.enq.bits.traceSlot := 0.U
+  when(sdfHitQ.io.enq.valid) {
+    assert(sdfHitQ.io.enq.ready, "FpgaTop sdfHitQ overflow")
+  }
+  ddaStage.io.in <> sdfHitQ.io.deq
+
+  commitQueue.io.writeback.valid := renderStage.io.out.valid
+  commitQueue.io.writeback.bits := renderStage.io.out.bits
+  renderStage.io.out.ready := commitQueue.io.writeback.ready
+
+  val initMissWb2ValidReg = RegInit(false.B)
+  val initMissWb2BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
+  val initMissWb4ValidReg = RegInit(false.B)
+  val initMissWb4BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
+
+  val wb2 = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb2.meta := postInitQs(0).io.deq.bits.meta
+  wb2.meta.slotId := commitQueue.io.allocSlot(0)
+  wb2.hit := false.B
+  wb2.hitId := 0.U
+  wb2.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
+
+  val wb4 = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb4.meta := postInitQs(1).io.deq.bits.meta
+  wb4.meta.slotId := commitQueue.io.allocSlot(1)
+  wb4.hit := false.B
+  wb4.hitId := 0.U
+  wb4.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
+
+  initMissWb2ValidReg := postInitDispatch && !postInitQs(0).io.deq.bits.hit
+  initMissWb2BitsReg := wb2
+  initMissWb4ValidReg := postInitDispatch && !postInitQs(1).io.deq.bits.hit
+  initMissWb4BitsReg := wb4
+
+  commitQueue.io.writeback2.valid := initMissWb2ValidReg
+  commitQueue.io.writeback2.bits := initMissWb2BitsReg
+  commitQueue.io.writeback4.valid := initMissWb4ValidReg
+  commitQueue.io.writeback4.bits := initMissWb4BitsReg
+
+  val wb3 = Wire(new RenderResult(c.cfg, c.addrWidth))
+  wb3.meta := sdfOut.meta
+  wb3.hit := false.B
+  wb3.hitId := 0.U
+  wb3.rgb8 := Cat(0.U(8.W), 0.U(8.W), 128.U(8.W))
+  val sdfWriteback3ValidReg = RegInit(false.B)
+  val sdfWriteback3BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
+  sdfWriteback3ValidReg := sdfOutValid && !sdfOutHit
+  sdfWriteback3BitsReg := wb3
+  commitQueue.io.writeback3.valid := sdfWriteback3ValidReg
+  commitQueue.io.writeback3.bits := sdfWriteback3BitsReg
+  sdfStage.io.out.ready := true.B
+
   val issuedCount = RegInit(0.U(pixelCountW.W))
   val retiredCount = RegInit(0.U(pixelCountW.W))
-  val rayStartedCount = RegInit(0.U(rayTrackW.W))
-  val rayQueuedCount = RegInit(0.U(rayTrackW.W))
-  val raySentCount = RegInit(0.U(rayTrackW.W))
-  val rayIssueFire = WireDefault(false.B)
-  val rayDirEnqFire = WireDefault(false.B)
-  val simTopFire = WireDefault(false.B)
+  val totalPairs = (width * height / 2).U(log2Ceil(width * height / 2 + 1).W)
+  val remainingPairsReg = RegInit(0.U(log2Ceil(width * height / 2 + 1).W))
+  val rayIssueFire0 = WireDefault(false.B)
+  val rayIssueFire1 = WireDefault(false.B)
+  val rayIssueCount = WireDefault(0.U(2.W))
+  val canLaunchPairReg = RegInit(false.B)
+  val canLaunchPairNext = WireDefault(false.B)
+  val issuePairFire = canLaunchPairReg && (state === rendering)
 
   val validationError = RegInit(false.B)   // Fix 8
   io.validation_error := validationError
 
   val enqFire = WireDefault(false.B)
-
-  // Optimize: terminal flag avoids retiredCount+1 on the state-transition path
-  val retireFireReg = RegInit(false.B)
-  when(state === idle) {
-    retireFireReg := false.B
-  }.otherwise {
-    retireFireReg := enqFire
-  }
-
-  val retiredCountWillFinish = retireFireReg && (retiredCount === totalPixels1)
+  val retiredPixelsThisBeat = WireDefault(0.U(2.W))
 
   switch(state) {
     is(idle) {
       issuedCount      := 0.U
       retiredCount     := 0.U
-      rayStartedCount  := 0.U
-      rayQueuedCount   := 0.U
-      raySentCount     := 0.U
+      remainingPairsReg := 0.U
+      canLaunchPairReg := false.B
       validationError := false.B   // Fix 8
       when(frameStartPulse && !setupReg) {
+        remainingPairsReg := totalPairs
         state := rendering
       }
     }
     is(rendering) {
-      when(rayIssueFire) {
-        issuedCount := issuedCount + 1.U
-        rayStartedCount := rayStartedCount + 1.U
+      canLaunchPairReg := canLaunchPairNext
+      when(rayIssueCount =/= 0.U) {
+        issuedCount := issuedCount + rayIssueCount
       }
-      when(rayDirEnqFire) {
-        rayQueuedCount := rayQueuedCount + 1.U
+      when(issuePairFire && (remainingPairsReg =/= 0.U)) {
+        remainingPairsReg := remainingPairsReg - 1.U
       }
-      when(simTopFire) {
-        raySentCount := raySentCount + 1.U
+      when(enqFire) {
+        retiredCount := retiredCount + retiredPixelsThisBeat
       }
-      when(retiredCountWillFinish) {
+      when(enqFire && (retiredCount + retiredPixelsThisBeat >= totalPixels)) {
         state := frameComplete
       }
     }
     is(frameComplete) {
       frameDonePulse := true.B
       frameCountReg  := frameCountReg + 1.U
+      canLaunchPairReg := false.B
       state          := idle
     }
   }
 
   io.busy := (state === rendering)
 
-  class RayDirBundle extends Bundle {
-    val dir_x   = UInt(c.cfg.totalWidth.W)
-    val dir_y   = UInt(c.cfg.totalWidth.W)
-    val dir_z   = UInt(c.cfg.totalWidth.W)
+  val rayPush0 = rayDirCalcs(0).io.out_valid
+  val rayPush1 = rayDirCalcs(1).io.out_valid
+  val canFirePair = rayPush0 && rayPush1 && setupReady
+  inputPair := canFirePair
+
+  private val postInitCountLimit = postInitQueueDepth - (rayDirLatency + initOutLatency + 4)
+  require(postInitCountLimit >= 2, "postInitQueueDepth leaves too little issue headroom")
+  val postInitCanAbsorbTail = postInitQs.map { q =>
+    q.io.count <= postInitCountLimit.U
+  }.reduce(_ && _)
+  canLaunchPairNext :=
+    (state === rendering) &&
+      (remainingPairsReg =/= 0.U) &&
+      setupReady &&
+      postInitCanAbsorbTail
+  rayIssueFire0 := issuePairFire
+  rayIssueFire1 := issuePairFire
+  rayIssueCount := Mux(issuePairFire, 2.U, 0.U)
+
+  for (lane <- 0 until 2) {
+    rayDirCalcs(lane).io.clear := (state === idle)
+    rayDirCalcs(lane).io.in_valid := (if (lane == 0) rayIssueFire0 else rayIssueFire1)
+    rayDirCalcs(lane).io.out_ready := true.B
   }
 
-  val rayDirFifo = Module(new Queue(new RayDirBundle, entries = rayDirFifoDepth))
-  simTopFire := rayDirFifo.io.deq.valid && simTop.io.out_ready
-  val rayOutstandingToSimTop = rayStartedCount - raySentCount
-  val fifoOccupancy = rayQueuedCount - raySentCount
-  val pipelinePending = rayStartedCount - rayQueuedCount
-  val canLaunchRay =
-    (rayOutstandingToSimTop < rayDirFifoDepth.U) || simTopFire
-  val shouldLaunchRay =
-    (state === rendering) &&
-      rayDirCalc.io.in_ready &&
-      (issuedCount < totalPixels) &&
-      canLaunchRay
+  assert(rayPush0 === rayPush1, "[FpgaTop] BUG: rayDir lanes lost pair alignment")
+  assert(!(rayPush0 && !setupReady), "[FpgaTop] BUG: direct rayDir output not accepted by init pipeline")
+  assert((totalPixels(0) === 0.U), "[FpgaTop] pair-only issue path requires an even pixel count")
 
-  rayIssueFire := shouldLaunchRay
-
-  rayDirCalc.io.clear := (state === idle)
-  rayDirCalc.io.in_valid := rayIssueFire
-
-  // RayDirCalc → rayDirFifo
-  rayDirCalc.io.out_ready         := rayDirFifo.io.enq.ready
-  rayDirFifo.io.enq.valid         := rayDirCalc.io.out_valid
-  rayDirFifo.io.enq.bits.dir_x   := rayDirCalc.io.dir_x
-  rayDirFifo.io.enq.bits.dir_y   := rayDirCalc.io.dir_y
-  rayDirFifo.io.enq.bits.dir_z   := rayDirCalc.io.dir_z
-  rayDirEnqFire := rayDirCalc.io.out_valid && rayDirFifo.io.enq.ready
-
-  assert(
-    !(rayDirCalc.io.out_valid && !rayDirFifo.io.enq.ready),
-    "[FpgaTop] BUG: rayDirFifo overflow!"
-  )
-  assert(
-    fifoOccupancy <= rayDirFifoDepth.U,
-    "[FpgaTop] BUG: rayDirFifo occupancy tracking exceeded depth"
-  )
-  assert(
-    rayOutstandingToSimTop <= rayDirFifoDepth.U,
-    "[FpgaTop] BUG: ray launch window exceeded fifo depth"
-  )
-  assert(
-    pipelinePending <= rayDirFifoDepth.U,
-    "[FpgaTop] BUG: too many rays are pending before rayDirFifo"
-  )
-
-  rayDirFifo.io.deq.ready := simTop.io.out_ready
-
-  simTop.io.rd_valid := simTopFire
-  simTop.io.rd_in.x  := rayDirFifo.io.deq.bits.dir_x
-  simTop.io.rd_in.y  := rayDirFifo.io.deq.bits.dir_y
-  simTop.io.rd_in.z  := rayDirFifo.io.deq.bits.dir_z
+  initStages(0).io.in.bits.rd.x := rayDirCalcs(0).io.dir_x
+  initStages(0).io.in.bits.rd.y := rayDirCalcs(0).io.dir_y
+  initStages(0).io.in.bits.rd.z := rayDirCalcs(0).io.dir_z
+  initStages(1).io.in.bits.rd.x := rayDirCalcs(1).io.dir_x
+  initStages(1).io.in.bits.rd.y := rayDirCalcs(1).io.dir_y
+  initStages(1).io.in.bits.rd.z := rayDirCalcs(1).io.dir_z
 
 
   class PixelBundle extends Bundle {
-    val rgb8   = UInt(24.W)
-    val hit_id = UInt(c.addrWidth.W)
+    val valid_mask = UInt(2.W)
+    val rgb8   = UInt((24 * 2).W)
+    val hit_id = UInt((c.addrWidth * 2).W)
   }
 
   val pixelQueue = Module(new Queue(new PixelBundle, pixelQueueDepth))
 
   // Fix 3: enqFire = 真实握手成功（valid && ready 同时为真）
-  enqFire := simTop.io.out_valid && pixelQueue.io.enq.ready
+  val commitOutValid = Cat(commitQueue.io.out(1).valid, commitQueue.io.out(0).valid)
+  retiredPixelsThisBeat := PopCount(commitOutValid.asBools)
+  enqFire := commitOutValid.orR && pixelQueue.io.enq.ready
 
-  when(retireFireReg) {
-    retiredCount := retiredCount + 1.U   // Fix 3
-  }
-
-  pixelQueue.io.enq.valid        := simTop.io.out_valid
-  pixelQueue.io.enq.bits.rgb8   := simTop.io.out_rgb8
-  pixelQueue.io.enq.bits.hit_id := simTop.io.out_id
+  pixelQueue.io.enq.valid        := commitOutValid.orR
+  pixelQueue.io.enq.bits.valid_mask := commitOutValid
+  pixelQueue.io.enq.bits.rgb8 := Cat(
+    commitQueue.io.out(1).bits.rgb8,
+    commitQueue.io.out(0).bits.rgb8
+  )
+  pixelQueue.io.enq.bits.hit_id := Cat(
+    commitQueue.io.out(1).bits.hitId,
+    commitQueue.io.out(0).bits.hitId
+  )
   pixelQueue.io.deq.ready       := io.pixel_ready
 
   assert(
-    !(simTop.io.out_valid && !pixelQueue.io.enq.ready),
-    "[FpgaTop] BUG: pixelQueue full! Increase pixelQueueDepth or simTopMaxInflight"
+    !(commitOutValid.orR && !pixelQueue.io.enq.ready),
+    "[FpgaTop] BUG: pixelQueue full! Increase pixelQueueDepth or topMaxInflight"
   )
 
-  io.pixel_valid  := pixelQueue.io.deq.valid
+  io.pixel_valid  := Mux(pixelQueue.io.deq.valid, pixelQueue.io.deq.bits.valid_mask, 0.U)
   io.pixel_rgb8   := pixelQueue.io.deq.bits.rgb8
   io.pixel_hit_id := pixelQueue.io.deq.bits.hit_id
 
@@ -239,7 +359,7 @@ class FpgaTop(
   }
 
   val stallCounter = RegInit(0.U(16.W))
-  val progressMade = rayIssueFire || enqFire
+  val progressMade = rayIssueFire0 || rayIssueFire1 || enqFire
 
   when(state === idle) {
     stallCounter := 0.U           // Fix 7

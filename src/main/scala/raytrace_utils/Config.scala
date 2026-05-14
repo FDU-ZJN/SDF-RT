@@ -7,8 +7,7 @@ object GlobalConfig {
   val frameWidth = 640
   val frameHeight = 480
   val pixelQueueDepth = 4
-  val rayDirFifoDepth = 32
-  val traceNumWorkers = 8
+  val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
   val ddaNumWorkers = 1
   val triRefPackFactor = 16
@@ -42,9 +41,6 @@ object GlobalConfig {
     try body finally useFloatIPState = prev
   }
 
-  // ============================================================
-  // Queue depths (centralized)
-  // ============================================================
   val commitQueueDepth = 128
   val slotBits = log2Ceil(commitQueueDepth)
 
@@ -53,8 +49,7 @@ object GlobalConfig {
   val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
 
   val sdfRetryQueueDepth = 128
-  val sdfFinalQueueDepth = 8
-  val simInitToSdfQueueDepth = 32
+  val simInitHitRingbufDepth = 128
   val simSdfHitQueueDepth = 128
 
   // Unused / reserved for future
@@ -76,18 +71,15 @@ object GlobalConfig {
 
   val Trinum = 38049
   val TriOriginalNum = 8554
-  // SDF PE grid
+
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
   val LocalCell = 2048
-  // DDA grid
+
   val GlobalDdaRes = 32
   val SubDdaRes = 1
   val DdaRes= GlobalDdaRes*SubDdaRes
-  // ============================================================
-  // Memory address widths (key interfaces)
-  // ============================================================
-  // Triangle memory: address width for compact triangle storage
+
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
   val triMemNumPEs = 1
@@ -120,9 +112,7 @@ object GlobalConfig {
   val bvhMemNodeBytes = 32  // 6 floats bounds + 4 int32 node info
   val bvhMemDataWidth = bvhMemNodeBytes * 8  // = 256 bits
 
-  // ============================================================
-  // Global address width (used across all modules)
-  // ============================================================
+
   val addrWidth = 32
 
   // ============================================================

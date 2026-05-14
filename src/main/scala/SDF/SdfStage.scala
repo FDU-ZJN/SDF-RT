@@ -13,11 +13,7 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
     val issue_in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
 
-    val out_rgb = Output(new Vec3(cfg))
-    val out_meta = Output(new RayMeta(addrWidth))
-    val out_hit = Output(Bool())
-    val out_ray = Output(new Ray(cfg))
-    val out_valid = Output(Bool())
+    val out = Decoupled(new SdfRayResp(cfg, addrWidth))
     
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
@@ -48,9 +44,5 @@ class SdfStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   // Connect write port
   sdfMem.io.wr <> io.sdf_mem_wr
 
-  io.out_rgb := scheduler.io.out_rgb
-  io.out_meta := scheduler.io.out_meta
-  io.out_hit := scheduler.io.out_hit
-  io.out_ray := scheduler.io.out_ray
-  io.out_valid := scheduler.io.out_valid
+  io.out <> scheduler.io.out
 }

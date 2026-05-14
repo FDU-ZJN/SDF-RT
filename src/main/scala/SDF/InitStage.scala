@@ -3,24 +3,46 @@ package SDF
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
-import raytrace_utils.fudian._
 
-class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) extends Module {
+class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   val io = IO(new Bundle {
     val setup_origin = Input(new Vec3(cfg))
     val setup_grid_min = Input(new Vec3(cfg))
     val setup_grid_max = Input(new Vec3(cfg))
 
     val in = Flipped(Decoupled(new SdfInitReq(cfg, addrWidth)))
-    val to_sdf = Decoupled(new RayIssue(cfg, addrWidth))
-    val to_bypass = Decoupled(new SdfBypassResp(addrWidth))
+    val out = Decoupled(new InitStageResp(cfg, addrWidth))
   })
 
   val aabb = Module(new RayAABBIntersection(cfg))
 
-  val aabbLatency = 4 + cfg.faddLatency + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
-  val entryLatency = cfg.faddLatency
-  val entryAdvanceBits = java.lang.Float.floatToRawIntBits(entryAdvance).U(cfg.totalWidth.W)
+  val aabbLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
+  val entryLatency = 1
+  val entryAdvanceShift = 14
+  val fracWidth = cfg.precision - 1
+  require(cfg.totalWidth == 32 && cfg.expWidth == 8 && cfg.precision == 24,
+    "InitStage bit-level entry advance currently assumes FP32")
+  require(fracWidth >= entryAdvanceShift,
+    s"entryAdvanceShift=$entryAdvanceShift exceeds fraction width $fracWidth")
+
+  def entryAdvanceApprox(x: UInt): UInt = {
+    val sign = x(cfg.totalWidth - 1)
+    val expHi = cfg.totalWidth - 2
+    val expLo = fracWidth
+    val exp = x(expHi, expLo)
+    val frac = x(fracWidth - 1, 0)
+    val expMax = Fill(cfg.expWidth, 1.U(1.W))
+    val step = (BigInt(1) << (fracWidth - entryAdvanceShift)).U(fracWidth.W)
+    val fracSum = Cat(0.U(1.W), frac) + step
+    val expInc = fracSum(fracWidth)
+    val nextExpWide = Cat(0.U(1.W), exp) + expInc
+    val nextExp = nextExpWide(cfg.expWidth - 1, 0)
+    val advanced = Cat(sign, nextExp, fracSum(fracWidth - 1, 0))
+    val isPositiveZero = (!sign) && (exp === 0.U) && (frac === 0.U)
+    val canAdvance = (!sign) && (exp =/= expMax) && (!nextExpWide(cfg.expWidth)) && (nextExp =/= expMax)
+    val minAdvance = java.lang.Float.floatToRawIntBits(1.0f / 16384.0f).U(cfg.totalWidth.W)
+    Mux(isPositiveZero, minAdvance, Mux(canAdvance, advanced, x))
+  }
 
   val rayWire = Wire(new Ray(cfg))
   rayWire.origin := io.setup_origin
@@ -45,12 +67,10 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
 
   val slotAtAabb = PipeUtils.pipeData(io.in.bits.meta.slotId, aabbLatency)
 
-  val tEntry = Module(new FADD(cfg))
-  tEntry.io.a := aabb.io.tNear
-  tEntry.io.b := entryAdvanceBits
+  val tEntry = RegNext(entryAdvanceApprox(aabb.io.tNear))
 
   val outAlignLatency = entryLatency
-  val outValid = PipeUtils.pipeData(aabb.io.out_valid, outAlignLatency)
+  val outValid = PipeUtils.pipeBool(aabb.io.out_valid, outAlignLatency, false.B)
   val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
   val outSlot = PipeUtils.pipeData(slotAtAabb, entryLatency)
   val outRoX = PipeUtils.pipeData(roXAtAabb, entryLatency)
@@ -60,27 +80,20 @@ class InitStage(cfg: FloatConfig, addrWidth: Int, entryAdvance: Float = 1e-4f) e
   val outRdY = PipeUtils.pipeData(rdYAtAabb, entryLatency)
   val outRdZ = PipeUtils.pipeData(rdZAtAabb, entryLatency)
 
-  io.to_sdf.valid := outValid && outHit
-  io.to_sdf.bits.ray.origin.x := outRoX
-  io.to_sdf.bits.ray.origin.y := outRoY
-  io.to_sdf.bits.ray.origin.z := outRoZ
-  io.to_sdf.bits.ray.dir.x := outRdX
-  io.to_sdf.bits.ray.dir.y := outRdY
-  io.to_sdf.bits.ray.dir.z := outRdZ
-  io.to_sdf.bits.ray.dist := tEntry.io.res
-  io.to_sdf.bits.meta.slotId := outSlot
-  io.to_sdf.bits.meta.pixelX := 0.U
-  io.to_sdf.bits.meta.pixelY := 0.U
+  io.out.valid := outValid
+  io.out.bits.hit := outHit
+  io.out.bits.ray.origin.x := outRoX
+  io.out.bits.ray.origin.y := outRoY
+  io.out.bits.ray.origin.z := outRoZ
+  io.out.bits.ray.dir.x := outRdX
+  io.out.bits.ray.dir.y := outRdY
+  io.out.bits.ray.dir.z := outRdZ
+  io.out.bits.ray.dist := tEntry
+  io.out.bits.meta.slotId := outSlot
+  io.out.bits.meta.pixelX := 0.U
+  io.out.bits.meta.pixelY := 0.U
 
-  io.to_bypass.valid := outValid && !outHit
-  io.to_bypass.bits.meta.slotId := outSlot
-  io.to_bypass.bits.meta.pixelX := 0.U
-  io.to_bypass.bits.meta.pixelY := 0.U
-
-  when(io.to_sdf.valid) {
-    assert(io.to_sdf.ready, "InitStage expects to_sdf.ready to stay high")
-  }
-  when(io.to_bypass.valid) {
-    assert(io.to_bypass.ready, "InitStage expects to_bypass.ready to stay high")
+  when(io.out.valid) {
+    assert(io.out.ready, "InitStage expects out.ready to stay high")
   }
 }

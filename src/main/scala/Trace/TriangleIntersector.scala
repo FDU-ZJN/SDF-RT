@@ -105,7 +105,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   // det(T0+stageCLatency) -> invDet(T0+stageCLatency+latDIV)
   val fdiv = Module(new FRQ(cfg))
   fdiv.io.in := det
-  fdiv.io.in_valid := PipeUtils.pipeData(io.in_valid, stageCLatency)
+  fdiv.io.in_valid := PipeUtils.pipeBool(io.in_valid, stageCLatency, false.B)
 
   val invDet_aligned = PipeUtils.pipeData(fdiv.io.result, stageDAlignLatency - latDIV)
 
@@ -149,7 +149,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val det_is_zero_pre_cmp = PipeUtils.pipeData(det_is_zero, preCmpLatency - stageCLatency)
 
   val totalLatency = preCmpLatency
-  val out_valid_final = PipeUtils.pipeData(io.in_valid, totalLatency)
+  val out_valid_final = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
   io.id:=PipeUtils.pipeData(io.tri.id, totalLatency)
   io.out_valid := out_valid_final
 

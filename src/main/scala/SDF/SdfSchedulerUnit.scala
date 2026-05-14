@@ -12,18 +12,10 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val pe_out_miss = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
     val pe_out_hit = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
 
-    val out_rgb = Output(new Vec3(cfg))
-    val out_meta = Output(new RayMeta(addrWidth))
-    val out_hit = Output(Bool())
-    val out_ray = Output(new Ray(cfg))
-    val out_valid = Output(Bool())
+    val out = Decoupled(new SdfRayResp(cfg, addrWidth))
   })
 
   val retryQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), GlobalConfig.sdfRetryQueueDepth))
-  val finalQ = Module(new Queue(new SdfRayResp(cfg, addrWidth), GlobalConfig.sdfFinalQueueDepth))
-
-  val oneFp = "h3F800000".U(cfg.totalWidth.W)
-  val zeroFp = 0.U(cfg.totalWidth.W)
 
   val newReq = Wire(new SdfRayReq(cfg, addrWidth))
   newReq.ray := io.issue_in.bits.ray
@@ -40,10 +32,13 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   inArb.io.in(1).bits := newReq
   io.issue_in.ready := inArb.io.in(1).ready
 
-  val arbReq = inArb.io.out.bits
-  val arbIsDeferredTerminalMiss = inArb.io.out.valid && (arbReq.iter >= maxSteps.U)
+  val arbOutQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), 1, pipe = true))
+  arbOutQ.io.enq <> inArb.io.out
 
-  io.pe_in.valid := inArb.io.out.valid && !arbIsDeferredTerminalMiss
+  val arbReq = arbOutQ.io.deq.bits
+  val arbIsDeferredTerminalMiss = arbOutQ.io.deq.valid && (arbReq.iter >= maxSteps.U)
+
+  io.pe_in.valid := arbOutQ.io.deq.valid && !arbIsDeferredTerminalMiss
   io.pe_in.bits := arbReq
 
   io.pe_out_miss.ready := true.B
@@ -82,21 +77,11 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   val selMiss = !selHit && missTerminalDirect
   val selDeferred = !selHit && !selMiss && arbIsDeferredTerminalMiss
 
-  finalQ.io.enq.valid := selHit || selMiss || selDeferred
-  finalQ.io.enq.bits := Mux(selHit, io.pe_out_hit.bits, Mux(selMiss, io.pe_out_miss.bits, deferredResp))
-  when(finalQ.io.enq.valid) {
-    assert(finalQ.io.enq.ready, "SdfStage finalQ overflow")
+  io.out.valid := selHit || selMiss || selDeferred
+  io.out.bits := Mux(selHit, io.pe_out_hit.bits, Mux(selMiss, io.pe_out_miss.bits, deferredResp))
+  when(io.out.valid) {
+    assert(io.out.ready, "SdfStage output must not be backpressured")
   }
 
-  val consumeDeferred = selDeferred && finalQ.io.enq.ready
-  inArb.io.out.ready := Mux(arbIsDeferredTerminalMiss, consumeDeferred, io.pe_in.ready)
-
-  finalQ.io.deq.ready := true.B
-  io.out_valid := finalQ.io.deq.valid
-  io.out_meta := finalQ.io.deq.bits.meta
-  io.out_hit := finalQ.io.deq.bits.hit
-  io.out_ray := finalQ.io.deq.bits.ray
-  io.out_rgb.x := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
-  io.out_rgb.y := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
-  io.out_rgb.z := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
+  arbOutQ.io.deq.ready := Mux(arbIsDeferredTerminalMiss, selDeferred, io.pe_in.ready)
 }

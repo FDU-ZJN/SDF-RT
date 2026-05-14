@@ -102,6 +102,12 @@ class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
   val meta = new RayMeta(addrWidth)
 }
 
+class InitStageResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val hit = Bool()
+  val ray = new Ray(cfg)
+  val meta = new RayMeta(addrWidth)
+}
+
 class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)

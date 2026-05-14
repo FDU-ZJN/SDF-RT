@@ -14,9 +14,9 @@ inline constexpr bool kFpgaMode = false;
 
 inline constexpr int kWidth = 640;
 inline constexpr int kHeight = 480;
-inline constexpr int kMaxWaitCycles = 30000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
+inline constexpr int kMaxWaitCycles = 10000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
 inline constexpr int kTriNumPE = 1;
-inline constexpr int kTriNumBanks = 8;
+inline constexpr int kTriNumBanks = 4;
 inline constexpr int kTriRefPackFactor = 16;
 
 inline constexpr int kSDFGlobalRes = 16;

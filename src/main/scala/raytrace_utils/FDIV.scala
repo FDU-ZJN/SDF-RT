@@ -119,7 +119,7 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   // --- 5. 结果输出 ---
   val combined_res = Cat(result_sign, final_exp, final_frac)
     io.result    := PipeUtils.pipeData(combined_res, cfg.fdivLatency)
-    io.out_valid := PipeUtils.pipeData(io.in_valid, cfg.fdivLatency)
+    io.out_valid := PipeUtils.pipeBool(io.in_valid, cfg.fdivLatency, false.B)
   }
 }
 

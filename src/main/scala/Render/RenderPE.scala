@@ -53,7 +53,7 @@ class RenderPE(cfg: FloatConfig) extends Module {
   // 流水级：fdot + fadd + fmul，简单 clamp 为组合逻辑。
   val totalLatency = cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency
   val hit_sync   = PipeUtils.pipeData(io.in_hit,   totalLatency)
-  val valid_sync = PipeUtils.pipeData(io.in_valid, totalLatency)
+  val valid_sync = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
   val id_sync    = PipeUtils.pipeData(io.hit_id,   totalLatency)
   val meta_sync  = PipeUtils.pipeData(io.in_meta,  totalLatency)
 
