@@ -4,12 +4,6 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils.GlobalConfig
 
-class NormalMemWriteIO extends Bundle {
-  val wr_en   = Output(Bool())
-  val wr_addr = Output(UInt(32.W))  // 32-bit word address within normal memory window
-  val wr_data = Output(UInt(32.W))  // single FP32 lane write
-}
-
 private class NormalMemDPICore(
   val addrWidth: Int = 16,
   val latency: Int = GlobalConfig.normalMemDpiLatency
@@ -27,9 +21,6 @@ private class NormalMemDPICore(
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
     val addr_q = Output(UInt(addrWidth.W))
-    val wr_en = Input(Bool())
-    val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
   })
 
   val svCode =
@@ -43,10 +34,7 @@ private class NormalMemDPICore(
        |    input en,
        |    output [${totalBits - 1}:0] data,
        |    output valid,
-       |    output [${addrWidth - 1}:0] addr_q,
-       |    input wr_en,
-       |    input [31:0] wr_addr,
-       |    input [31:0] wr_data
+       |    output [${addrWidth - 1}:0] addr_q
        |);
        |    byte raw_buffer[${bytesPerNormal}];
        |    reg [${totalBits - 1}:0] data_pipe[0:${latency - 1}];
@@ -83,8 +71,6 @@ private class NormalMemDPICore(
        |    assign data = data_pipe[${latency - 1}];
        |    assign valid = valid_pipe[${latency - 1}];
        |    assign addr_q = addr_pipe[${latency - 1}];
-       |    // Write port is unused in DPI mode.
-       |    wire _unused_ok = &{1'b0, wr_en, wr_addr, wr_data};
        |
        |endmodule
   """.stripMargin
@@ -112,9 +98,6 @@ private class NormalMemResourceBB(
     val data = Output(UInt(GlobalConfig.normalMemDataWidth.W))
     val valid = Output(Bool())
     val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
-    val wr_en = Input(Bool())
-    val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
   })
   addResource("/NormalMemBlackBox.sv")
 }
@@ -127,7 +110,8 @@ private class NormalMemIpBB(
         "ADDR_WIDTH" -> GlobalConfig.normalMemAddrWidth,
         "DATA_WIDTH" -> GlobalConfig.normalMemDataWidth,
         "LATENCY" -> latency,
-        "MAX_ENTRIES" -> GlobalConfig.normalMemDepth
+        "MAX_ENTRIES" -> GlobalConfig.normalMemDepth,
+        "INIT_FILE" -> chisel3.experimental.StringParam("normal_mem.mem")
       )
     )
     with HasBlackBoxResource {
@@ -140,9 +124,6 @@ private class NormalMemIpBB(
     val data = Output(UInt(GlobalConfig.normalMemDataWidth.W))
     val valid = Output(Bool())
     val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
-    val wr_en = Input(Bool())
-    val wr_addr = Input(UInt(32.W))
-    val wr_data = Input(UInt(32.W))
   })
   addResource("/NormalMem.sv")
 }
@@ -160,7 +141,6 @@ class NormalMemDPI(
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
     val addr_q = Output(UInt(GlobalConfig.normalMemAddrWidth.W))
-    val wr = Flipped(new NormalMemWriteIO)
   })
 
   GlobalConfig.memImplMode match {
@@ -173,9 +153,6 @@ class NormalMemDPI(
       io.data := impl.io.data
       io.valid := impl.io.valid
       io.addr_q := impl.io.addr_q
-      impl.io.wr_en := io.wr.wr_en
-      impl.io.wr_addr := io.wr.wr_addr
-      impl.io.wr_data := io.wr.wr_data
     case 1 =>
       val impl = Module(new NormalMemResourceBB(addrWidth, latency))
       impl.io.clk := io.clk
@@ -185,9 +162,6 @@ class NormalMemDPI(
       io.data := impl.io.data
       io.valid := impl.io.valid
       io.addr_q := impl.io.addr_q
-      impl.io.wr_en := io.wr.wr_en
-      impl.io.wr_addr := io.wr.wr_addr
-      impl.io.wr_data := io.wr.wr_data
     case 2 =>
       val impl = Module(new NormalMemIpBB(addrWidth, latency))
       impl.io.clk := io.clk
@@ -197,8 +171,5 @@ class NormalMemDPI(
       io.data := impl.io.data
       io.valid := impl.io.valid
       io.addr_q := impl.io.addr_q
-      impl.io.wr_en := io.wr.wr_en
-      impl.io.wr_addr := io.wr.wr_addr
-      impl.io.wr_data := io.wr.wr_data
   }
 }

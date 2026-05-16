@@ -18,7 +18,7 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     val writeback2 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val writeback3 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val writeback4 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
-    val out        = Output(Vec(2, Valid(new RenderResult(cfg, cfg.addrWidth))))
+    val out        = Output(Valid(Vec(2, new RenderResult(cfg, cfg.addrWidth))))
   })
 
   val entries  = Reg(Vec(depth, new RenderResult(cfg, cfg.addrWidth)))
@@ -111,27 +111,21 @@ class CommitQueue(cfg: FloatConfig) extends Module {
   }
 
   val commitIdxs = Wire(Vec(2, UInt(slotBits.W)))
-  val commitValids = Wire(Vec(2, Bool()))
+  val commitReady = Wire(Vec(2, Bool()))
   for (i <- 0 until 2) {
     commitIdxs(i) := commitPtr + i.U
-    val laneReady = reserved(commitIdxs(i)) && done(commitIdxs(i))
-    if (i == 0) {
-      commitValids(i) := laneReady
-    } else {
-      commitValids(i) := commitValids(i - 1) && laneReady
-    }
-    io.out(i).valid := commitValids(i)
-    io.out(i).bits := entries(commitIdxs(i))
+    commitReady(i) := reserved(commitIdxs(i)) && done(commitIdxs(i))
+    io.out.bits(i) := entries(commitIdxs(i))
   }
 
-  val commitCount = PopCount(commitValids)
+  val commitPairValid = commitReady(0) && commitReady(1)
+  val commitCount = Mux(commitPairValid, 2.U, 0.U)
+  io.out.valid := commitPairValid
 
-  when(commitCount =/= 0.U) {
+  when(commitPairValid) {
     for (i <- 0 until 2) {
-      when(commitValids(i)) {
-        reserved(commitIdxs(i)) := false.B
-        done(commitIdxs(i)) := false.B
-      }
+      reserved(commitIdxs(i)) := false.B
+      done(commitIdxs(i)) := false.B
     }
     commitPtr := commitPtr + commitCount
   }

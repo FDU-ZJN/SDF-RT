@@ -6,7 +6,7 @@ import chisel3.util.log2Ceil
 object GlobalConfig {
   val frameWidth = 640
   val frameHeight = 480
-  val pixelQueueDepth = 4
+  val pixelQueueDepth = 512
   val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
   val ddaNumWorkers = 1
@@ -57,26 +57,26 @@ object GlobalConfig {
   val bvhLeafQueueDepth = 16
   val bvhMissQueueDepth = 8
   
-  val normalMemDpiLatency = 4
+  val normalMemDpiLatency = 2
   val triMemDpiLatency = 3
-  val triRefMemDpiLatency = 2
+  val triRefMemDpiLatency = 3
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 15
   val fmulLatency = 5
-  val faddLatency = 7
+  val faddLatency = 6
   val fcmpLatency = 1
   val fptointLatency = 1
   val fdivLatency = 11
 
-  val Trinum = 38049
+  val Trinum = 19347
   val TriOriginalNum = 8554
 
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
   val LocalCell = 2048
 
-  val GlobalDdaRes = 32
+  val GlobalDdaRes = 16
   val SubDdaRes = 1
   val DdaRes= GlobalDdaRes*SubDdaRes
 
@@ -119,9 +119,9 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 64
-  val sdfThreshold1 = 0.0075f
-  val sdfThreshold2 = 0.015f
-  val sdfThreshold3 = 0.03f
+  val sdfThreshold1 = 0.01f
+  val sdfThreshold2 = 0.02f
+  val sdfThreshold3 = 0.04f
   val sdfStepScale = 0.6f
   val sdfMinStep = -0.500f
   val sdfHitAdvance = 1e-3f

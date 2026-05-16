@@ -94,6 +94,23 @@ static inline uint32_t extractPackedRgb48Lane(const QData packed, int lane) {
     }
 }
 
+static inline uint16_t rgb888ToRgb565(uint32_t rgb8) {
+    const uint16_t r5 = static_cast<uint16_t>((rgb8 >> 19) & 0x1F);
+    const uint16_t g6 = static_cast<uint16_t>((rgb8 >> 10) & 0x3F);
+    const uint16_t b5 = static_cast<uint16_t>((rgb8 >> 3) & 0x1F);
+    return static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
+}
+
+static inline uint32_t rgb565ToRgb888(uint16_t rgb565) {
+    const uint32_t r5 = (rgb565 >> 11) & 0x1F;
+    const uint32_t g6 = (rgb565 >> 5) & 0x3F;
+    const uint32_t b5 = rgb565 & 0x1F;
+    const uint32_t r8 = (r5 << 3) | (r5 >> 2);
+    const uint32_t g8 = (g6 << 2) | (g6 >> 4);
+    const uint32_t b8 = (b5 << 3) | (b5 >> 2);
+    return (r8 << 16) | (g8 << 8) | b8;
+}
+
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
     bool runtimeRebuildSdf = kForceRebuildSdfCacheFpga;
@@ -261,9 +278,9 @@ int main(int argc, char** argv) {
             return 4;
         }
         
-        // Debug: count pixel_valid firings
+        // Debug: count accepted pixels. FpgaTop emits a fixed two-pixel pair.
         if (dut->io_pixel_valid) {
-            pixelValidCount += static_cast<uint64_t>(__builtin_popcount(static_cast<unsigned>(dut->io_pixel_valid)));
+            pixelValidCount += 2;
         }
 
         const auto* root = dut->rootp;
@@ -295,18 +312,14 @@ int main(int argc, char** argv) {
         
         // Collect pixel data in stream order. Do not reorder by pixel_x/pixel_y.
         if (dut->io_pixel_valid) {
-            const uint32_t validMask = dut->io_pixel_valid & 0x3;
             for (int lane = 0; lane < 2; ++lane) {
-                if (((validMask >> lane) & 0x1U) == 0U) {
-                    continue;
-                }
                 if (pixelCount >= framePixels) {
                     std::cerr << "\nError: received more pixels than expected (" << framePixels << ")." << endl;
                     delete dut;
                     return 5;
                 }
 
-                const uint32_t rgb8 = extractPackedRgb48Lane(dut->io_pixel_rgb8, lane);
+                const uint32_t rgb8 = rgb565ToRgb888(rgb888ToRgb565(extractPackedRgb48Lane(dut->io_pixel_rgb8, lane)));
                 const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
                 const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
                 const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);

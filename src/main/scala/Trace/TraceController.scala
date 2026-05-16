@@ -39,6 +39,8 @@ class TraceController(
   val jobQ = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds), 2, pipe = true))
 
   val missT = "h7F7FFFFF".U(c.cfg.totalWidth.W)
+  val slotCmdCountW = log2Ceil(maxCmds + 1)
+  val slotCmdCount = RegInit(VecInit(Seq.fill(slotCount)(0.U(slotCmdCountW.W))))
   val cmdQueueReady = Wire(Vec(slotCount, Bool()))
   val cmdQueueValid = Wire(Vec(slotCount, Bool()))
   val cmdQueueBits = Wire(Vec(slotCount, new TriBatch(c.addrWidth)))
@@ -63,10 +65,22 @@ class TraceController(
     cmdQueues(s).io.enq.bits := io.cmd_write.bits.tri
     cmdQueues(s).io.flush.get := slotFlushPending(s)
     cmdQueues(s).io.deq.ready := cmdQueueReady(s)
-    cmdQueueValid(s) := cmdQueues(s).io.deq.valid
+    cmdQueueValid(s) := slotCmdCount(s) =/= 0.U
     cmdQueueBits(s) := cmdQueues(s).io.deq.bits
     when(io.cmd_write.bits.slotIdx === s.U) {
       cmdWriteReady := cmdQueues(s).io.enq.ready
+    }
+
+    val cmdEnqFire = cmdQueues(s).io.enq.fire
+    val cmdDeqFire = cmdQueues(s).io.deq.fire
+    when(slotFlushPending(s)) {
+      slotCmdCount(s) := 0.U
+    }.elsewhen(cmdEnqFire || cmdDeqFire) {
+      slotCmdCount(s) := slotCmdCount(s) + cmdEnqFire.asUInt - cmdDeqFire.asUInt
+    }
+
+    when(cmdQueueReady(s) && cmdQueueValid(s)) {
+      assert(cmdQueues(s).io.deq.valid, "TraceController cmd slot count/queue valid mismatch")
     }
   }
 
@@ -122,6 +136,10 @@ class TraceController(
   }
 
   val issueRr = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
+  val issueGrantValid = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
+  val issueGrantCtx = RegInit(VecInit(Seq.fill(numWorkers)(0.U(ctxW.W))))
+  val issueGrantSlot = RegInit(VecInit(Seq.fill(numWorkers)(0.U(traceSlotBits.W))))
+  val issueGrantEnd = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   for (w <- 0 until numWorkers) {
     val issueRay0 = ctxState(w)(0) === sIssueRay && workers(w).io.start_ready(0)
     val issueRay1 = ctxState(w)(1) === sIssueRay && workers(w).io.start_ready(1)
@@ -140,27 +158,42 @@ class TraceController(
       val slot = ctxJob(w)(ctx).traceSlot
       firstReady(ctx) := ctxState(w)(ctx) === sReadyFirst &&
         workers(w).io.output_ready(ctx) &&
-        cmdQueueValid(slot)
+        cmdQueueValid(slot) &&
+        !issueGrantValid(w)
       contReady(ctx) := ctxState(w)(ctx) === sReadyCont &&
         workers(w).io.output_ready(ctx) &&
-        cmdQueueValid(slot)
+        cmdQueueValid(slot) &&
+        !issueGrantValid(w)
     }
 
     val useFirst = firstReady.asUInt.orR
     val issue0 = Mux(useFirst, firstReady(0) && (!issueRr(w) || !firstReady(1)), contReady(0) && (!issueRr(w) || !contReady(1)))
     val issue1 = Mux(useFirst, firstReady(1) && (issueRr(w) || !firstReady(0)), contReady(1) && (issueRr(w) || !contReady(0)))
-    val issueBatch = issue0 || issue1
-    val issueCtx = Mux(issue0, 0.U(ctxW.W), 1.U(ctxW.W))
-    val issueSlot = ctxJob(w)(issueCtx).traceSlot
+    val planBatch = issue0 || issue1
+    val planCtx = Mux(issue0, 0.U(ctxW.W), 1.U(ctxW.W))
+    val planSlot = ctxJob(w)(planCtx).traceSlot
+    val grantFire = issueGrantValid(w) &&
+      workers(w).io.output_ready(issueGrantCtx(w)) &&
+      cmdQueueValid(issueGrantSlot(w))
 
-    when(issueBatch) {
-      workers(w).io.tri_batch_in := cmdQueueBits(issueSlot)
-      workers(w).io.tri_batch_ctx := issueCtx
-      workers(w).io.tri_batch_valid := true.B
-      workers(w).io.end_exec := ctxCmdIdx(w)(issueCtx) === (ctxJob(w)(issueCtx).cmdCount - 1.U)
-      cmdQueueReady(issueSlot) := true.B
-      ctxState(w)(issueCtx) := sWaitBatch
-      issueRr(w) := !issueCtx(0)
+    when(planBatch) {
+      issueGrantValid(w) := true.B
+      issueGrantCtx(w) := planCtx
+      issueGrantSlot(w) := planSlot
+      issueGrantEnd(w) := ctxCmdIdx(w)(planCtx) === (ctxJob(w)(planCtx).cmdCount - 1.U)
+      ctxState(w)(planCtx) := sWaitBatch
+      issueRr(w) := !planCtx(0)
+    }
+
+    when(issueGrantValid(w)) {
+      workers(w).io.tri_batch_in := cmdQueueBits(issueGrantSlot(w))
+      workers(w).io.tri_batch_ctx := issueGrantCtx(w)
+      workers(w).io.tri_batch_valid := grantFire
+      workers(w).io.end_exec := issueGrantEnd(w)
+      cmdQueueReady(issueGrantSlot(w)) := workers(w).io.output_ready(issueGrantCtx(w))
+      when(grantFire) {
+        issueGrantValid(w) := false.B
+      }
     }
 
     when(workers(w).io.out_done) {

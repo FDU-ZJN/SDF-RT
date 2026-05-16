@@ -305,7 +305,7 @@ void export_sdf_local_mapping(const std::string& filename) {
     out << "// SDF Local Mapping File" << std::endl;
     out << "// Format: Each address = Global SDF Index (0..4095)" << std::endl;
     out << "// Data: [15]=valid, [10:0]=cell_idx (in 1998 cells)" << std::endl;
-    out << "// $readmemh format: @address data..." << std::endl;
+    out << "// Linear $readmemh/XPM format: one 16-bit word per address, no @address markers" << std::endl;
     out << std::endl;
 
     // Build mapping: globalLinear -> cell_idx
@@ -326,8 +326,6 @@ void export_sdf_local_mapping(const std::string& filename) {
             entry = (1 << 15) | (cell_idx & 0x7FF);
         }
 
-        out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
-            << static_cast<uint32_t>(globalLinear) << std::endl;
         out << std::hex << std::uppercase << std::setfill('0') << std::setw(4)
             << entry << std::endl;
     }
@@ -347,7 +345,7 @@ void export_subgrid_meta_mem(const std::string& filename) {
 
     out << "// Subgrid Meta Memory Initialization File" << std::endl;
     out << "// Format: Each line = packed [31:8]=triStart(uint24), [7:0]=triCount(uint8)" << std::endl;
-    out << "// $readmemh format: @address triStart triCount" << std::endl;
+    out << "// Linear $readmemh/XPM format: one 32-bit word per address, no @address markers" << std::endl;
     out << std::endl;
 
     extern bool subgrid_layout_ready;
@@ -367,15 +365,10 @@ void export_subgrid_meta_mem(const std::string& filename) {
             uint32_t triStart = get_subgrid_tri_start_uint32(global_idx, sub_idx);
             uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
 
-            // Linear address: contiguous from 0
-            uint32_t linear_addr = global_idx * subgrid_sub_cells + sub_idx;
-
             uint32_t packed_value =
                 ((triStart & 0xFFFFFFu) << 8) |
                 static_cast<uint32_t>(triCount & 0xFFu);
 
-            out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
-                << linear_addr << std::endl;
             out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
                 << packed_value << std::endl;
             ++entryCount;

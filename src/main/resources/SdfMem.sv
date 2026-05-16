@@ -120,7 +120,7 @@ module SdfMem #(
     .sleep          (1'b0),
     .clka           (clk),
     .rsta           (reset),
-    .ena            (en),
+    .ena            (1'b1),
     .regcea         (1'b1),
     .addra          (mapping_addr),
     .injectsbiterra (1'b0),

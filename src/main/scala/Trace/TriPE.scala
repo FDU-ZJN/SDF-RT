@@ -14,7 +14,6 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val refPackFactor = GlobalConfig.triRefPackFactor
   private val refPackShift = log2Ceil(refPackFactor)
   private val refCountWidth = log2Ceil(refPackFactor + 1)
-  private val refPrefetchLowWatermark = math.max(1, refPackFactor / 4)
 
   val io = IO(new Bundle {
     val ray_in: Ray = Input(new Ray(c.cfg))
@@ -57,22 +56,25 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val batchInProgress = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultCapturePending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val refBufferA = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
-  private val refBufferB = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
-  private val refBufIdxA = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
-  private val refBufIdxB = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
-  private val refBufCountA = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
-  private val refBufCountB = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
+  private val refBuffer = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
+  private val refBufIdx = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
+  private val refBufCount = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
+  private val refInflight = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val bestT = RegInit(VecInit(Seq.fill(ctxCount)(missT)))
-  private val bestId = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
+  class RefWord extends Bundle {
+    val ids = Vec(refPackFactor, UInt(triIdWidth.W))
+    val count = UInt(refCountWidth.W)
+  }
+  private val refShadowQ = Seq.fill(ctxCount)(Module(new Queue(new RefWord, 1, hasFlush = true)))
+
+  private val bestT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
+  private val bestId = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
   private val hasHit = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
-  private val inflightCnt = RegInit(VecInit(Seq.fill(ctxCount)(0.U(10.W))))
-  private val memReqQueuedCnt = RegInit(VecInit(Seq.fill(ctxCount)(0.U(4.W))))
+  private val triOutstanding = RegInit(VecInit(Seq.fill(ctxCount)(0.U(10.W))))
 
   private val resultHitReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
-  private val resultIdReg = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
-  private val resultTReg = RegInit(VecInit(Seq.fill(ctxCount)(missT)))
+  private val resultIdReg = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
+  private val resultTReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
   private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
@@ -83,15 +85,13 @@ class TriPE(val c: TriPeConfig) extends Module {
     batchRefsRemaining(idx) := 0.U
     batchInProgress(idx) := false.B
     resultCapturePending(idx) := false.B
-    refBufIdxA(idx) := 0.U
-    refBufIdxB(idx) := 0.U
-    refBufCountA(idx) := 0.U
-    refBufCountB(idx) := 0.U
+    refBufIdx(idx) := 0.U
+    refBufCount(idx) := 0.U
+    refInflight(idx) := false.B
     bestT(idx) := missT
     bestId(idx) := 0.U
     hasHit(idx) := false.B
-    inflightCnt(idx) := 0.U
-    memReqQueuedCnt(idx) := 0.U
+    triOutstanding(idx) := 0.U
     resultHitReg(idx) := false.B
     resultIdReg(idx) := 0.U
     resultTReg(idx) := missT
@@ -130,10 +130,10 @@ class TriPE(val c: TriPeConfig) extends Module {
     batchRefsRemaining(ctx) := io.tri_batch_in.count
     batchInProgress(ctx) := true.B
     noMoreBatches(ctx) := io.end_exec
-    refBufIdxA(ctx) := 0.U
-    refBufIdxB(ctx) := 0.U
-    refBufCountA(ctx) := 0.U
-    refBufCountB(ctx) := 0.U
+    refBufIdx(ctx) := 0.U
+    refBufCount(ctx) := 0.U
+    refInflight(ctx) := false.B
+    triOutstanding(ctx) := 0.U
     bestT(ctx) := missT
     bestId(ctx) := 0.U
     hasHit(ctx) := false.B
@@ -145,46 +145,33 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val refReqEpochPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
   private val refReqOffsetPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
   private val refReqCountPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
-  private val refReqTargetBPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
 
-  private val refPending = Wire(Vec(ctxCount, Bool()))
-  for (ctx <- 0 until ctxCount) {
-    refPending(ctx) := refReqLivePipe.zip(refReqCtxPipe).map { case (v, c) => v && c === ctx.U }.reduce(_ || _)
-  }
-
-  private val activeBufSel = Wire(Vec(ctxCount, Bool()))
-  private val activeBufIdx = Wire(Vec(ctxCount, UInt(refPackShift.W)))
-  private val activeBufCount = Wire(Vec(ctxCount, UInt(refCountWidth.W)))
-  private val sourceHasData = Wire(Vec(ctxCount, Bool()))
-  private val prefetchBufEmpty = Wire(Vec(ctxCount, Bool()))
-  private val requestToBufB = Wire(Vec(ctxCount, Bool()))
   private val refWordAddr = Wire(Vec(ctxCount, UInt(c.addrWidth.W)))
   private val refWordOff = Wire(Vec(ctxCount, UInt(refPackShift.W)))
   private val refChunkCount = Wire(Vec(ctxCount, UInt(refCountWidth.W)))
   private val refCanReq = Wire(Vec(ctxCount, Bool()))
   private val memCanEnq = Wire(Vec(ctxCount, Bool()))
   private val geomTriId = Wire(Vec(ctxCount, UInt(triIdWidth.W)))
+  private val refShadowEmpty = Wire(Vec(ctxCount, Bool()))
 
   for (ctx <- 0 until ctxCount) {
-    activeBufSel(ctx) := refBufCountA(ctx) === 0.U && refBufCountB(ctx) =/= 0.U
-    activeBufIdx(ctx) := Mux(activeBufSel(ctx), refBufIdxB(ctx), refBufIdxA(ctx))
-    activeBufCount(ctx) := Mux(activeBufSel(ctx), refBufCountB(ctx), refBufCountA(ctx))
-    sourceHasData(ctx) := refBufCountA(ctx) =/= 0.U || refBufCountB(ctx) =/= 0.U
-    prefetchBufEmpty(ctx) := Mux(activeBufSel(ctx), refBufCountA(ctx) === 0.U, refBufCountB(ctx) === 0.U)
-    requestToBufB(ctx) := Mux(sourceHasData(ctx), !activeBufSel(ctx), false.B)
+    refShadowQ(ctx).io.enq.valid := false.B
+    refShadowQ(ctx).io.enq.bits := 0.U.asTypeOf(new RefWord)
+    refShadowQ(ctx).io.deq.ready := false.B
+    refShadowQ(ctx).io.flush.get := io.clear_ctx(ctx) ||
+      (io.tri_batch_valid && io.output_ready(io.tri_batch_ctx) && io.tri_batch_ctx === ctx.U)
+    refShadowEmpty(ctx) := !refShadowQ(ctx).io.deq.valid
     refWordAddr(ctx) := batchRefIdx(ctx) >> refPackShift
     refWordOff(ctx) := batchRefIdx(ctx)(refPackShift - 1, 0)
     val refChunkAvailWide = refPackFactor.U(16.W) - refWordOff(ctx)
     val refChunkCountWide = Mux(batchRefsRemaining(ctx) < refChunkAvailWide, batchRefsRemaining(ctx), refChunkAvailWide)
     refChunkCount(ctx) := refChunkCountWide(refCountWidth - 1, 0)
-    val needInitialFill = !sourceHasData(ctx)
-    val needPrefetch = sourceHasData(ctx) && prefetchBufEmpty(ctx) && (activeBufCount(ctx) <= refPrefetchLowWatermark.U)
     refCanReq(ctx) := batchInProgress(ctx) &&
       batchRefsRemaining(ctx) =/= 0.U &&
-      !refPending(ctx) &&
-      (needInitialFill || needPrefetch)
-    geomTriId(ctx) := Mux(activeBufSel(ctx), refBufferB(ctx)(activeBufIdx(ctx)), refBufferA(ctx)(activeBufIdx(ctx)))
-    memCanEnq(ctx) := batchInProgress(ctx) && sourceHasData(ctx)
+      refShadowQ(ctx).io.enq.ready &&
+      !refInflight(ctx)
+    geomTriId(ctx) := refBuffer(ctx)(refBufIdx(ctx))
+    memCanEnq(ctx) := batchInProgress(ctx) && refBufCount(ctx) =/= 0.U
   }
 
   private val refRr = RegInit(false.B)
@@ -197,6 +184,7 @@ class TriPE(val c: TriPeConfig) extends Module {
   when(io.ref_mem_req.fire) {
     batchRefIdx(refSel) := batchRefIdx(refSel) + refChunkCount(refSel)
     batchRefsRemaining(refSel) := batchRefsRemaining(refSel) - refChunkCount(refSel)
+    refInflight(refSel) := true.B
     refRr := !refSel(0)
   }
 
@@ -206,14 +194,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   refReqEpochPipe(0) := Mux(io.ref_mem_req.fire, activeEpoch(refSel), false.B)
   refReqOffsetPipe(0) := Mux(io.ref_mem_req.fire, refWordOff(refSel), 0.U)
   refReqCountPipe(0) := Mux(io.ref_mem_req.fire, refChunkCount(refSel), 0.U)
-  refReqTargetBPipe(0) := Mux(io.ref_mem_req.fire, requestToBufB(refSel), false.B)
   for (i <- 1 until refReqPipeLen) {
     refReqLivePipe(i) := refReqLivePipe(i - 1)
     refReqCtxPipe(i) := refReqCtxPipe(i - 1)
     refReqEpochPipe(i) := refReqEpochPipe(i - 1)
     refReqOffsetPipe(i) := refReqOffsetPipe(i - 1)
     refReqCountPipe(i) := refReqCountPipe(i - 1)
-    refReqTargetBPipe(i) := refReqTargetBPipe(i - 1)
   }
 
   private val refRespCtx = refReqCtxPipe.last
@@ -239,19 +225,30 @@ class TriPE(val c: TriPeConfig) extends Module {
     }
   }
 
+  for (ctx <- 0 until ctxCount) {
+    val refRespToCtx = refRespLive && refRespCtx === ctx.U
+    when(refRespToCtx) {
+      assert(refShadowQ(ctx).io.enq.ready, "TriPE ref shadow queue overflow")
+    }
+    refShadowQ(ctx).io.enq.valid := refRespToCtx
+    for (i <- 0 until refPackFactor) {
+      refShadowQ(ctx).io.enq.bits.ids(i) := compactedIds(i)
+    }
+    refShadowQ(ctx).io.enq.bits.count := refReqCountPipe.last
+  }
+
   when(refRespLive) {
-    when(refReqTargetBPipe.last) {
+    refInflight(refRespCtx) := false.B
+  }
+
+  for (ctx <- 0 until ctxCount) {
+    refShadowQ(ctx).io.deq.ready := batchInProgress(ctx) && refBufCount(ctx) === 0.U && !io.clear_ctx(ctx)
+    when(refShadowQ(ctx).io.deq.fire) {
       for (i <- 0 until refPackFactor) {
-        refBufferB(refRespCtx)(i) := compactedIds(i)
+        refBuffer(ctx)(i) := refShadowQ(ctx).io.deq.bits.ids(i)
       }
-      refBufIdxB(refRespCtx) := 0.U
-      refBufCountB(refRespCtx) := refReqCountPipe.last
-    }.otherwise {
-      for (i <- 0 until refPackFactor) {
-        refBufferA(refRespCtx)(i) := compactedIds(i)
-      }
-      refBufIdxA(refRespCtx) := 0.U
-      refBufCountA(refRespCtx) := refReqCountPipe.last
+      refBufIdx(ctx) := 0.U
+      refBufCount(ctx) := refShadowQ(ctx).io.deq.bits.count
     }
   }
 
@@ -273,13 +270,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   memReqQ.io.enq.bits.epoch := activeEpoch(memSel)
 
   when(memReqQ.io.enq.fire) {
-    when(activeBufSel(memSel)) {
-      refBufIdxB(memSel) := refBufIdxB(memSel) + 1.U
-      refBufCountB(memSel) := refBufCountB(memSel) - 1.U
-    }.otherwise {
-      refBufIdxA(memSel) := refBufIdxA(memSel) + 1.U
-      refBufCountA(memSel) := refBufCountA(memSel) - 1.U
-    }
+    refBufIdx(memSel) := refBufIdx(memSel) + 1.U
+    refBufCount(memSel) := refBufCount(memSel) - 1.U
     memRr := !memSel(0)
   }
 
@@ -287,23 +279,11 @@ class TriPE(val c: TriPeConfig) extends Module {
     ((memReqQ.io.deq.bits.epoch =/= activeEpoch(memReqQ.io.deq.bits.ctx)) || io.clear_ctx(memReqQ.io.deq.bits.ctx))
   val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale
   val memReqToMemReady = io.mem_req.ready && io.mem_req_mask.ready
-  val memReqDequeued = memReqQ.io.deq.fire
-
   io.mem_req.valid := memReqToMemValid
   io.mem_req.bits := memReqQ.io.deq.bits.addr
   io.mem_req_mask.valid := memReqToMemValid
   io.mem_req_mask.bits := 1.U
   memReqQ.io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
-
-  for (ctx <- 0 until ctxCount) {
-    val inc = memReqQ.io.enq.fire && memSel === ctx.U
-    val dec = memReqDequeued && memReqQ.io.deq.bits.ctx === ctx.U
-    when(io.clear_ctx(ctx)) {
-      memReqQueuedCnt(ctx) := 0.U
-    }.elsewhen(inc || dec) {
-      memReqQueuedCnt(ctx) := memReqQueuedCnt(ctx) + inc.asUInt - dec.asUInt
-    }
-  }
 
   io.mem_resp.ready := true.B
 
@@ -319,11 +299,6 @@ class TriPE(val c: TriPeConfig) extends Module {
     memReqLivePipe(i) := memReqLivePipe(i - 1)
     memReqCtxPipe(i) := memReqCtxPipe(i - 1)
     memReqEpochPipe(i) := memReqEpochPipe(i - 1)
-  }
-
-  private val memLiveForCtx = Wire(Vec(ctxCount, Bool()))
-  for (ctx <- 0 until ctxCount) {
-    memLiveForCtx(ctx) := memReqLivePipe.zip(memReqCtxPipe).map { case (v, c) => v && c === ctx.U }.reduce(_ || _)
   }
 
   private val memRespCtx = memReqCtxPipe.last
@@ -350,12 +325,20 @@ class TriPE(val c: TriPeConfig) extends Module {
   fcmp.io.signaling := false.B
 
   for (ctx <- 0 until ctxCount) {
-    val incoming = memRespLive && io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
-    val outgoing = pe.io.out_valid && peCtxOut === ctx.U
+    val triIssued = memReqQ.io.enq.fire && memSel === ctx.U
+    val invalidMemResp = memRespLive && !io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
+    val triDone = pe.io.out_valid && peCtxOut === ctx.U
+    val triRetired = invalidMemResp || triDone
+    when(invalidMemResp && triDone) {
+      assert(false.B, "TriPE invalid mem response and PE done for same context in same cycle")
+    }
     when(io.clear_ctx(ctx)) {
-      inflightCnt(ctx) := 0.U
+      triOutstanding(ctx) := 0.U
     }.otherwise {
-      inflightCnt(ctx) := inflightCnt(ctx) + incoming.asUInt - outgoing.asUInt
+      switch(Cat(triIssued, triRetired)) {
+        is("b10".U) { triOutstanding(ctx) := triOutstanding(ctx) + 1.U }
+        is("b01".U) { triOutstanding(ctx) := triOutstanding(ctx) - 1.U }
+      }
     }
   }
 
@@ -368,17 +351,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   for (ctx <- 0 until ctxCount) {
-    val incoming = memRespLive && io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
-    val outgoing = pe.io.out_valid && peCtxOut === ctx.U
-    val inflightNext = inflightCnt(ctx) + incoming.asUInt - outgoing.asUInt
     val batchSourceDrained =
       batchRefsRemaining(ctx) === 0.U &&
-        refBufCountA(ctx) === 0.U &&
-        refBufCountB(ctx) === 0.U &&
-        !refPending(ctx) &&
-        memReqQueuedCnt(ctx) === 0.U &&
-        !memLiveForCtx(ctx)
-    val batchDoneNow = batchInProgress(ctx) && batchSourceDrained && inflightNext === 0.U
+        refBufCount(ctx) === 0.U &&
+        refShadowEmpty(ctx) &&
+        !refInflight(ctx)
+    val batchDoneNow = batchInProgress(ctx) && batchSourceDrained && triOutstanding(ctx) === 0.U
 
     when(resultValidReg(ctx) && outSel === ctx.U && !io.clear_ctx(ctx)) {
       resultValidReg(ctx) := false.B

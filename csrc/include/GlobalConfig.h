@@ -22,7 +22,7 @@ inline constexpr int kTriRefPackFactor = 16;
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
 
-inline constexpr int kDdaGlobalRes = 32;
+inline constexpr int kDdaGlobalRes = 16;
 inline constexpr int kDdaSubRes = 1;
 inline constexpr int kDdaTraceSteps = 100;
 

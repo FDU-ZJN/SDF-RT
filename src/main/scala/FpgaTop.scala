@@ -3,7 +3,7 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 import DDA.DDA
-import Render.{NormalMemWriteIO, RenderStage}
+import Render.RenderStage
 import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
 import Trace.TraceController
 
@@ -34,7 +34,7 @@ class FpgaTop(
 
     val frame_start      = Input(Bool())
 
-    val pixel_valid      = Output(UInt(2.W))
+    val pixel_valid      = Output(Bool())
     val pixel_ready      = Input(Bool())
     val pixel_rgb8       = Output(UInt((24 * 2).W))
     val pixel_hit_id     = Output(UInt((c.addrWidth * 2).W))
@@ -47,7 +47,6 @@ class FpgaTop(
 
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
-    val normal_mem_wr = Flipped(new NormalMemWriteIO)
   })
 
   val rayDirCalcs = Seq.tabulate(2)(lane => Module(new RayDirCalc(c.cfg, width, height, laneId = lane, numLanes = 2)))
@@ -104,7 +103,6 @@ class FpgaTop(
   }
   traceController.io.job_in <> traceJobQueue.io.deq
   renderStage.io.in <> traceController.io.result_out
-  renderStage.io.normal_mem_wr <> io.normal_mem_wr
 
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)
@@ -341,7 +339,6 @@ class FpgaTop(
 
 
   class PixelBundle extends Bundle {
-    val valid_mask = UInt(2.W)
     val rgb8   = UInt((24 * 2).W)
     val hit_id = UInt((c.addrWidth * 2).W)
   }
@@ -349,28 +346,27 @@ class FpgaTop(
   val pixelQueue = Module(new Queue(new PixelBundle, pixelQueueDepth))
 
   // Fix 3: enqFire = 真实握手成功（valid && ready 同时为真）
-  val commitOutValid = Cat(commitQueue.io.out(1).valid, commitQueue.io.out(0).valid)
-  retiredPixelsThisBeat := PopCount(commitOutValid.asBools)
-  enqFire := commitOutValid.orR && pixelQueue.io.enq.ready
+  val commitOutValid = commitQueue.io.out.valid
+  retiredPixelsThisBeat := Mux(commitOutValid, 2.U, 0.U)
+  enqFire := commitOutValid && pixelQueue.io.enq.ready
 
-  pixelQueue.io.enq.valid        := commitOutValid.orR
-  pixelQueue.io.enq.bits.valid_mask := commitOutValid
+  pixelQueue.io.enq.valid        := commitOutValid
   pixelQueue.io.enq.bits.rgb8 := Cat(
-    commitQueue.io.out(1).bits.rgb8,
-    commitQueue.io.out(0).bits.rgb8
+    commitQueue.io.out.bits(1).rgb8,
+    commitQueue.io.out.bits(0).rgb8
   )
   pixelQueue.io.enq.bits.hit_id := Cat(
-    commitQueue.io.out(1).bits.hitId,
-    commitQueue.io.out(0).bits.hitId
+    commitQueue.io.out.bits(1).hitId,
+    commitQueue.io.out.bits(0).hitId
   )
   pixelQueue.io.deq.ready       := io.pixel_ready
 
   assert(
-    !(commitOutValid.orR && !pixelQueue.io.enq.ready),
+    !(commitOutValid && !pixelQueue.io.enq.ready),
     "[FpgaTop] BUG: pixelQueue full! Increase pixelQueueDepth or topMaxInflight"
   )
 
-  io.pixel_valid  := Mux(pixelQueue.io.deq.valid, pixelQueue.io.deq.bits.valid_mask, 0.U)
+  io.pixel_valid  := pixelQueue.io.deq.valid
   io.pixel_rgb8   := pixelQueue.io.deq.bits.rgb8
   io.pixel_hit_id := pixelQueue.io.deq.bits.hit_id
 
@@ -420,7 +416,7 @@ object FpgaTopGen {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=0,withUseFloatIP:Boolean=true): Unit = {
+  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=1,withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
     GlobalConfig.withMemImplMode(withMemImplMode) {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {

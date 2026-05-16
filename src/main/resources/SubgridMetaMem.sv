@@ -16,7 +16,7 @@ module SubgridMetaMem #(
   output logic                   valid
 );
 
-  localparam int FIXED_LATENCY     = 2;
+  localparam int FIXED_LATENCY     = LATENCY;
   localparam int GLOBAL_ADDR_WIDTH = $clog2(GLOBALRES) * 3;
   localparam int SUB_ADDR_WIDTH    = $clog2(SUBRES) * 3;
   localparam int LOOKUP_ADDR_WIDTH = GLOBAL_ADDR_WIDTH + SUB_ADDR_WIDTH;
@@ -72,7 +72,7 @@ module SubgridMetaMem #(
     .sleep          (1'b0),
     .clka           (clk),
     .rsta           (reset),
-    .ena            (en),
+    .ena            (1'b1),
     .regcea         (1'b1),
     .addra          (mem_addr),
     .injectsbiterra (1'b0),
