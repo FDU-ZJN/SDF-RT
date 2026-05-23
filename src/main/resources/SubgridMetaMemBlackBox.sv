@@ -2,126 +2,91 @@ module SubgridMetaMemResourceBB #(
   parameter int ADDR_WIDTH = 32,
   parameter int GLOBALRES = 8,
   parameter int SUBRES = 1,
-  parameter int LATENCY = 2
+  parameter int LATENCY = 2,
+  parameter int MAX_ENTRIES = 512
 ) (
   input  logic                   clk,
   input  logic                   reset,
   input  logic [ADDR_WIDTH-1:0]  globalIdx,
   input  logic [ADDR_WIDTH-1:0]  subIdx,
   input  logic                   en,
-  output logic [15:0]            triStart,
-  output logic [15:0]            triCount,
+  output logic [23:0]            triStart,
+  output logic [7:0]             triCount,
   output logic                   valid
 );
-localparam int Global_ADDR_WIDTH = $clog2(GLOBALRES)*3;
-localparam int SUB_ADDR_WIDTH = $clog2(SUBRES)*3;
-localparam int DRAM_ADDR_WIDTH = Global_ADDR_WIDTH+SUB_ADDR_WIDTH;
-logic [LATENCY-1:0]    valid_pipe;
+  localparam int FIXED_LATENCY     = 2;
+  localparam int GLOBAL_ADDR_WIDTH = $clog2(GLOBALRES) * 3;
+  localparam int SUB_ADDR_WIDTH    = $clog2(SUBRES) * 3;
+  localparam int LOOKUP_ADDR_WIDTH = GLOBAL_ADDR_WIDTH + SUB_ADDR_WIDTH;
+  localparam int MEM_ADDR_WIDTH    = (MAX_ENTRIES <= 1) ? 1 : $clog2(MAX_ENTRIES);
+  localparam int MEM_DEPTH         = 1 << MEM_ADDR_WIDTH;
 
-// Memory storage for $readmemh initialization
-// Packed format: [31:16] = triStart[15:0], [15:0] = triCount[15:0]
-// This allows $readmemh to load both values from a single 32-bit word
-localparam int MAX_ENTRIES = 65536; // 2^16 subgrids
+  logic [31:0] lookup_addr;
+  logic [MEM_ADDR_WIDTH-1:0] mem_addr;
+  logic [31:0] data_raw;
+  logic [31:0] data_pipe [0:FIXED_LATENCY-1];
+  logic        in_range_pipe [0:FIXED_LATENCY-1];
+  logic [FIXED_LATENCY-1:0] valid_pipe;
+  integer i;
 
-reg [31:0] subgrid_meta_mem [0:MAX_ENTRIES-1];
-reg mem_loaded = 1'b0;
+  logic [31:0] subgrid_meta_mem [0:MEM_DEPTH-1];
+  string subgrid_meta_mem_file;
 
-// Pipeline registers for address
-logic [ADDR_WIDTH-1:0] globalIdx_pipe [LATENCY-1:0];
-logic [ADDR_WIDTH-1:0] subIdx_pipe [LATENCY-1:0];
-
-// Initialize memory from file using $readmemh
-initial begin
-  string mem_file;
-  if ($value$plusargs("SUBGRID_META_MEM_FILE=%s", mem_file)) begin
-    $display("[SubgridMetaMem] Loading subgrid meta memory from %s", mem_file);
-    $readmemh(mem_file, subgrid_meta_mem);
-    mem_loaded = 1'b1;
-  end else begin
-    $display("[SubgridMetaMem] Warning: SUBGRID_META_MEM_FILE not specified, using empty memory");
-  end
-end
-
-generate
-  if (SUB_ADDR_WIDTH > 0) begin : gen_combined_addr
-    logic [Global_ADDR_WIDTH + SUB_ADDR_WIDTH - 1:0] combined_addr;
-    assign combined_addr = {globalIdx[Global_ADDR_WIDTH-1:0], subIdx[SUB_ADDR_WIDTH-1:0]};
-    
-    always_ff @(posedge clk) begin
-      if (reset) begin
-        valid_pipe <= '0;
-        for (int i = 0; i < LATENCY; i++) begin
-          globalIdx_pipe[i] <= '0;
-          subIdx_pipe[i] <= '0;
-        end
-      end else begin
-        globalIdx_pipe[0] <= globalIdx;
-        subIdx_pipe[0] <= subIdx;
-        valid_pipe[0] <= en;
-        for (int i = 1; i < LATENCY; i++) begin
-          globalIdx_pipe[i] <= globalIdx_pipe[i - 1];
-          subIdx_pipe[i] <= subIdx_pipe[i - 1];
-          valid_pipe[i] <= valid_pipe[i - 1];
-        end
-      end
+  initial begin
+    if (LATENCY != FIXED_LATENCY) begin
+      $warning("[SubgridMetaMem] LATENCY=%0d is ignored, fixed latency is %0d", LATENCY, FIXED_LATENCY);
     end
-    
-    // Read from memory and extract packed values
-    always_ff @(posedge clk) begin
-      if (en) begin
-        if (mem_loaded && (combined_addr < MAX_ENTRIES)) begin
-          // Packed format: [31:16] = triStart, [15:0] = triCount
-          triStart <= subgrid_meta_mem[combined_addr][31:16];
-          triCount <= subgrid_meta_mem[combined_addr][15:0];
-        end else begin
-          triStart <= '0;
-          triCount <= '0;
-        end
-      end else begin
-        triStart <= '0;
-        triCount <= '0;
-      end
+
+    for (i = 0; i < MEM_DEPTH; i = i + 1) begin
+      subgrid_meta_mem[i] = '0;
+    end
+
+    if ($value$plusargs("SUBGRID_META_MEM_FILE=%s", subgrid_meta_mem_file)) begin
+      $display("[SubgridMetaMem] Loading subgrid meta memory from %s", subgrid_meta_mem_file);
+      $readmemh(subgrid_meta_mem_file, subgrid_meta_mem);
+    end else begin
+      $display("[SubgridMetaMem] Warning: SUBGRID_META_MEM_FILE not specified, using empty memory");
     end
   end
-  else begin : gen_global_only_addr
-    always_ff @(posedge clk) begin
-      if (reset) begin
-        valid_pipe <= '0;
-        for (int i = 0; i < LATENCY; i++) begin
-          globalIdx_pipe[i] <= '0;
-          subIdx_pipe[i] <= '0;
-        end
-      end else begin
-        globalIdx_pipe[0] <= globalIdx;
-        subIdx_pipe[0] <= subIdx;
-        valid_pipe[0] <= en;
-        for (int i = 1; i < LATENCY; i++) begin
-          globalIdx_pipe[i] <= globalIdx_pipe[i - 1];
-          subIdx_pipe[i] <= subIdx_pipe[i - 1];
-          valid_pipe[i] <= valid_pipe[i - 1];
-        end
-      end
+
+  generate
+    if (SUB_ADDR_WIDTH > 0) begin : gen_combined_addr
+      logic [LOOKUP_ADDR_WIDTH-1:0] combined_addr;
+      assign combined_addr = {globalIdx[GLOBAL_ADDR_WIDTH-1:0], subIdx[SUB_ADDR_WIDTH-1:0]};
+      assign lookup_addr = {{(32-LOOKUP_ADDR_WIDTH){1'b0}}, combined_addr};
+    end else begin : gen_global_only_addr
+      assign lookup_addr = {{(32-GLOBAL_ADDR_WIDTH){1'b0}}, globalIdx[GLOBAL_ADDR_WIDTH-1:0]};
     end
-    
-    // Read from memory and extract packed values
-    always_ff @(posedge clk) begin
-      if (en) begin
-        if (mem_loaded && (globalIdx[Global_ADDR_WIDTH-1:0] < MAX_ENTRIES)) begin
-          // Packed format: [31:16] = triStart, [15:0] = triCount
-          triStart <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][31:16];
-          triCount <= subgrid_meta_mem[globalIdx[Global_ADDR_WIDTH-1:0]][15:0];
-        end else begin
-          triStart <= '0;
-          triCount <= '0;
-        end
-      end else begin
-        triStart <= '0;
-        triCount <= '0;
+  endgenerate
+
+  assign mem_addr = lookup_addr[MEM_ADDR_WIDTH-1:0];
+
+  always_ff @(posedge clk) begin
+    data_pipe[0] <= subgrid_meta_mem[mem_addr];
+    for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
+      data_pipe[i] <= data_pipe[i-1];
+    end
+  end
+
+  assign data_raw = data_pipe[FIXED_LATENCY-1];
+
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      valid_pipe <= '0;
+      for (i = 0; i < FIXED_LATENCY; i = i + 1) begin
+        in_range_pipe[i] <= 1'b0;
+      end
+    end else begin
+      valid_pipe[0] <= en;
+      in_range_pipe[0] <= (lookup_addr < MAX_ENTRIES);
+      for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
+        valid_pipe[i] <= valid_pipe[i - 1];
+        in_range_pipe[i] <= in_range_pipe[i - 1];
       end
     end
   end
-endgenerate
 
-assign valid = valid_pipe[LATENCY - 1];
+  assign triStart = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[31:8] : 24'h0;
+  assign triCount = in_range_pipe[FIXED_LATENCY - 1] ? data_raw[7:0] : 8'h0;
+  assign valid    = valid_pipe[FIXED_LATENCY - 1];
 endmodule
-

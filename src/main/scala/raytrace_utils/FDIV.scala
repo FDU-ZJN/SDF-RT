@@ -19,7 +19,7 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val in_valid  = Input(Bool())
   })
 
-  if (cfg.useBlackBox) {
+  if (cfg.useFloatIP) {
     val bb = Module(new Fdiv)
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.b
@@ -118,8 +118,8 @@ class FDIV(cfg: FloatConfig = FloatConfig.FP32) extends Module {
 
   // --- 5. 结果输出 ---
   val combined_res = Cat(result_sign, final_exp, final_frac)
-    io.result    := ShiftRegister(combined_res, cfg.fdivLatency)
-    io.out_valid := ShiftRegister(io.in_valid, cfg.fdivLatency)
+    io.result    := PipeUtils.pipeData(combined_res, cfg.fdivLatency)
+    io.out_valid := PipeUtils.pipeBool(io.in_valid, cfg.fdivLatency, false.B)
   }
 }
 

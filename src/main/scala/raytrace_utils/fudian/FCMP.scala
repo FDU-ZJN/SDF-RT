@@ -3,6 +3,7 @@ package raytrace_utils.fudian
 import chisel3._
 import chisel3.util._
 import raytrace_utils.FloatConfig
+import raytrace_utils.PipeUtils
 class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val expWidth=cfg.expWidth
   val precision=cfg.precision
@@ -10,10 +11,9 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     val a, b = Input(UInt((expWidth + precision).W))
     val signaling = Input(Bool())
     val eq, le, lt = Output(Bool())
-    val fflags = Output(UInt(5.W))
   })
 
-  if (cfg.useBlackBox) {
+  if (cfg.useFloatIP) {
     val bb = Module(new Fcmp)
     bb.io.aclk := clock
     bb.io.s_axis_a_tdata := io.a
@@ -22,10 +22,9 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
     bb.io.s_axis_b_tvalid := true.B
 
     // result bits: [0]=lt, [1]=eq, [2]=le
-    io.lt := bb.io.m_axis_result_tdata(0)
-    io.eq := bb.io.m_axis_result_tdata(1)
-    io.le := bb.io.m_axis_result_tdata(2)
-    io.fflags := 0.U
+    io.lt := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(1)
+    io.eq := bb.io.m_axis_result_tvalid && bb.io.m_axis_result_tdata(0)
+    io.le := io.lt||io.eq
   } else {
     val (a, b) = (io.a, io.b)
     val fp_a = FloatPoint.fromUInt(a, expWidth, precision)
@@ -55,12 +54,9 @@ class FCMP(cfg: FloatConfig = FloatConfig.FP32) extends Module {
       uint_less && !uint_eq,
       fp_a.sign && !bothZero
     )
-    val fflagsRaw = Cat(invalid, 0.U(4.W))
-
-    io.eq := ShiftRegister(eqRaw, cfg.fcmpLatency)
-    io.le := ShiftRegister(leRaw, cfg.fcmpLatency)
-    io.lt := ShiftRegister(ltRaw, cfg.fcmpLatency)
-    io.fflags := ShiftRegister(fflagsRaw, cfg.fcmpLatency)
+    io.eq := PipeUtils.pipeData(eqRaw, cfg.fcmpLatency)
+    io.le := PipeUtils.pipeData(leRaw, cfg.fcmpLatency)
+    io.lt := PipeUtils.pipeData(ltRaw, cfg.fcmpLatency)
   }
 }
 

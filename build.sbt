@@ -8,8 +8,8 @@ libraryDependencies ++= Seq(
   "com.thoughtworks.paranamer" % "paranamer" % "2.8",
   "org.scalatest" %% "scalatest" % "3.2.16" % "test",
   "edu.berkeley.cs" %% "chiseltest" % "6.0.0" % "test"
+  
 )
-
 // 对于 Chisel 6.x，推荐使用这种方式加载插件
 addCompilerPlugin("org.chipsalliance" % "chisel-plugin" % chiselVersion cross CrossVersion.full)
 

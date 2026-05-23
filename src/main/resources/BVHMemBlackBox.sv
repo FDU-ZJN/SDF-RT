@@ -23,13 +23,13 @@ module BVHMemResourceBB #(
   
   reg [31:0] bvh_mem [0:MAX_ENTRIES-1][0:NUM_WORDS-1];
   reg mem_loaded = 1'b0;
+  string bvh_mem_file;
   
   // Initialize memory from file using $readmemh
   initial begin
-    string mem_file;
-    if ($value$plusargs("BVH_MEM_FILE=%s", mem_file)) begin
-      $display("[BVHMem] Loading BVH memory from %s", mem_file);
-      $readmemh(mem_file, bvh_mem);
+    if ($value$plusargs("BVH_MEM_FILE=%s", bvh_mem_file)) begin
+      $display("[BVHMem] Loading BVH memory from %s", bvh_mem_file);
+      $readmemh(bvh_mem_file, bvh_mem);
       mem_loaded = 1'b1;
     end else begin
       $display("[BVHMem] Warning: BVH_MEM_FILE not specified, using empty memory");
@@ -68,4 +68,3 @@ module BVHMemResourceBB #(
   assign valid = valid_pipe[LATENCY - 1];
   assign addr_q = addr_pipe[LATENCY - 1];
 endmodule
-

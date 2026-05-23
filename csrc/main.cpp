@@ -23,6 +23,15 @@ using namespace rt::config;
 uint64_t main_time = 0;
 
 int main(int argc, char** argv) {
+    std::string runtimeVcdPath = kVcdPath;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
+        if (arg.rfind(kVcdArgPrefix, 0) == 0) {
+            runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
+        }
+    }
+
     DebugOptions debugOptions;
     debugOptions.enableVcd = kEnableVcd;
     debugOptions.vcdWindowByPixel = kVcdWindowByPixel;
@@ -49,9 +58,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::cout << "Single-pixel debug enabled at ("
-                  << debugOptions.debugPixelX << ","
-                  << debugOptions.debugPixelY << ")"
-                  << (kDebugOnly ? " [debug-only]" : "") << std::endl;
+              << debugOptions.debugPixelX << ","
+              << debugOptions.debugPixelY << ")"
+              << (kDebugOnly ? " [debug-only]" : "") << std::endl;
     } else if (kDebugOnly) {
         std::cerr << "kDebugOnly requires kSinglePixelDebug" << std::endl;
         return 1;
@@ -97,7 +106,7 @@ int main(int argc, char** argv) {
     const float gridMaxY = bounds[4];
     const float gridMaxZ = bounds[5];
 
-    const array<float, 3> setupOrigin = {0.0f, 0.4f, 2.8f};
+    const array<float, 3> setupOrigin = {0.0f, 0.4f, 1.5f};
     const array<float, 3> gridMin = {gridMinX, gridMinY, gridMinZ};
     const array<float, 3> gridMax = {gridMaxX, gridMaxY, gridMaxZ};
 
@@ -129,6 +138,7 @@ int main(int argc, char** argv) {
 
     // Build compact subgrid triangle index for DDA meta lookup.
     build_subgrid_triangle_index(gridMin, gridMax, kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes, kDdaSubRes, kDdaSubRes, kDdaSubRes);
+    writeSubgridTriCountHistogramPPM("subgrid_tricount_hist.ppm", kDdaGlobalRes, kDdaSubRes);
 
     // Export memory to .mem files for Vivado simulation
     std::string memExportDir = "./vivado_mem";
@@ -176,7 +186,8 @@ int main(int argc, char** argv) {
 
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
-            if (kDebugOnly && (px != debugOptions.debugPixelX || py != debugOptions.debugPixelY)) {
+            if (debugOptions.singlePixelDebug &&
+                (px != debugOptions.debugPixelX || py != debugOptions.debugPixelY)) {
                 continue;
             }
             RayWorkItem item;
@@ -220,9 +231,12 @@ int main(int argc, char** argv) {
         std::cerr << "No work items generated." << std::endl;
         return 2;
     }
+    if (debugOptions.singlePixelDebug) {
+        std::cout << "Single-pixel workload generated: " << totalRays << " ray(s)." << std::endl;
+    }
 
     auto* dut = new VSimTop;
-    debug.attachTrace(dut, kVcdPath, 99);
+    debug.attachTrace(dut, runtimeVcdPath.c_str(), 99);
 
     dut->clock = 0;
     dut->reset = 1;
@@ -295,9 +309,10 @@ int main(int argc, char** argv) {
 
         if (dut->io_out_valid) {
             const RayWorkItem& item = workItems[retired];
-            const uint8_t r = colorToByte(dut->io_out_rgb_x);
-            const uint8_t g = colorToByte(dut->io_out_rgb_y);
-            const uint8_t b = colorToByte(dut->io_out_rgb_z);
+            const uint32_t rgb8 = dut->io_out_rgb8;
+            const uint8_t r = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
+            const uint8_t g = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
+            const uint8_t b = static_cast<uint8_t>(rgb8 & 0xFF);
             const size_t idx = (static_cast<size_t>(item.py) * kWidth + item.px) * 3;
             image[idx + 0] = r;
             image[idx + 1] = g;
@@ -376,4 +391,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-

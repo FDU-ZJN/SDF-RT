@@ -4,14 +4,25 @@
 namespace rt {
 namespace config {
 
-inline constexpr int kWidth = 400;
-inline constexpr int kHeight = 400;
-inline constexpr int kMaxWaitCycles = 10000;
+// ============================================================
+// Simulation Mode Selection
+// ============================================================
+// MODE=noblackbox: Verilator simulation with SimTop (default)
+// MODE=useblackbox: Verilator with BlackBox memory + SimTop
+// MODE=fpga: FPGA simulation with FpgaTop (waits for frame_done)
+inline constexpr bool kFpgaMode = false;
+
+inline constexpr int kWidth = 1920;
+inline constexpr int kHeight = 1080;
+inline constexpr int kMaxWaitCycles = 10000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
+inline constexpr int kTriNumPE = 1;
+inline constexpr int kTriNumBanks = 4;
+inline constexpr int kTriRefPackFactor = 16;
 
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
 
-inline constexpr int kDdaGlobalRes = 8;
+inline constexpr int kDdaGlobalRes = 16;
 inline constexpr int kDdaSubRes = 1;
 inline constexpr int kDdaTraceSteps = 100;
 
@@ -20,11 +31,16 @@ inline constexpr int kSanityFullY = 145;
 inline constexpr int kSanityFullZ = 195;
 
 inline constexpr bool kUseComputedHybridSdf = false;
+inline constexpr bool kForceRebuildSdfCacheFpga = false;
 inline constexpr float kLocalActiveBand = 0.15f;
 
 inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";
 inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_computed_test.npz";
+#ifdef RT_VCD_PATH
+inline constexpr const char* kVcdPath = RT_VCD_PATH;
+#else
 inline constexpr const char* kVcdPath = "raytrace.vcd";
+#endif
 
 // Debug configuration (edit here directly, no CLI parsing).
 inline constexpr bool kEnableVcd = false;
@@ -54,4 +70,3 @@ inline constexpr bool kEnableReferenceOracle =
 } // namespace rt
 
 #endif // GLOBAL_CONFIG_H
-

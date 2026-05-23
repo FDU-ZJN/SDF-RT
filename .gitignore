@@ -4,12 +4,40 @@
 *.bin
 *.vcd
 *.wlf
+*.mem
+*.coe
+*.ppm
+*.obj
+*.tar
+*.tar.gz
+*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs and temporary files
+*.log
+*.jou
+*.str
+*.tmp
+*~
+
 # 允许 resources 目录下的 .sv 文件
 !src/main/resources/*.sv
+
+# Build outputs
 target/
 build/
+test_run_dir/
+vivado/
+ip_repo/
+
+# IDE / tool metadata
 .idea/
 .vscode/
-test_run_dir/
-.*/
-vivado/
+.bsp/
+.metals/
+.bloop/
+.scala-build/
+.qwen/

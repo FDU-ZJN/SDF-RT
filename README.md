@@ -1,155 +1,532 @@
-# SDF-RT 光线追踪硬件系统开发文档
+# SDF-RT: SDF-Accelerated Ray Tracing Hardware System
 
-## 概述
-SDF-RT 是一个基于 Chisel/Scala 的光线追踪加速器项目，支持 BVH 加速结构、三角形相交、AABB 相交等核心算法的硬件实现。系统采用高并行度、流水线设计，支持多线程射线处理，目标是最大化吞吐与速度。
-
----
-
-## 目录结构说明
-
-- `build.sbt`/`project/`/`target/`：Scala/Chisel 工程配置与构建产物
-- `src/main/scala/`：核心硬件模块
-  - `SimTOP.scala`：顶层 SoC 集成
-  - `DDA/Trace/`：DDA遍历与三角形相交模块
-  - `BVH/`：BVH遍历处理单元
-  - `SDF/`：SDF遍历模块
-  - `Render/`：渲染阶段控制
-  - `raytrace_utils/`：工具库（Bundle、浮点单元、向量运算等）
-- `src/main/resources/`：Vivado仿真用BlackBox资源（内存初始化）
-- `csrc/`：C++仿真代码（Verilator仿真用）
-  - `main.cpp`：仿真主入口
-  - `src/utils/`：工具库（BVH、SDF、内存导出等）
-  - `include/`：头文件
-- `build/`/`test_run_dir/`：构建产物与仿真输出
-- `vivado/`：Vivado工程文件
+A high-performance, parallel ray tracing accelerator implemented in Chisel/Scala, featuring SDF (Signed Distance Field) traversal, BVH acceleration structures, and hardware-optimized intersection algorithms.
 
 ---
 
-## 核心模块与算法
+## Table of Contents
 
-### 1. BVH 遍历与 AABB 相交
-- **AABB 相交模块**：`AABB.scala`，实现 3 轴并行、流水线的 Ray-AABB 相交，输出 `hit`、`tNear`、`tFar`。
-- **BVH 处理单元**：`BvhPE.scala`，负责 BVH 节点遍历、剪枝、双子节点并行测试。
-- **数据结构**：`Bundles.scala` 中定义 `Ray`、`AABB`、`Triangle`、`TriangleBlock` 等。
-
-#### Ray-AABB 相交算法（硬件实现）
-- 输入：射线（origin, dir）、AABB（min, max）
-- 并行计算每轴：
-  - `invDir = 1/(dir+eps)`（防止除零）
-  - `t0 = (min-origin)*invDir`，`t1 = (max-origin)*invDir`
-  - `axisNear = min(t0, t1)`，`axisFar = max(t0, t1)`
-- 归约：
-  - `tMin = max(axisNear)`，`tMax = min(axisFar)`
-  - 命中条件：`tMax >= tMin && tMax >= 0`
-  - 最近距离：`tNear = (tMin > 0) ? tMin : tMax`
-
-### 2. 三角形相交（Möller-Trumbore）
-- **主模块**：`TriangleIntersector.scala`，支持多线程并行射线处理。
-- **算法流程**：
-  1. `edge1 = v1 - v0`
-  2. `edge2 = v2 - v0`
-  3. `h = cross(direction, edge2)`
-  4. `f = dot(edge1, h)`
-  5. `if (f <= epsilon) return MISS`
-  6. `u = dot(origin - v0, h) / f`
-  7. `if (u < 0 || u > 1) return MISS`
-  8. `q = cross(origin - v0, edge1)`
-  9. `v = dot(direction, q) / f`
-  10. `if (v < 0 || u + v > 1) return MISS`
-  11. `t = dot(edge2, q) / f`
-  12. `if (t > epsilon) return HIT(origin + t * direction)`
-  13. `return MISS`
-
-- **硬件优化**：
-  - 定点/浮点可选，支持 Q16.16 格式
-  - 叉积/点积模块独立，乘法器并行
-  - 多线程射线处理，支持批量三角形
-
-### 3. 浮点单元与向量运算
-- **FMUL/FADD/FDIV/FCMP**：`raytrace_utils/fudian/`，支持 IEEE 754 语义
-- **向量运算**：`vector.scala`，点积、叉积、加减、取反
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Top-Level Integration](#top-level-integration)
+- [Directory Structure](#directory-structure)
+- [Core Modules](#core-modules)
+  - [SDF Traversal](#1-sdf-traversal)
+  - [BVH Traversal](#2-bvh-traversal)
+  - [DDA Ray Traversal](#3-dda-ray-traversal)
+  - [Triangle Intersection](#4-triangle-intersection)
+  - [Rendering Pipeline](#5-rendering-pipeline)
+  - [Floating-Point Units](#6-floating-point-units)
+- [Simulation & Verification](#simulation--verification)
+  - [Verilator Simulation](#verilator-simulation)
+  - [Vivado Simulation](#vivado-simulation)
+  - [ChiselTest Unit Tests](#chiseltest-unit-tests)
+- [FPGA Deployment](#fpga-deployment)
+- [Quick Start Guide](#quick-start-guide)
+- [Performance Characteristics](#performance-characteristics)
+- [Development Guidelines](#development-guidelines)
+- [References](#references)
 
 ---
 
-## 测试与验证
+## Overview
 
-### Verilator仿真
-- **C++ 仿真**：`csrc/main.cpp`，使用DPI-C接口直接读取C++内存数据
-- **运行方式**：`cd csrc && make run`
-- **自动导出**：仿真运行时会自动导出所有内存数据到`./vivado_mem/`目录，用于Vivado仿真
+SDF-RT is a hardware ray tracing accelerator designed for real-time rendering applications. It leverages SDF-based spatial partitioning combined with BVH acceleration to achieve high-throughput ray-scene intersection tests. The system is implemented in Chisel/Scala and targets FPGA deployment with full pipelining and parallel execution.
 
-### Vivado仿真
-- **内存初始化**：使用`$readmemh`从.mem文件加载数据
-- **配置方法**：在Vivado Simulation Settings中添加+plusargs参数
-- **详细文档**：查看`AGENT.md`中的Vivado仿真使用说明
-
-### ChiselTest单元测试
-- `src/test/scala/`：可扩展到BVH/AABB等模块的单元测试
+**Primary Use Cases:**
+- Real-time ray tracing acceleration
+- Hardware prototyping and verification
+- FPGA-based rendering pipelines
+- Research in hardware ray tracing architectures
 
 ---
 
-## Vivado仿真快速开始
+## Key Features
 
-### 1. 生成.mem文件
+- **Multi-Stage Pipeline Architecture**: SDF → BVH → DDA → Render stages operate in parallel
+- **SDF-Based Traversal**: Signed Distance Field acceleration for efficient empty-space skipping
+- **BVH Hierarchy**: Bounding Volume Hierarchy with parallel node testing and near-far sorting
+- **DDA Grid Traversal**: Digital Differential Analyzer for uniform grid traversal
+- **Hardware Triangle Intersection**: Möller-Trumbore algorithm with full pipelining
+- **IEEE 754 Floating-Point**: Complete FPU library (FMUL, FADD, FDIV, FSQRT, FCMP)
+- **Multi-Threaded Ray Processing**: Supports concurrent ray queries
+- **FPGA-Ready**: Complete deployment flow with FpgaTop abstraction layer
+- **Dual Simulation Support**: Verilator (fast) and Vivado (bit-accururate) workflows
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          FpgaTop / SimTop                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌───────────┐    ┌───────────┐    ┌───────────┐    ┌────────┐ │
+│  │ InitStage │───▶│  SdfStage │───▶│ BVHStage  │───▶│DDAStage│ │
+│  │ (Setup)   │    │ (SDF PE)  │    │ (BVH PE)  │    │(Tri PE)│ │
+│  └───────────┘    └───────────┘    └───────────┘    └────────┘ │
+│                                                          │      │
+│                                                          ▼      │
+│                                                     ┌────────┐  │
+│                                                     │Render  │  │
+│                                                     │ Stage  │  │
+│                                                     └────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Top-Level Integration
+
+The FPGA deployment path uses two top-level layers that serve different roles:
+
+1. `src/main/scala/FpgaTop.scala`
+   - The Chisel top-level that generates rays, runs `SimTop`, and emits a decoupled pixel stream.
+   - Generated RTL is written to `build/vivado/FpgaTop.sv` for Vivado and `build/fpga/FpgaTop.sv` for Verilator-oriented flows.
+2. `build/vivado/fpga_top.v`
+   - The Vivado-facing Verilog wrapper that instantiates `FpgaTop`, attaches `axi_top` (`axi_bram_ctrl`), and exposes setup / frame control / pixel state through AXI BRAM reads and writes.
+   - `vivado/src/fpga_top.v` is kept in sync for IP packaging via `component.xml`.
+
+### Source of Truth
+
+- `build/vivado/FpgaTop.sv`: generated FPGA core used by the Vivado project
+- `build/vivado/fpga_top.v`: AXI wrapper used by `vivado/sdf-rt.xpr`
+- `vivado/src/fpga_top.v`: synchronized copy for packaged-IP metadata
+
+### Pixel Readback Paths
+
+- Direct simulation path:
+  - `csrc/main_fpga.cpp` drives `FpgaTop` ports such as `io_pixel_valid`, `io_pixel_x`, `io_pixel_y`, and `io_pixel_rgb8`.
+- AXI-integrated FPGA path:
+  - software reads pixel state through `axi_bram_ctrl`
+  - wrapper logic places pixel data on `bram_rddata`
+  - `axi_bram_ctrl` returns it on `s_axi_rdata`
+
+---
+
+## Directory Structure
+
+```
+SDF-RT/
+├── README.md                      # Main project documentation (this file)
+├── AGENT.md                       # Development guidelines for AI agents
+├── FPGA.md                        # FPGA deployment guide (merged documentation)
+├── build.sbt                      # SBT build configuration
+├── project/                       # SBT project metadata
+├── src/
+│   ├── main/scala/               # Chisel hardware source (46 files)
+│   │   ├── SimTOP.scala          # Main simulation top-level
+│   │   ├── FpgaTop.scala         # FPGA deployment top-level
+│   │   ├── SdfTop.scala          # SDF-only top-level
+│   │   ├── BVHTop.scala          # BVH-only top-level
+│   │   ├── FpgaRayDirCalc.scala  # FPGA ray direction calculator
+│   │   ├── SDF/                  # SDF traversal modules (6 files)
+│   │   ├── BVH/                  # BVH traversal modules (3 files)
+│   │   ├── DDA/                  # DDA traversal modules (6 files)
+│   │   │   └── Trace/            # Triangle intersection pipeline (5 files)
+│   │   ├── Render/               # Rendering pipeline (3 files)
+│   │   └── raytrace_utils/       # Utility library (10 files)
+│   │       ├── fudian/           # Floating-point units (9 files)
+│   │       └── fudian/utils/     # FPU helper logic (3 files)
+│   ├── main/resources/           # Vivado BlackBox memory files
+│   │   ├── TriangleMemBlackBox.sv
+│   │   ├── NormalMemBlackBox.sv
+│   │   ├── BVHMemBlackBox.sv
+│   │   ├── SubgridMetaMemBlackBox.sv
+│   │   └── SdfMemBlackBox_simulation.sv
+│   └── test/scala/               # ChiselTest unit tests (3 files)
+│       ├── AABBTest.scala
+│       ├── DivTest.scala
+│       └── VectorTest.scala
+├── csrc/                         # C++ simulation framework (46 files)
+│   ├── main.cpp                  # Verilator simulation entry
+│   ├── main_fpga.cpp             # FPGA mode entry
+│   ├── Makefile                  # Build system
+│   ├── include/                  # C++ headers (11 files)
+│   │   ├── GlobalConfig.h        # Configuration parameters
+│   │   ├── Mem.h                 # Memory management
+│   │   ├── BVH.h / SDF.h         # Data structures
+│   │   ├── golden_model.h        # Reference implementation
+│   │   └── test_framework.h      # Test infrastructure
+│   ├── src/utils/                # C++ utilities (11 files)
+│   │   ├── MemExport.cpp         # Vivado memory export
+│   │   ├── BVH.cpp / SDF.cpp     # Data structure implementations
+│   │   └── golden_model.cpp      # Software reference algorithms
+│   └── vivado_mem/               # Exported memory files for Vivado
+│       ├── triangle_mem.mem
+│       ├── normal_mem.mem
+│       ├── bvh_mem.mem
+│       ├── sdf_global_mem.mem
+│       ├── sdf_local_mem.mem
+│       └── subgrid_meta_mem.mem
+├── build/                        # Build outputs (Verilog, objects)
+├── test_run_dir/                 # Simulation outputs (VCD, logs)
+├── vivado/                       # Vivado project placeholder
+└── .gitignore
+```
+
+---
+
+## Core Modules
+
+### 1. SDF Traversal
+
+**Location:** `src/main/scala/SDF/`
+
+**Modules:**
+- `SdfStage.scala` - Top-level SDF traversal controller
+- `SdfPE.scala` - SDF Processing Element (core computation)
+- `SdfMemDPI.scala` - SDF memory interface (DPI-C / BlackBox)
+- `SdfSchedulerUnit.scala` - Ray scheduling and dispatch
+- `SetupUnit.scala` - Camera and scene configuration
+- `InitStage.scala` - Pipeline initialization
+
+**Algorithm:**
+1. Query SDF at current ray position
+2. Step ray by distance returned by SDF (safe step)
+3. Repeat until SDF < threshold (surface proximity)
+4. Hand off to DDA/BVH for detailed intersection
+
+**Features:**
+- Multi-bank SDF memory access (global 16³ + local 4³ per cell)
+- Pipelined SDF evaluation
+- Dynamic step size based on field values
+
+---
+
+### 2. BVH Traversal
+
+**Location:** `src/main/scala/BVH/`
+
+**Modules:**
+- `BVHStage.scala` - Top-level BVH traversal controller
+- `BvhPE.scala` - BVH Processing Element
+- `BVHMenDPI.scala` - BVH memory interface
+
+**Algorithm:**
+1. Start at BVH root node
+2. Test ray against node AABB (3-axis parallel)
+3. If hit, descend to children (near-far ordering)
+4. Leaf nodes → trigger triangle intersection
+5. Use stack for traversal state (`BVHStack.scala`)
+
+**Features:**
+- Dual-child parallel testing
+- Near-far node sorting for coherent traversal
+- Stack-based traversal with configurable depth
+
+---
+
+### 3. DDA Ray Traversal
+
+**Location:** `src/main/scala/DDA/`
+
+**Modules:**
+- `DDA.scala` - DDA grid traversal controller
+- `SubgridMetaMemDPI.scala` - Subgrid metadata memory
+
+**Algorithm:**
+1. Initialize DDA with ray origin and direction
+2. Step through uniform grid cells
+3. Query subgrid metadata for each cell
+4. Dispatch to triangle intersection when needed
+
+**Features:**
+- 3D uniform grid traversal
+- Subgrid metadata for adaptive refinement
+- Seamless integration with SDF/BVH stages
+
+---
+
+### 4. Triangle Intersection
+
+**Location:** `src/main/scala/DDA/Trace/`
+
+**Modules:**
+- `TraceStage.scala` - Top-level trace controller
+- `TriPE.scala` - Triangle Processing Element
+- `TriMem.scala` - Triangle memory interface
+- `TriMemDPI.scala` - DPI-C memory bridge
+- `TriangleIntersector.scala` - Möller-Trumbore implementation
+
+**Algorithm (Möller-Trumbore):**
+```
+1. edge1 = v1 - v0
+2. edge2 = v2 - v0
+3. h = cross(direction, edge2)
+4. f = dot(edge1, h)
+5. if (f <= epsilon) return MISS
+6. u = dot(origin - v0, h) / f
+7. if (u < 0 || u > 1) return MISS
+8. q = cross(origin - v0, edge1)
+9. v = dot(direction, q) / f
+10. if (v < 0 || u + v > 1) return MISS
+11. t = dot(edge2, q) / f
+12. if (t > epsilon) return HIT
+13. return MISS
+```
+
+**Hardware Optimizations:**
+- 3-axis parallel edge computation
+- Pipelined cross/dot products (~20 multiplications per ray)
+- Configurable fixed/float precision (Q16.16 support)
+- Multi-threaded ray batching
+
+---
+
+### 5. Rendering Pipeline
+
+**Location:** `src/main/scala/Render/`
+
+**Modules:**
+- `RenderStage.scala` - Rendering controller
+- `RenderPE.scala` - Render Processing Element
+- `NormalMemDPI.scala` - Normal data memory interface
+
+**Features:**
+- Pixel color computation from intersection results
+- Normal-based shading
+- Decoupled pixel output stream
+
+---
+
+### 6. Floating-Point Units
+
+**Location:** `src/main/scala/raytrace_utils/fudian/`
+
+**Complete FPU Library:**
+| Module | Description | Latency |
+|--------|-------------|---------|
+| `FMUL` | IEEE 754 single-precision multiply | 3 cycles |
+| `FADD` | IEEE 754 single-precision add/sub | 4 cycles |
+| `FDIV` | IEEE 754 single-precision divide | 8 cycles |
+| `FSQRT` | IEEE 754 single-precision square root | 8 cycles |
+| `FCMP` | IEEE 754 comparison (LT, GT, EQ) | 1 cycle |
+| `FPToFP` | Format conversion (width/precision) | 2 cycles |
+| `FPToInt` | Float to integer conversion | 1 cycle |
+| `IntToFP` | Integer to float conversion | 1 cycle |
+| `FCMA` | Fused multiply-add | 5 cycles |
+
+**Supporting Utilities:**
+- `raytrace_utils/vector.scala` - 3D vector operations (dot, cross, add, sub, negate)
+- `raytrace_utils/AABB.scala` - Ray-AABB intersection (3-axis parallel, ~15 cycles)
+- `raytrace_utils/Bundles.scala` - Chisel Bundle definitions (Ray, AABB, Triangle, etc.)
+- `raytrace_utils/CommitQueue.scala` - Result commit and ordering
+- `raytrace_utils/Config.scala` - Global configuration parameters
+- `raytrace_utils/FRQ.scala` - Fixed-rate queue for scheduling
+
+---
+
+## Simulation & Verification
+
+### Verilator Simulation
+
+**Purpose:** Fast functional verification
+
+**Workflow:**
 ```bash
 cd csrc
-make run  # 会自动导出所有.mem文件到 ./vivado_mem/
+make run  # Runs simulation, exports Vivado memory files
 ```
 
-### 2. 在Vivado中配置+plusargs
-```
-+TRI_MEM_FILE=./vivado_mem/triangle_mem.mem
-+NORMAL_MEM_FILE=./vivado_mem/normal_mem.mem
-+BVH_MEM_FILE=./vivado_mem/bvh_mem.mem
-+SDF_GLOBAL_MEM_FILE=./vivado_mem/sdf_global_mem.mem
-+SDF_LOCAL_MEM_FILE=./vivado_mem/sdf_local_mem.mem
-+SUBGRID_META_MEM_FILE=./vivado_mem/subgrid_meta_mem.mem
-```
+**Features:**
+- DPI-C interface to C++ memory structures
+- Automatic memory export to `vivado_mem/` for Vivado simulation
+- Golden model reference implementation (`golden_model.cpp`)
+- Test framework with result validation
 
-### 3. 验证加载
-仿真启动时会打印：
+**Configuration:** Edit `csrc/include/GlobalConfig.h`:
+```cpp
+inline constexpr int kWidth = 400;
+inline constexpr int kHeight = 400;
+inline constexpr bool kEnableVcd = false;
+inline constexpr bool kEnableProgressPrint = true;
 ```
-[TriangleMem] Loading triangle memory from ./vivado_mem/triangle_mem.mem
-[NormalMem] Loading normal memory from ./vivado_mem/normal_mem.mem
-```
-
-**详细文档**：查看`AGENT.md`了解完整的使用方法
 
 ---
 
-## 性能与并行度
+### Vivado Simulation
 
-- **AABB 相交**：3 轴全并行，流水线延迟约 15 拍
-- **三角形相交**：每射线约 20 次乘法，支持多线程
-- **BVH 遍历**：双子节点并行测试，支持近远排序
+**Purpose:** Bit-accururate timing verification
+
+**Workflow:**
+
+1. **Generate memory files:**
+   ```bash
+   cd csrc
+   make run  # Auto-exports all .mem files to ./vivado_mem/
+   ```
+
+2. **Configure +plusargs in Vivado:**
+   ```
+   +TRI_MEM_FILE=./vivado_mem/triangle_mem.mem
+   +NORMAL_MEM_FILE=./vivado_mem/normal_mem.mem
+   +BVH_MEM_FILE=./vivado_mem/bvh_mem.mem
+   +SDF_GLOBAL_MEM_FILE=./vivado_mem/sdf_global_mem.mem
+   +SDF_LOCAL_MEM_FILE=./vivado_mem/sdf_local_mem.mem
+   +SUBGRID_META_MEM_FILE=./vivado_mem/subgrid_meta_mem.mem
+   ```
+
+3. **Set in Vivado GUI:**
+   - Flow Navigator → Simulation Settings
+   - xsim.simulate.custom_options → Add plusargs
+
+**BlackBox Files:** Located in `src/main/resources/`:
+- `TriangleMemBlackBox.sv` - Triangle geometry memory (36 words/entry)
+- `NormalMemBlackBox.sv` - Normal data memory (3 words/entry)
+- `BVHMemBlackBox.sv` - BVH node memory (8 words/entry)
+- `SubgridMetaMemBlackBox.sv` - Subgrid metadata (packed format)
+- `SdfMemBlackBox_simulation.sv` - Simplified SDF memory for simulation
 
 ---
 
-## 扩展建议
+### ChiselTest Unit Tests
 
-1. 支持更高精度浮点/定点格式
-2. 优化除法单元（查找表/牛顿迭代）
-3. 增加 BVH 构建与更新模块
-4. 支持多种几何体（四边形、球体等）
-5. 增加缓存与带宽优化
+**Location:** `src/test/scala/`
 
----
+| Test File | Description |
+|-----------|-------------|
+| `AABBTest.scala` | Ray-AABB intersection verification |
+| `DivTest.scala` | Floating-point division unit test |
+| `VectorTest.scala` | 3D vector operation verification |
 
-## 参考资料
-- Möller, T., & Trumbore, B. (1997). Fast, Minimum Storage Ray-Triangle Intersection. Journal of Graphics Tools, 2(1), 21-28.
-- XiangShan 项目：https://github.com/ysyx-project/xiangshan
-- Chisel 官方文档：https://www.chisel-lang.org/
-
----
-
-## 快速开发/查阅建议
-
-- 查找接口/Bundle：`src/main/scala/raytrace_utils/Bundles.scala`
-- 查找浮点单元：`src/main/scala/raytrace_utils/fudian/`
-- 查找核心算法：`AABB.scala`、`TriangleIntersector.scala`、`BvhPE.scala`
-- 查找测试用例：`TriangleIntersectorTest.scala`、`main.cpp`
-- 查找性能报告：`software_backup/performance_report.json`
+**Run tests:**
+```bash
+sbt test
+```
 
 ---
 
-> 本文档为 SDF-RT 系统开发全景说明，支持 Vibe Coding 快速查阅与接口对齐。
+## FPGA Deployment
+
+### FpgaTop Architecture
+
+`FpgaTop` provides the compute-side abstraction layer for FPGA deployment:
+
+```
+FpgaTop
+├── Setup Registers (latch configuration)
+├── Frame Control FSM (idle → rendering → frameComplete)
+├── Pixel Position Generator (raster-scan)
+├── SimTop (core ray tracing engine)
+└── PixelQueue (output buffer, configurable depth)
+```
+
+For a complete FPGA build, this core is wrapped by `fpga_top.v`, which converts AXI BRAM transactions into:
+- setup-register writes
+- SDF memory writes
+- pixel / status register reads through `s_axi_rdata`
+
+### Interface Summary
+
+| Interface | Signals | Description |
+|-----------|---------|-------------|
+| **Setup** | `setup_valid`, `setup_origin`, `setup_grid_min/max`, `setup_ready` | Camera/scene configuration |
+| **Frame Control** | `frame_start`, `frame_done`, `busy`, `frame_count` | Frame lifecycle management |
+| **Pixel Output** | `pixel_valid/ready`, `pixel_x/y`, `pixel_rgb8`, `pixel_hit_id` | Decoupled stream on the Chisel core |
+| **AXI Wrapper** | `s_axi_*`, `bram_rddata` | Register-style setup and pixel/status polling through AXI BRAM |
+
+### Quick Start
+
+```bash
+# 1. Generate Verilog
+sbt "runMain FpgaTopGen"
+
+# 2. Compile simulator
+cd csrc && make MODE=fpga
+
+# 3. Run simulation
+make MODE=fpga run
+
+# 4. View output image
+display render_fpga_400x400.ppm
+```
+
+**Full documentation:** See `FPGA.md` (merged from FPGA_MODE_README.md and FPGA_TOP_USAGE.md)
+
+---
+
+## Performance Characteristics
+
+| Module | Parallelism | Pipeline Depth | Throughput |
+|--------|-------------|----------------|------------|
+| AABB Intersection | 3-axis parallel | ~15 cycles | 1 result/cycle |
+| Triangle Intersection | Multi-threaded | ~20 mults/ray | Configurable |
+| BVH Traversal | Dual-child parallel | Variable | Near-far sorted |
+| SDF Traversal | Multi-bank access | Pipelined | 1 query/cycle |
+
+**Optimization Opportunities:**
+1. Higher precision float/fixed-point formats
+2. Divide unit optimization (lookup tables / Newton-Raphson)
+3. BVH construction and update modules
+4. Additional primitive support (quads, spheres)
+5. Cache and bandwidth optimization
+
+---
+
+## Development Guidelines
+
+### Code Organization
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/main/scala/` | Chisel hardware description |
+| `src/main/resources/` | Vivado BlackBox memory models |
+| `csrc/` | C++ Verilator simulation framework |
+| `build/` | Generated Verilog and build artifacts |
+| `test_run_dir/` | Simulation outputs (VCD, logs) |
+
+### Key Entry Points
+
+| File | Description |
+|------|-------------|
+| `src/main/scala/SimTOP.scala` | Main simulation top-level |
+| `src/main/scala/FpgaTop.scala` | FPGA deployment top-level |
+| `src/main/scala/raytrace_utils/Bundles.scala` | Bundle/interface definitions |
+| `src/main/scala/raytrace_utils/fudian/` | Floating-point unit library |
+| `csrc/main.cpp` | Verilator simulation entry |
+| `csrc/include/GlobalConfig.h` | Configuration parameters |
+
+### Build System
+
+**Generate Verilog:**
+```bash
+sbt "runMain SimTopGen"     # All variants
+sbt "runMain FpgaTopGen"    # FPGA only
+```
+
+**Run Verilator Simulation:**
+```bash
+cd csrc && make run
+```
+
+**Run Unit Tests:**
+```bash
+sbt test
+```
+
+### Documentation Structure
+
+| Document | Purpose |
+|----------|---------|
+| `README.md` | Main project overview (this file) |
+| `AGENT.md` | AI agent development guidelines |
+| `FPGA.md` | FPGA deployment guide |
+| `csrc/README.md` | C++ simulation framework details |
+| `csrc/ARCHITECTURE.md` | Test framework architecture |
+
+---
+
+## References
+
+1. Möller, T., & Trumbore, B. (1997). Fast, Minimum Storage Ray-Triangle Intersection. *Journal of Graphics Tools*, 2(1), 21-28.
+2. XiangShan Project: https://github.com/ysyx-project/xiangshan
+3. Chisel Official Documentation: https://www.chisel-lang.org/
+4. IEEE 754-2019 Floating-Point Standard
+
+---
+
+> **Note:** This document provides a comprehensive overview of the SDF-RT system. For detailed development guidelines, see `AGENT.md`. For FPGA deployment, see `FPGA.md`.

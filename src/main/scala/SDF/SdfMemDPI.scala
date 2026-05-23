@@ -1,8 +1,16 @@
 package SDF
 
 import chisel3._
+import chisel3.experimental.StringParam
 import chisel3.util.{HasBlackBoxInline, HasBlackBoxResource}
 import raytrace_utils.GlobalConfig
+
+
+class SdfMemWriteIO extends Bundle {
+  val wr_en   = Output(Bool())
+  val wr_addr = Output(UInt(32.W))    // Full 32-bit address (auto-decoded)
+  val wr_data = Output(UInt(32.W))    // 32-bit wide: single entry write
+}
 
 private class SdfMemDPICore(
   addrWidth: Int = 32,
@@ -21,6 +29,10 @@ private class SdfMemDPICore(
     val en = Input(Bool())
     val data = Output(UInt(dataWidth.W))
     val valid = Output(Bool())
+    // Simplified write port (unused in DPI mode)
+    val wr_en   = Input(Bool())
+    val wr_addr = Input(UInt(32.W))
+    val wr_data = Input(UInt(32.W))
   })
 
   private val svCode =
@@ -34,7 +46,10 @@ private class SdfMemDPICore(
        |  input  [${addrWidth - 1}:0] localIdx,
        |  input en,
        |  output [${dataWidth - 1}:0] data,
-       |  output valid
+       |  output valid,
+       |  input wr_en,
+       |  input  [31:0] wr_addr,
+       |  input  [31:0] wr_data
        |);
        |  int dpi_data;
        |  reg [${dataWidth - 1}:0] data_pipe[0:${latency - 1}];
@@ -60,6 +75,7 @@ private class SdfMemDPICore(
        |    end
        |  end
        |
+       |  // Write ports are unused in DPI mode (no-op)
        |  assign data = data_pipe[${latency - 1}];
        |  assign valid = valid_pipe[${latency - 1}];
        |endmodule
@@ -73,8 +89,10 @@ private class SdfMemResourceBB(
   dataWidth: Int = 32
 ) extends BlackBox(
       Map(
-        "ADDR_WIDTH" -> addrWidth,
-        "DATA_WIDTH" -> dataWidth
+        "ADDR_WIDTH"       -> addrWidth,
+        "DATA_WIDTH"       -> dataWidth,
+        "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
+        "LATENCY"          -> GlobalConfig.sdfMemDpiLatency
       )
     )
     with HasBlackBoxResource {
@@ -86,13 +104,45 @@ private class SdfMemResourceBB(
     val en = Input(Bool())
     val data = Output(UInt(dataWidth.W))
     val valid = Output(Bool())
+    val wr_en   = Input(Bool())
+    val wr_addr = Input(UInt(32.W))
+    val wr_data = Input(UInt(32.W))
   })
   addResource("/SdfMemBlackBox.sv")
 }
 
+private class SdfMemIpBB(
+  addrWidth: Int = 32,
+  dataWidth: Int = 32
+) extends BlackBox(
+      Map(
+        "ADDR_WIDTH"       -> addrWidth,
+        "DATA_WIDTH"       -> dataWidth,
+        "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
+        "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
+        "LOCAL_IDX_INIT_FILE" -> StringParam("sdf_local_mapping.mem")
+      )
+    )
+    with HasBlackBoxResource {
+  override def desiredName: String = "SdfMem"
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val globalIdx = Input(UInt(addrWidth.W))
+    val localIdx = Input(UInt(addrWidth.W))
+    val en = Input(Bool())
+    val data = Output(UInt(dataWidth.W))
+    val valid = Output(Bool())
+    val wr_en   = Input(Bool())
+    val wr_addr = Input(UInt(32.W))
+    val wr_data = Input(UInt(32.W))
+  })
+  addResource("/SdfMem.sv")
+}
+
 class SdfMemDPI(
   addrWidth: Int = 32,
-  dataWidth: Int = 32,
+  dataWidth: Int = GlobalConfig.sdfMemDataWidth,
   latency: Int = GlobalConfig.sdfMemDpiLatency
 ) extends Module {
   val io = IO(new Bundle {
@@ -103,26 +153,49 @@ class SdfMemDPI(
     val en = Input(Bool())
     val data = Output(UInt(dataWidth.W))
     val valid = Output(Bool())
+    // Simplified write port for PS initialization
+    val wr = Flipped(new SdfMemWriteIO)
   })
 
-  if (GlobalConfig.useBlackBox) {
-    val impl = Module(new SdfMemResourceBB(addrWidth, dataWidth))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.globalIdx := io.globalIdx
-    impl.io.localIdx := io.localIdx
-    impl.io.en := io.en
-    io.data := impl.io.data
-    io.valid := impl.io.valid
-  } else {
-    val impl = Module(new SdfMemDPICore(addrWidth, dataWidth, latency))
-    impl.io.clk := io.clk
-    impl.io.reset := io.reset
-    impl.io.globalIdx := io.globalIdx
-    impl.io.localIdx := io.localIdx
-    impl.io.en := io.en
-    io.data := impl.io.data
-    io.valid := impl.io.valid
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val impl = Module(new SdfMemDPICore(addrWidth, dataWidth, latency))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.localIdx := io.localIdx
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      // Connect write ports (unused in DPI mode)
+      impl.io.wr_en := io.wr.wr_en
+      impl.io.wr_addr := io.wr.wr_addr
+      impl.io.wr_data := io.wr.wr_data
+    case 1 =>
+      val impl = Module(new SdfMemResourceBB(addrWidth, dataWidth))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.localIdx := io.localIdx
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      // Connect write ports
+      impl.io.wr_en := io.wr.wr_en
+      impl.io.wr_addr := io.wr.wr_addr
+      impl.io.wr_data := io.wr.wr_data
+    case 2 =>
+      val impl = Module(new SdfMemIpBB(addrWidth, dataWidth))
+      impl.io.clk := io.clk
+      impl.io.reset := io.reset
+      impl.io.globalIdx := io.globalIdx
+      impl.io.localIdx := io.localIdx
+      impl.io.en := io.en
+      io.data := impl.io.data
+      io.valid := impl.io.valid
+      // Connect write ports
+      impl.io.wr_en := io.wr.wr_en
+      impl.io.wr_addr := io.wr.wr_addr
+      impl.io.wr_data := io.wr.wr_data
   }
 }
-

@@ -12,25 +12,16 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
     val pe_out_miss = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
     val pe_out_hit = Flipped(Decoupled(new SdfRayResp(cfg, addrWidth)))
 
-    val out_rgb = Output(new Vec3(cfg))
-    val out_meta = Output(new RayMeta(addrWidth))
-    val out_hit = Output(Bool())
-    val out_reverseTraversal = Output(Bool())
-    val out_ray = Output(new Ray(cfg))
-    val out_valid = Output(Bool())
+    val out = Decoupled(new SdfRayResp(cfg, addrWidth))
   })
 
-  val workQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), GlobalConfig.sdfWorkQueueDepth))
   val retryQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), GlobalConfig.sdfRetryQueueDepth))
-  val finalQ = Module(new Queue(new SdfRayResp(cfg, addrWidth), GlobalConfig.sdfFinalQueueDepth))
-
-  val oneFp = "h3F800000".U(cfg.totalWidth.W)
-  val zeroFp = 0.U(cfg.totalWidth.W)
 
   val newReq = Wire(new SdfRayReq(cfg, addrWidth))
   newReq.ray := io.issue_in.bits.ray
   newReq.meta := io.issue_in.bits.meta
   newReq.iter := 0.U
+  newReq.prevSdf := 0.U
 
   val inArb = Module(new RRArbiter(new SdfRayReq(cfg, addrWidth), 2))
   inArb.io.in(0).valid := retryQ.io.deq.valid
@@ -41,15 +32,14 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   inArb.io.in(1).bits := newReq
   io.issue_in.ready := inArb.io.in(1).ready
 
-  val arbReq = inArb.io.out.bits
-  val arbIsDeferredTerminalMiss = inArb.io.out.valid && (arbReq.iter >= maxSteps.U)
+  val arbOutQ = Module(new Queue(new SdfRayReq(cfg, addrWidth), 1, pipe = true))
+  arbOutQ.io.enq <> inArb.io.out
 
-  workQ.io.enq.valid := inArb.io.out.valid && !arbIsDeferredTerminalMiss
-  workQ.io.enq.bits := arbReq
-  when(workQ.io.enq.valid) {
-    assert(workQ.io.enq.ready, "SdfStage workQ overflow")
-  }
-  io.pe_in <> workQ.io.deq
+  val arbReq = arbOutQ.io.deq.bits
+  val arbIsDeferredTerminalMiss = arbOutQ.io.deq.valid && (arbReq.iter >= maxSteps.U)
+
+  io.pe_in.valid := arbOutQ.io.deq.valid && !arbIsDeferredTerminalMiss
+  io.pe_in.bits := arbReq
 
   io.pe_out_miss.ready := true.B
   io.pe_out_hit.ready := true.B
@@ -71,6 +61,7 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   retryQ.io.enq.bits.meta := io.pe_out_miss.bits.meta
   // Mark conflict-deferred terminal miss so it bypasses PE next time and commits directly.
   retryQ.io.enq.bits.iter := Mux(retryFromConflictMiss, maxSteps.U, io.pe_out_miss.bits.iter)
+  retryQ.io.enq.bits.prevSdf := io.pe_out_miss.bits.prevSdf
   when(retryPush) {
     assert(retryQ.io.enq.ready, "SdfStage retryQ overflow")
   }
@@ -80,28 +71,17 @@ class SdfSchedulerUnit(cfg: FloatConfig, addrWidth: Int, maxSteps: Int) extends 
   deferredResp.meta := arbReq.meta
   deferredResp.hit := false.B
   deferredResp.iter := arbReq.iter
-  deferredResp.reverseTraversal := false.B
+  deferredResp.prevSdf := arbReq.prevSdf
 
   val selHit = hitTerminal
   val selMiss = !selHit && missTerminalDirect
   val selDeferred = !selHit && !selMiss && arbIsDeferredTerminalMiss
 
-  finalQ.io.enq.valid := selHit || selMiss || selDeferred
-  finalQ.io.enq.bits := Mux(selHit, io.pe_out_hit.bits, Mux(selMiss, io.pe_out_miss.bits, deferredResp))
-  when(finalQ.io.enq.valid) {
-    assert(finalQ.io.enq.ready, "SdfStage finalQ overflow")
+  io.out.valid := selHit || selMiss || selDeferred
+  io.out.bits := Mux(selHit, io.pe_out_hit.bits, Mux(selMiss, io.pe_out_miss.bits, deferredResp))
+  when(io.out.valid) {
+    assert(io.out.ready, "SdfStage output must not be backpressured")
   }
 
-  val consumeDeferred = selDeferred && finalQ.io.enq.ready
-  inArb.io.out.ready := Mux(arbIsDeferredTerminalMiss, consumeDeferred, workQ.io.enq.ready)
-
-  finalQ.io.deq.ready := true.B
-  io.out_valid := finalQ.io.deq.valid
-  io.out_meta := finalQ.io.deq.bits.meta
-  io.out_hit := finalQ.io.deq.bits.hit
-  io.out_reverseTraversal := finalQ.io.deq.bits.reverseTraversal
-  io.out_ray := finalQ.io.deq.bits.ray
-  io.out_rgb.x := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
-  io.out_rgb.y := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
-  io.out_rgb.z := Mux(finalQ.io.deq.bits.hit, oneFp, zeroFp)
+  arbOutQ.io.deq.ready := Mux(arbIsDeferredTerminalMiss, selDeferred, io.pe_in.ready)
 }

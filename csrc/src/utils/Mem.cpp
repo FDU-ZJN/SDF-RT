@@ -41,6 +41,171 @@ inline std::array<float, 3> sub3_local(const std::array<float, 3>& a, const std:
     return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
 }
 
+std::vector<uint32_t> reorder_triangles_by_subgrid_bank_dispersion(
+    std::vector<Triangle>& tris,
+    std::vector<std::array<float, 3>>& triNormals,
+    std::vector<std::pair<uint64_t, uint32_t>>& refs,
+    int numBanks) {
+    if (tris.empty() || triNormals.size() != tris.size() || numBanks <= 1) {
+        return {};
+    }
+
+    const size_t triCount = tris.size();
+    if (refs.empty()) {
+        return {};
+    }
+
+    std::sort(refs.begin(), refs.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first < b.first;
+        return a.second < b.second;
+    });
+
+    std::vector<uint32_t> triHotness(triCount, 0U);
+    std::vector<uint32_t> triDegree(triCount, 0U);
+    std::vector<std::unordered_map<uint32_t, uint32_t>> conflictWeights(triCount);
+    std::vector<uint32_t> groupTris;
+    size_t nonEmptySubgridCount = 0;
+
+    size_t i = 0;
+    while (i < refs.size()) {
+        const uint64_t key = refs[i].first;
+        groupTris.clear();
+        size_t j = i;
+        while (j < refs.size() && refs[j].first == key) {
+            const uint32_t triId = refs[j].second;
+            if (groupTris.empty() || groupTris.back() != triId) {
+                groupTris.push_back(triId);
+            }
+            ++j;
+        }
+        nonEmptySubgridCount += 1;
+
+        for (uint32_t triId : groupTris) {
+            triHotness[triId] += 1U;
+        }
+        for (size_t a = 0; a < groupTris.size(); ++a) {
+            const uint32_t triA = groupTris[a];
+            for (size_t b = a + 1; b < groupTris.size(); ++b) {
+                const uint32_t triB = groupTris[b];
+                conflictWeights[triA][triB] += 1U;
+                conflictWeights[triB][triA] += 1U;
+                triDegree[triA] += 1U;
+                triDegree[triB] += 1U;
+            }
+        }
+        i = j;
+    }
+
+    std::vector<uint32_t> order(triCount, 0U);
+    for (size_t triId = 0; triId < triCount; ++triId) {
+        order[triId] = static_cast<uint32_t>(triId);
+    }
+    std::sort(order.begin(), order.end(), [&](uint32_t lhs, uint32_t rhs) {
+        if (triHotness[lhs] != triHotness[rhs]) return triHotness[lhs] > triHotness[rhs];
+        if (triDegree[lhs] != triDegree[rhs]) return triDegree[lhs] > triDegree[rhs];
+        return lhs < rhs;
+    });
+
+    std::vector<uint32_t> bankCapacity(numBanks, 0U);
+    for (size_t newId = 0; newId < triCount; ++newId) {
+        bankCapacity[newId % static_cast<size_t>(numBanks)] += 1U;
+    }
+
+    std::vector<int> assignedBank(triCount, -1);
+    std::vector<uint32_t> bankLoad(numBanks, 0U);
+    for (uint32_t triId : order) {
+        int bestBank = -1;
+        uint64_t bestConflictCost = std::numeric_limits<uint64_t>::max();
+        uint32_t bestLoad = std::numeric_limits<uint32_t>::max();
+
+        for (int bank = 0; bank < numBanks; ++bank) {
+            if (bankLoad[bank] >= bankCapacity[bank]) {
+                continue;
+            }
+
+            uint64_t conflictCost = 0;
+            for (const auto& kv : conflictWeights[triId]) {
+                const uint32_t otherTri = kv.first;
+                const uint32_t weight = kv.second;
+                if (assignedBank[otherTri] == bank) {
+                    conflictCost += static_cast<uint64_t>(weight);
+                }
+            }
+
+            if (bestBank < 0 ||
+                conflictCost < bestConflictCost ||
+                (conflictCost == bestConflictCost && bankLoad[bank] < bestLoad) ||
+                (conflictCost == bestConflictCost && bankLoad[bank] == bestLoad && bank < bestBank)) {
+                bestBank = bank;
+                bestConflictCost = conflictCost;
+                bestLoad = bankLoad[bank];
+            }
+        }
+
+        if (bestBank < 0) {
+            return {};
+        }
+        assignedBank[triId] = bestBank;
+        bankLoad[bestBank] += 1U;
+    }
+
+    std::vector<std::vector<uint32_t>> buckets(static_cast<size_t>(numBanks));
+    for (size_t bank = 0; bank < static_cast<size_t>(numBanks); ++bank) {
+        buckets[bank].reserve(bankCapacity[bank]);
+    }
+    for (uint32_t triId = 0; triId < triCount; ++triId) {
+        const int bank = assignedBank[triId];
+        if (bank < 0) {
+            return {};
+        }
+        buckets[static_cast<size_t>(bank)].push_back(triId);
+    }
+
+    std::vector<size_t> bucketPos(static_cast<size_t>(numBanks), 0U);
+    std::vector<uint32_t> newToOld;
+    std::vector<uint32_t> oldToNew(triCount, 0U);
+    newToOld.reserve(triCount);
+
+    for (size_t newId = 0; newId < triCount; ++newId) {
+        const size_t bank = newId % static_cast<size_t>(numBanks);
+        if (bucketPos[bank] >= buckets[bank].size()) {
+            return {};
+        }
+        const uint32_t oldTriId = buckets[bank][bucketPos[bank]++];
+        newToOld.push_back(oldTriId);
+        oldToNew[oldTriId] = static_cast<uint32_t>(newId);
+    }
+
+    std::vector<Triangle> reorderedTris;
+    std::vector<std::array<float, 3>> reorderedNormals;
+    reorderedTris.reserve(triCount);
+    reorderedNormals.reserve(triCount);
+
+    for (uint32_t oldIdx : newToOld) {
+        reorderedTris.push_back(tris[oldIdx]);
+        reorderedNormals.push_back(triNormals[oldIdx]);
+    }
+
+    tris.swap(reorderedTris);
+    triNormals.swap(reorderedNormals);
+
+    uint64_t totalConflictSameBank = 0;
+    for (size_t triId = 0; triId < triCount; ++triId) {
+        for (const auto& kv : conflictWeights[triId]) {
+            if (triId < kv.first && assignedBank[triId] == assignedBank[kv.first]) {
+                totalConflictSameBank += static_cast<uint64_t>(kv.second);
+            }
+        }
+    }
+
+    std::printf("[TriReorder] Applied subgrid-aware bank dispersion reorder: triCount=%zu numBanks=%d nonEmptySubgrids=%zu sameBankConflict=%llu\n",
+                triCount,
+                numBanks,
+                nonEmptySubgridCount,
+                static_cast<unsigned long long>(totalConflictSameBank));
+    return oldToNew;
+}
+
 inline float dot3_local(const std::array<float, 3>& a, const std::array<float, 3>& b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
@@ -537,7 +702,26 @@ inline void writeU32LE(uint8_t* dst, uint32_t value) {
 }
 } // namespace
 
+// Verilator DPI compatibility stubs
+// These provide fallback implementations when verilated_dpi.cpp is not linked
+// (which happens in useblackbox mode where BlackBox memory uses $readmemh)
+// The __attribute__((weak)) allows Verilator's implementations to override these.
+extern "C" __attribute__((weak)) void* svGetArrayPtr(const svOpenArrayHandle h) {
+    (void)h;
+    return nullptr;
+}
+
+extern "C" __attribute__((weak)) int svSize(const svOpenArrayHandle h, int dim) {
+    (void)h;
+    (void)dim;
+    return 0;
+}
+
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
+    tri_mem_read_bank(0, addr, data);
+}
+
+extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle data) {
     if (data == nullptr) {
         return;
     }
@@ -552,13 +736,13 @@ extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
         return;
     }
 
-    const auto& tri_store = (subgrid_layout_ready && !triangles_compact.empty()) ? triangles_compact : triangles;
+    const auto& tri_store = triangles;
 
     std::memset(out, 0, static_cast<size_t>(totalBytes));
     const int triCount = totalBytes / kBytesPerTri;
 
     for (int lane = 0; lane < triCount; ++lane) {
-        const int triIdx = addr + lane;
+        const int triIdx = bank + ((addr * triCount) + lane) * rt::config::kTriNumBanks;
         if (triIdx < 0 || static_cast<size_t>(triIdx) >= tri_store.size()) {
             continue;
         }
@@ -581,6 +765,7 @@ extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {
         }
     }
 }
+
 extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
     if (data == nullptr) return;
     auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
@@ -591,7 +776,7 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
         return; 
     }
     std::memset(out, 0, static_cast<size_t>(totalBytes));
-    const auto& normal_store = (subgrid_layout_ready && !normals_compact.empty()) ? normals_compact : normals;
+    const auto& normal_store = normals;
 
     if (addr < 0 || static_cast<size_t>(addr) >= normal_store.size()) {
         return;
@@ -600,6 +785,30 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
     writeU32LE(out + 0,  floatToRawU32(n[0])); // x
     writeU32LE(out + 4,  floatToRawU32(n[1])); // y
     writeU32LE(out + 8,  floatToRawU32(n[2])); // z
+}
+
+extern "C" void tri_ref_mem_read(int addr, const svOpenArrayHandle data) {
+    if (data == nullptr) return;
+    auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
+    if (out == nullptr) return;
+
+    const int totalBytes = svSize(data, 1);
+    if (totalBytes <= 0) {
+        return;
+    }
+
+    std::memset(out, 0, static_cast<size_t>(totalBytes));
+    const int refsPerWord = totalBytes / 2;
+    const size_t baseIdx = static_cast<size_t>(std::max(addr, 0)) * static_cast<size_t>(refsPerWord);
+    for (int i = 0; i < refsPerWord; ++i) {
+        const size_t refIdx = baseIdx + static_cast<size_t>(i);
+        if (refIdx >= triangles_compact_src_ids.size()) {
+            continue;
+        }
+        const uint16_t triId = static_cast<uint16_t>(triangles_compact_src_ids[refIdx] & 0xFFFFu);
+        out[i * 2 + 0] = static_cast<uint8_t>(triId & 0xFFu);
+        out[i * 2 + 1] = static_cast<uint8_t>((triId >> 8) & 0xFFu);
+    }
 }
 
 extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data) {
@@ -820,31 +1029,38 @@ void build_subgrid_triangle_index(
          }
      }
 
+    const std::vector<uint32_t> oldToNewTriId =
+        reorder_triangles_by_subgrid_bank_dispersion(triangles, normals, refs, rt::config::kTriNumBanks);
+
+    if (!oldToNewTriId.empty()) {
+        for (auto& ref : refs) {
+            ref.second = oldToNewTriId[ref.second];
+        }
+    }
+
     std::sort(refs.begin(), refs.end(), [](const auto& a, const auto& b) {
         if (a.first != b.first) return a.first < b.first;
         return a.second < b.second;
     });
 
-    triangles_compact.reserve(refs.size());
-    normals_compact.reserve(refs.size());
     triangles_compact_src_ids.reserve(refs.size());
+    triangles_compact.clear();
+    normals_compact.clear();
 
     size_t i = 0;
     while (i < refs.size()) {
         const uint64_t key = refs[i].first;
-        const uint32_t start = static_cast<uint32_t>(triangles_compact.size());
+        const uint32_t start = static_cast<uint32_t>(triangles_compact_src_ids.size());
         size_t j = i;
         while (j < refs.size() && refs[j].first == key) {
             const uint32_t triId = refs[j].second;
-            triangles_compact.push_back(triangles[triId]);
-            normals_compact.push_back(normals[triId]);
             triangles_compact_src_ids.push_back(triId);
             ++j;
         }
 
         const size_t span = j - i;
         const uint16_t count = static_cast<uint16_t>(
-            std::min<size_t>(span, std::numeric_limits<uint16_t>::max()));
+            std::min<size_t>(span, 0xFFu));
         subgrid_tri_meta[key] = SubgridTriMeta{start, count};
         if (count > subgrid_max_tri_per_cell) {
             subgrid_max_tri_per_cell = count;
@@ -859,14 +1075,14 @@ void build_subgrid_triangle_index(
 
     std::printf("[Subgrid] built: non_empty=%zu compact_tris=%zu max_tri_per_sub=%u global_cells=%u sub_cells=%u\n",
                 subgrid_tri_meta.size(),
-                triangles_compact.size(),
+                triangles_compact_src_ids.size(),
                 static_cast<unsigned>(subgrid_max_tri_per_cell),
                 subgrid_global_cells,
                 subgrid_sub_cells);
 }
 
 size_t get_compact_triangle_count() {
-    return triangles_compact.size();
+    return triangles_compact_src_ids.size();
 }
 
 size_t get_compact_non_empty_subgrid_count() {
@@ -915,11 +1131,14 @@ bool get_compact_triangle_by_addr(
     if (!subgrid_layout_ready) {
         return false;
     }
-    if (compact_addr >= triangles_compact.size() || compact_addr >= triangles_compact_src_ids.size()) {
+    if (compact_addr >= triangles_compact_src_ids.size()) {
         return false;
     }
-    out_tri = triangles_compact[compact_addr];
     out_original_tri_id = static_cast<int>(triangles_compact_src_ids[compact_addr]);
+    if (out_original_tri_id < 0 || static_cast<size_t>(out_original_tri_id) >= triangles.size()) {
+        return false;
+    }
+    out_tri = triangles[static_cast<size_t>(out_original_tri_id)];
     return true;
 }
 
