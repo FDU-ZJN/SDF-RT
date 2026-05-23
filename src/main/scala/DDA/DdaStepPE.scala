@@ -55,8 +55,8 @@ class DdaStepPE(
   val sIdle :: sMapCoord :: sInitDdaWait :: sFetchMeta :: sWaitMeta :: sStep :: sStepApply :: sOut :: Nil = Enum(8)
   val state = RegInit(sIdle)
 
-  val ctxReg = RegInit(0.U.asTypeOf(new DdaContext(cfg, addrWidth)))
-  val outReg = RegInit(0.U.asTypeOf(new DdaStepResult(cfg, addrWidth)))
+  val ctxReg = Reg(new DdaContext(cfg, addrWidth))
+  val outReg = Reg(new DdaStepResult(cfg, addrWidth))
   val mapWait = RegInit(0.U(mapWaitW.W))
   val ddaInitWait = RegInit(0.U(ddaInitWaitW.W))
   val stepWait = RegInit(0.U(stepWaitW.W))

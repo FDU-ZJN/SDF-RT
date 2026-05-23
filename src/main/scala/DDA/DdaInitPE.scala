@@ -17,7 +17,7 @@ class DdaInitPE(
     val out = Decoupled(new DdaContext(cfg, addrWidth))
   })
 
-  private val positionLatency = cfg.fmulLatency + cfg.faddLatency
+  private val positionLatency = cfg.ffmaLatency
   private val mapLatency = positionLatency + cfg.faddLatency + cfg.fmulLatency + cfg.fptointLatency
   private val distSelectLatency = mapLatency + cfg.faddLatency + cfg.faddLatency
   private val deltaLatency = cfg.fmulLatency + cfg.fdivLatency
@@ -40,38 +40,27 @@ class DdaInitPE(
   val stepNegZ = io.in.bits.ray.dir.z(cfg.totalWidth - 1)
 
   // Materialize the current traversal point from the immutable ray origin and accumulated distance.
-  val posMulX = Module(new FMUL(cfg))
-  val posMulY = Module(new FMUL(cfg))
-  val posMulZ = Module(new FMUL(cfg))
-  posMulX.io.a := io.in.bits.ray.dir.x
-  posMulX.io.b := io.in.bits.ray.dist
-  posMulY.io.a := io.in.bits.ray.dir.y
-  posMulY.io.b := io.in.bits.ray.dist
-  posMulZ.io.a := io.in.bits.ray.dir.z
-  posMulZ.io.b := io.in.bits.ray.dist
-
-  val originXAtPos = pipeUInt(io.in.bits.ray.origin.x, cfg.fmulLatency)
-  val originYAtPos = pipeUInt(io.in.bits.ray.origin.y, cfg.fmulLatency)
-  val originZAtPos = pipeUInt(io.in.bits.ray.origin.z, cfg.fmulLatency)
-
-  val posAddX = Module(new FADD(cfg))
-  val posAddY = Module(new FADD(cfg))
-  val posAddZ = Module(new FADD(cfg))
-  posAddX.io.a := originXAtPos
-  posAddX.io.b := posMulX.io.result
-  posAddY.io.a := originYAtPos
-  posAddY.io.b := posMulY.io.result
-  posAddZ.io.a := originZAtPos
-  posAddZ.io.b := posMulZ.io.result
+  val posX = Module(new FFMA(cfg))
+  val posY = Module(new FFMA(cfg))
+  val posZ = Module(new FFMA(cfg))
+  posX.io.a := io.in.bits.ray.dir.x
+  posX.io.b := io.in.bits.ray.dist
+  posX.io.c := io.in.bits.ray.origin.x
+  posY.io.a := io.in.bits.ray.dir.y
+  posY.io.b := io.in.bits.ray.dist
+  posY.io.c := io.in.bits.ray.origin.y
+  posZ.io.a := io.in.bits.ray.dir.z
+  posZ.io.b := io.in.bits.ray.dist
+  posZ.io.c := io.in.bits.ray.origin.z
 
   val subGx = Module(new FADD(cfg))
   val subGy = Module(new FADD(cfg))
   val subGz = Module(new FADD(cfg))
-  subGx.io.a := posAddX.io.res
+  subGx.io.a := posX.io.res
   subGx.io.b := neg(io.grid_min.x)
-  subGy.io.a := posAddY.io.res
+  subGy.io.a := posY.io.res
   subGy.io.b := neg(io.grid_min.y)
-  subGz.io.a := posAddZ.io.res
+  subGz.io.a := posZ.io.res
   subGz.io.b := neg(io.grid_min.z)
 
   val mulIdxX = Module(new FMUL(cfg))

@@ -21,8 +21,6 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val yellowR  = val_1_0
   val yellowG  = val_1_0
   val yellowB  = val_0_0
-  val color_coeffs = VecInit("h3F333333".U, "h3F4CCCCD".U, "h3F666666".U)
-
   // ── Stage 1: dot(normal, lightDir) ──────────────────────────────────────
   val dotUnit = Module(new DotProductUnit(cfg))
   dotUnit.io.a  := io.in_normal
@@ -36,22 +34,13 @@ class RenderPE(cfg: FloatConfig) extends Module {
   fadd.io.a  := diff
   fadd.io.b  := val_0_15
 
-  // ── Stage 4: × color coefficients ───────────────────────────────────────
-  val muls = Seq.fill(3)(Module(new FMUL(cfg)))
-  for (i <- 0 until 3) {
-    muls(i).io.a  := fadd.io.res
-    muls(i).io.b  := color_coeffs(i)
-  }
-
-  // ── Stage 5: clamp 每通道到 [0, 1] ──────────────────────────────────────
-  // cmpMax: a=1.0, b=mul_result → lt = (1.0 < mul_result) 即 result > 1.0
-  val clampedRGB = muls.map { mul =>
-    Mux(SimpleFPCompare.gtPositiveConst(mul.io.result, val_1_0, cfg.totalWidth), val_1_0, mul.io.result)
-  }
+  // ── Stage 4: clamp brightness 到 [0, 1]，三个通道共用同一亮度 ─────────────
+  val clampedBrightness =
+    Mux(SimpleFPCompare.gtPositiveConst(fadd.io.res, val_1_0, cfg.totalWidth), val_1_0, fadd.io.res)
 
   // ── 控制信号同步（对齐到 clampedRGB 输出拍） ─────────────────────────────
-  // 流水级：fdot + fadd + fmul，简单 clamp 为组合逻辑。
-  val totalLatency = cfg.fdotLatency + cfg.faddLatency + cfg.fmulLatency
+  // 流水级：fdot + fadd，简单 clamp 为组合逻辑。
+  val totalLatency = cfg.fdotLatency + cfg.faddLatency
   val hit_sync   = PipeUtils.pipeData(io.in_hit,   totalLatency)
   val valid_sync = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
   val id_sync    = PipeUtils.pipeData(io.hit_id,   totalLatency)
@@ -59,9 +48,9 @@ class RenderPE(cfg: FloatConfig) extends Module {
 
   // ── 选色：命中用光照色，miss 用黄色 ─────────────────────────────────────
   val finalRGB = Seq(
-    Mux(hit_sync, clampedRGB(0), yellowR),
-    Mux(hit_sync, clampedRGB(1), yellowG),
-    Mux(hit_sync, clampedRGB(2), yellowB)
+    Mux(hit_sync, clampedBrightness, yellowR),
+    Mux(hit_sync, clampedBrightness, yellowG),
+    Mux(hit_sync, clampedBrightness, yellowB)
   )
   def floatTo8bit(fp: UInt): UInt = {
     val exp  = fp(30, 23)

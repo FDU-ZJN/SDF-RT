@@ -141,10 +141,10 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val refReqPipeLen = GlobalConfig.triRefMemDpiLatency
   private val refReqLivePipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
-  private val refReqCtxPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(ctxW.W))))
-  private val refReqEpochPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(false.B)))
-  private val refReqOffsetPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refPackShift.W))))
-  private val refReqCountPipe = RegInit(VecInit(Seq.fill(refReqPipeLen)(0.U(refCountWidth.W))))
+  private val refReqCtxPipe = Reg(Vec(refReqPipeLen, UInt(ctxW.W)))
+  private val refReqEpochPipe = Reg(Vec(refReqPipeLen, Bool()))
+  private val refReqOffsetPipe = Reg(Vec(refReqPipeLen, UInt(refPackShift.W)))
+  private val refReqCountPipe = Reg(Vec(refReqPipeLen, UInt(refCountWidth.W)))
 
   private val refWordAddr = Wire(Vec(ctxCount, UInt(c.addrWidth.W)))
   private val refWordOff = Wire(Vec(ctxCount, UInt(refPackShift.W)))
@@ -289,8 +289,8 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val memReqPipeLen = GlobalConfig.triMemDpiLatency
   private val memReqLivePipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
-  private val memReqCtxPipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(0.U(ctxW.W))))
-  private val memReqEpochPipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
+  private val memReqCtxPipe = Reg(Vec(memReqPipeLen, UInt(ctxW.W)))
+  private val memReqEpochPipe = Reg(Vec(memReqPipeLen, Bool()))
   private val memReqIssued = memReqQ.io.deq.fire && !memReqStale
   memReqLivePipe(0) := memReqIssued
   memReqCtxPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.ctx, 0.U)

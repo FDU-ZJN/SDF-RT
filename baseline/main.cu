@@ -20,8 +20,8 @@
 
 namespace {
 
-constexpr int kDefaultWidth = 640;
-constexpr int kDefaultHeight = 480;
+constexpr int kDefaultWidth = 1920;
+constexpr int kDefaultHeight = 1080;
 constexpr int kDefaultFrames = 100;
 constexpr const char* kDefaultObjPath = "../csrc/bunny_10k.obj";
 constexpr const char* kDefaultOutPath = "render_cuda_bvh_640x480.ppm";
@@ -73,7 +73,7 @@ struct Options {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     int frames = kDefaultFrames;
-    int fixedThreads = 0;
+    int fixedThreads = 175;
     std::string objPath = kDefaultObjPath;
     std::string outPath = kDefaultOutPath;
 };

@@ -1,7 +1,7 @@
 module NormalMem #(
   parameter int ADDR_WIDTH = 16,
   parameter int DATA_WIDTH = 96,
-  parameter int LATENCY = 2,
+  parameter int LATENCY = 3,
   parameter int MAX_ENTRIES = 8554,
   parameter string INIT_FILE = "normal_mem.mem"
 ) (
@@ -20,6 +20,7 @@ module NormalMem #(
   logic [FIXED_LATENCY-1:0]    valid_pipe;
   logic [ADDR_WIDTH-1:0]       addr_pipe [0:FIXED_LATENCY-1];
   logic [MEM_ADDR_WIDTH-1:0]   rd_addr_s0;
+  logic [MEM_ADDR_WIDTH-1:0]   rd_addr_reg;
   logic                        rd_in_range_s0;
   logic [FIXED_LATENCY-1:0]    rd_ok_pipe;
   logic [DATA_WIDTH-1:0]       bram_dout;
@@ -41,9 +42,11 @@ module NormalMem #(
         addr_pipe[i] <= '0;
       end
       rd_ok_pipe <= '0;
+      rd_addr_reg <= '0;
     end else begin
       valid_pipe[0] <= en;
       addr_pipe[0]  <= addr;
+      rd_addr_reg   <= rd_addr_s0;
       for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
         valid_pipe[i] <= valid_pipe[i - 1];
         addr_pipe[i]  <= addr_pipe[i - 1];
@@ -58,7 +61,7 @@ module NormalMem #(
 
   normal_mem normal_mem_inst (
     .clka  (clk),
-    .addra (rd_addr_s0),
+    .addra (rd_addr_reg),
     .douta (bram_dout)
   );
 

@@ -152,16 +152,10 @@ class TriangleMemMultiPort(
   }
 
   for (b <- 0 until numBanks) {
-    val srcPipe = RegInit(VecInit(Seq.fill(GlobalConfig.triMemDpiLatency)(0.U(srcW.W))))
-    when(reset.asBool) {
-      for (i <- 0 until GlobalConfig.triMemDpiLatency) {
-        srcPipe(i) := 0.U
-      }
-    }.otherwise {
-      srcPipe(0) := Mux(arbs(b).io.out.fire, arbs(b).io.out.bits.src, 0.U)
-      for (i <- 1 until GlobalConfig.triMemDpiLatency) {
-        srcPipe(i) := srcPipe(i - 1)
-      }
+    val srcPipe = Reg(Vec(GlobalConfig.triMemDpiLatency, UInt(srcW.W)))
+    srcPipe(0) := Mux(arbs(b).io.out.fire, arbs(b).io.out.bits.src, 0.U)
+    for (i <- 1 until GlobalConfig.triMemDpiLatency) {
+      srcPipe(i) := srcPipe(i - 1)
     }
 
     val bankBlock = decodeBlock(banks(b).io.data, banks(b).io.addr_q, banks(b).io.valid_mask, b)

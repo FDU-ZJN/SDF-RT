@@ -37,24 +37,24 @@ class SetupUnit(cfg: FloatConfig, peCfg: SdfPeConfig) extends Module {
     }
   }
 
-  val originReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
-  val gridMinReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
-  val gridMaxReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
-  val invVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
-  val invSubVoxelReg = RegInit(0.U.asTypeOf(new Vec3(cfg)))
-  val tNearReg = RegInit(0.U(cfg.totalWidth.W))
-  val tFarReg = RegInit("h7F800000".U(cfg.totalWidth.W))
+  val originReg = Reg(new Vec3(cfg))
+  val gridMinReg = Reg(new Vec3(cfg))
+  val gridMaxReg = Reg(new Vec3(cfg))
+  val invVoxelReg = Reg(new Vec3(cfg))
+  val invSubVoxelReg = Reg(new Vec3(cfg))
+  val tNearReg = Reg(UInt(cfg.totalWidth.W))
+  val tFarReg = Reg(UInt(cfg.totalWidth.W))
   val setupFinishReg = RegInit(false.B)
   val setupArmed = RegInit(true.B)
 
   val axisReg = RegInit(0.U(2.W))
-  val invSpanReg = RegInit(0.U(cfg.totalWidth.W))
+  val invSpanReg = Reg(UInt(cfg.totalWidth.W))
 
-  val addAReg = RegInit(0.U(cfg.totalWidth.W))
-  val addBReg = RegInit(0.U(cfg.totalWidth.W))
-  val divInReg = RegInit(0.U(cfg.totalWidth.W))
-  val mulAReg = RegInit(0.U(cfg.totalWidth.W))
-  val mulBReg = RegInit(0.U(cfg.totalWidth.W))
+  val addAReg = Reg(UInt(cfg.totalWidth.W))
+  val addBReg = Reg(UInt(cfg.totalWidth.W))
+  val divInReg = Reg(UInt(cfg.totalWidth.W))
+  val mulAReg = Reg(UInt(cfg.totalWidth.W))
+  val mulBReg = Reg(UInt(cfg.totalWidth.W))
 
   val fullRes = VecInit(Seq(
     java.lang.Float.floatToRawIntBits((peCfg.GlobalResX * peCfg.LocalResX).toFloat).U(cfg.totalWidth.W),

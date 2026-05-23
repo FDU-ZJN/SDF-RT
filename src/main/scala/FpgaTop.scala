@@ -63,9 +63,9 @@ class FpgaTop(
   val postInitQs = Seq.fill(2)(Module(new Queue(new InitStageResp(c.cfg, c.addrWidth), postInitQueueDepth)))
 
   val setupReg        = RegInit(false.B)
-  val setupOriginReg  = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
-  val setupGridMinReg = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
-  val setupGridMaxReg = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
+  val setupOriginReg  = Reg(new Vec3(c.cfg))
+  val setupGridMinReg = Reg(new Vec3(c.cfg))
+  val setupGridMaxReg = Reg(new Vec3(c.cfg))
 
   when(io.setup_valid && !setupReg) {
     setupOriginReg  := io.setup_origin

@@ -236,8 +236,6 @@ class TriRefMemMultiPort(
   val addrWidth: Int = GlobalConfig.triMemAddrWidth
 ) extends Module {
   require(numPorts > 0, "TriRefMemMultiPort requires at least one port")
-
-  private val numReadPorts = 2
   private val srcW = math.max(1, log2Ceil(numPorts))
   class RefReq extends Bundle {
     val addr = UInt(addrWidth.W)
@@ -250,57 +248,76 @@ class TriRefMemMultiPort(
     val resp_addr = Output(Vec(numPorts, UInt(addrWidth.W)))
   })
 
-  private val mem = Module(new TriRefMemDPI(addrWidth))
+  private val singlePortMode = numPorts == 1
+  require(singlePortMode || (numPorts & 1) == 0, s"TriRefMemMultiPort requires numPorts == 1 or an even number of ports, got $numPorts")
+  private val refMemLatency = GlobalConfig.triRefMemDpiLatency
+  require(refMemLatency >= 1, s"TriRefMemMultiPort requires refMemLatency >= 1, got $refMemLatency")
+
+  private val mem = Module(new TriRefMemDPI(addrWidth, refMemLatency))
   mem.io.clk := clock
   mem.io.reset := reset
 
-  val arbA = Module(new RRArbiter(new RefReq, numPorts))
-  val arbB = Module(new RRArbiter(new RefReq, numPorts))
-
-  val grantA = Wire(Vec(numPorts, Bool()))
-  val grantB = Wire(Vec(numPorts, Bool()))
-  for (i <- 0 until numPorts) {
-    arbA.io.in(i).valid := io.req(i).valid
-    arbA.io.in(i).bits.addr := io.req(i).bits
-    arbA.io.in(i).bits.src := i.U
-    grantA(i) := arbA.io.in(i).fire
-  }
-  for (i <- 0 until numPorts) {
-    arbB.io.in(i).valid := io.req(i).valid && !grantA(i)
-    arbB.io.in(i).bits.addr := io.req(i).bits
-    arbB.io.in(i).bits.src := i.U
-    grantB(i) := arbB.io.in(i).fire
-    io.req(i).ready := arbA.io.in(i).ready || (!grantA(i) && arbB.io.in(i).ready)
-  }
-
-  mem.io.addr_a := arbA.io.out.bits.addr
-  mem.io.en_a := arbA.io.out.valid
-  arbA.io.out.ready := true.B
-  mem.io.addr_b := arbB.io.out.bits.addr
-  mem.io.en_b := arbB.io.out.valid
-  arbB.io.out.ready := true.B
-
   private def pipeSrc(fire: Bool, src: UInt): UInt = {
-    val srcPipe = RegInit(VecInit(Seq.fill(GlobalConfig.triRefMemDpiLatency)(0.U(srcW.W))))
-    when(reset.asBool) {
-      for (i <- 0 until GlobalConfig.triRefMemDpiLatency) {
-        srcPipe(i) := 0.U
-      }
-    }.otherwise {
-      srcPipe(0) := Mux(fire, src, 0.U)
-      for (i <- 1 until GlobalConfig.triRefMemDpiLatency) {
-        srcPipe(i) := srcPipe(i - 1)
-      }
+    val srcPipe = Reg(Vec(GlobalConfig.triRefMemDpiLatency, UInt(srcW.W)))
+    srcPipe(0) := Mux(fire, src, 0.U)
+    for (i <- 1 until GlobalConfig.triRefMemDpiLatency) {
+      srcPipe(i) := srcPipe(i - 1)
     }
     srcPipe.last
   }
 
-  val srcA = pipeSrc(arbA.io.out.fire, arbA.io.out.bits.src)
-  val srcB = pipeSrc(arbB.io.out.fire, arbB.io.out.bits.src)
+  if (singlePortMode) {
+    val arbA = Module(new RRArbiter(new RefReq, 1))
+    arbA.io.in(0).valid := io.req(0).valid
+    arbA.io.in(0).bits.addr := io.req(0).bits
+    arbA.io.in(0).bits.src := 0.U
+    io.req(0).ready := arbA.io.in(0).ready
 
-  for (i <- 0 until numPorts) {
-    io.resp(i).valid := (mem.io.valid_a && srcA === i.U) || (mem.io.valid_b && srcB === i.U)
-    io.resp(i).bits := Mux(mem.io.valid_a && srcA === i.U, mem.io.data_a, mem.io.data_b)
-    io.resp_addr(i) := Mux(mem.io.valid_a && srcA === i.U, mem.io.addr_q_a, mem.io.addr_q_b)
+    mem.io.addr_a := arbA.io.out.bits.addr
+    mem.io.en_a := arbA.io.out.valid
+    arbA.io.out.ready := true.B
+    mem.io.addr_b := 0.U
+    mem.io.en_b := false.B
+
+    val srcA = pipeSrc(arbA.io.out.fire, arbA.io.out.bits.src)
+    for (i <- 0 until numPorts) {
+      io.resp(i).valid := mem.io.valid_a && srcA === i.U
+      io.resp(i).bits := mem.io.data_a
+      io.resp_addr(i) := mem.io.addr_q_a
+    }
+  } else {
+    val halfPorts = numPorts / 2
+    val arbA = Module(new RRArbiter(new RefReq, halfPorts))
+    val arbB = Module(new RRArbiter(new RefReq, numPorts - halfPorts))
+
+    for (i <- 0 until halfPorts) {
+      arbA.io.in(i).valid := io.req(i).valid
+      arbA.io.in(i).bits.addr := io.req(i).bits
+      arbA.io.in(i).bits.src := i.U
+      io.req(i).ready := arbA.io.in(i).ready
+    }
+    for (i <- 0 until (numPorts - halfPorts)) {
+      val port = i + halfPorts
+      arbB.io.in(i).valid := io.req(port).valid
+      arbB.io.in(i).bits.addr := io.req(port).bits
+      arbB.io.in(i).bits.src := port.U
+      io.req(port).ready := arbB.io.in(i).ready
+    }
+
+    mem.io.addr_a := arbA.io.out.bits.addr
+    mem.io.en_a := arbA.io.out.valid
+    arbA.io.out.ready := true.B
+    mem.io.addr_b := arbB.io.out.bits.addr
+    mem.io.en_b := arbB.io.out.valid
+    arbB.io.out.ready := true.B
+
+    val srcA = pipeSrc(arbA.io.out.fire, arbA.io.out.bits.src)
+    val srcB = pipeSrc(arbB.io.out.fire, arbB.io.out.bits.src)
+
+    for (i <- 0 until numPorts) {
+      io.resp(i).valid := (mem.io.valid_a && srcA === i.U) || (mem.io.valid_b && srcB === i.U)
+      io.resp(i).bits := Mux(mem.io.valid_a && srcA === i.U, mem.io.data_a, mem.io.data_b)
+      io.resp_addr(i) := Mux(mem.io.valid_a && srcA === i.U, mem.io.addr_q_a, mem.io.addr_q_b)
+    }
   }
 }

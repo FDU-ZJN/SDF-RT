@@ -4,8 +4,8 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
-  val frameWidth = 640
-  val frameHeight = 480
+  val frameWidth = 1920
+  val frameHeight = 1080
   val pixelQueueDepth = 512
   val traceNumWorkers = 4
   val triMemNumBanks = traceNumWorkers
@@ -57,17 +57,18 @@ object GlobalConfig {
   val bvhLeafQueueDepth = 16
   val bvhMissQueueDepth = 8
   
-  val normalMemDpiLatency = 2
+  val normalMemDpiLatency = 3
   val triMemDpiLatency = 3
-  val triRefMemDpiLatency = 3
+  val triRefMemDpiLatency = 2
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
-  val fsqrtLatency = 15
-  val fmulLatency = 5
-  val faddLatency = 6
+  val fsqrtLatency = 11
+  val fmulLatency = 4
+  val faddLatency = 5
+  val fmaLatency = 8
   val fcmpLatency = 1
   val fptointLatency = 1
-  val fdivLatency = 11
+  val fdivLatency = 10
 
   val Trinum = 19347
   val TriOriginalNum = 8554
@@ -167,6 +168,7 @@ case class FloatConfig(
 ) {
   val totalWidth = expWidth + precision
   val fmacLatency = fmulLatency + faddLatency
+  val ffmaLatency = if (useFloatIP) GlobalConfig.fmaLatency else fmulLatency + faddLatency
   val fdotLatency = fmulLatency + faddLatency + faddLatency
   val fcrossLatency = fmulLatency + faddLatency
   val bias = (1 << (expWidth - 1)) - 1

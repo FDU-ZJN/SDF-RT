@@ -55,7 +55,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val localMaskZ = (c.LocalResZ - 1).U(c.addrWidth.W)
 
   // Address path first materializes p = origin + dir * dist, then maps p into the SDF grid.
-  val positionLatency = c.cfg.fmulLatency + c.cfg.faddLatency
+  val positionLatency = c.cfg.ffmaLatency
   val addrLatency = positionLatency + c.cfg.faddLatency + c.cfg.fmulLatency + c.cfg.fptointLatency
   val advanceLatency = c.cfg.faddLatency
 
@@ -87,7 +87,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   }
 
   def sampleThenDelay(x: UInt, en: Bool, latency: Int): UInt = {
-    val sampled = RegInit(0.U(c.cfg.totalWidth.W))
+    val sampled = Reg(UInt(c.cfg.totalWidth.W))
     when(en) {
       sampled := x
     }
@@ -97,39 +97,28 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   // --------------------
   // Stage A: ray distance -> current position -> grid address pipeline
   // --------------------
-  val posMulX = Module(new FMUL(c.cfg))
-  val posMulY = Module(new FMUL(c.cfg))
-  val posMulZ = Module(new FMUL(c.cfg))
-  posMulX.io.a := io.in.bits.ray.dir.x
-  posMulX.io.b := io.in.bits.ray.dist
-  posMulY.io.a := io.in.bits.ray.dir.y
-  posMulY.io.b := io.in.bits.ray.dist
-  posMulZ.io.a := io.in.bits.ray.dir.z
-  posMulZ.io.b := io.in.bits.ray.dist
-
-  val originXAtPos = pipeUInt(io.in.bits.ray.origin.x, c.cfg.fmulLatency)
-  val originYAtPos = pipeUInt(io.in.bits.ray.origin.y, c.cfg.fmulLatency)
-  val originZAtPos = pipeUInt(io.in.bits.ray.origin.z, c.cfg.fmulLatency)
-
-  val posAddX = Module(new FADD(c.cfg))
-  val posAddY = Module(new FADD(c.cfg))
-  val posAddZ = Module(new FADD(c.cfg))
-  posAddX.io.a := originXAtPos
-  posAddX.io.b := posMulX.io.result
-  posAddY.io.a := originYAtPos
-  posAddY.io.b := posMulY.io.result
-  posAddZ.io.a := originZAtPos
-  posAddZ.io.b := posMulZ.io.result
+  val posX = Module(new FFMA(c.cfg))
+  val posY = Module(new FFMA(c.cfg))
+  val posZ = Module(new FFMA(c.cfg))
+  posX.io.a := io.in.bits.ray.dir.x
+  posX.io.b := io.in.bits.ray.dist
+  posX.io.c := io.in.bits.ray.origin.x
+  posY.io.a := io.in.bits.ray.dir.y
+  posY.io.b := io.in.bits.ray.dist
+  posY.io.c := io.in.bits.ray.origin.y
+  posZ.io.a := io.in.bits.ray.dir.z
+  posZ.io.b := io.in.bits.ray.dist
+  posZ.io.c := io.in.bits.ray.origin.z
 
   val subGx = Module(new FADD(c.cfg))
   val subGy = Module(new FADD(c.cfg))
   val subGz = Module(new FADD(c.cfg))
 
-  subGx.io.a := posAddX.io.res
+  subGx.io.a := posX.io.res
   subGx.io.b := neg(io.grid_min.x)
-  subGy.io.a := posAddY.io.res
+  subGy.io.a := posY.io.res
   subGy.io.b := neg(io.grid_min.y)
-  subGz.io.a := posAddZ.io.res
+  subGz.io.a := posZ.io.res
   subGz.io.b := neg(io.grid_min.z)
 
   val mulIdxX = Module(new FMUL(c.cfg))
