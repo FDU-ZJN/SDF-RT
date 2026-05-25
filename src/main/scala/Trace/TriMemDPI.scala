@@ -106,9 +106,9 @@ private class TriangleMemResourceBB(
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
-        "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
+        "DATA_WIDTH" -> (c.numPEs * 9 * c.cfg.totalWidth),
         "LATENCY" -> latency,
-        "NUM_PES" -> GlobalConfig.triMemNumPEs,
+        "NUM_PES" -> c.numPEs,
         "BANK_ID" -> bankId,
         "NUM_BANKS" -> numBanks,
         "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
@@ -116,7 +116,7 @@ private class TriangleMemResourceBB(
       )
     )
     with HasBlackBoxResource {
-  private val totalBits = GlobalConfig.triMemDataWidth
+  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
@@ -141,9 +141,9 @@ private class TriangleMemIpBB(
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
-        "DATA_WIDTH" -> GlobalConfig.triMemDataWidth,
+        "DATA_WIDTH" -> (c.numPEs * 9 * c.cfg.totalWidth),
         "LATENCY" -> latency,
-        "NUM_PES" -> GlobalConfig.triMemNumPEs,
+        "NUM_PES" -> c.numPEs,
         "BANK_ID" -> bankId,
         "NUM_BANKS" -> numBanks,
         "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
@@ -152,7 +152,7 @@ private class TriangleMemIpBB(
     )
     with HasBlackBoxResource {
   override def desiredName: String = "TriangleMem"
-  private val totalBits = GlobalConfig.triMemDataWidth
+  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
@@ -175,7 +175,7 @@ class TriangleMemDPI(
   val numBanks: Int = 1,
   val maxEntries: Int = -1
 ) extends Module {
-  private val totalBits = GlobalConfig.triMemDataWidth
+  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
   private val resolvedMaxEntries = if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)
   val io = IO(new Bundle {
     val clk = Input(Clock())

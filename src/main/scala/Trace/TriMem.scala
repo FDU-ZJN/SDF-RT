@@ -5,6 +5,10 @@ import chisel3.util._
 import raytrace_utils._
 
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
+  require(isPow2(c.numPEs), s"TriangleMemWrapper requires numPEs to be power-of-two, got ${c.numPEs}")
+
+  private val peSelW = math.max(1, log2Ceil(c.numPEs))
+
   val io = IO(new Bundle {
     val req      = Flipped(Decoupled(UInt(GlobalConfig.triMemAddrWidth.W)))
     val req_mask = Flipped(Decoupled(UInt(c.numPEs.W)))
@@ -16,7 +20,7 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   dpi_mem.io.reset := reset
   io.req.ready := dpi_mem.io.req_ready
   io.req_mask.ready := dpi_mem.io.req_ready
-  dpi_mem.io.addr := io.req.bits
+  dpi_mem.io.addr := (if (c.numPEs == 1) io.req.bits else (io.req.bits >> peSelW))
   dpi_mem.io.req_valid := io.req.valid
   dpi_mem.io.req_mask := io.req_mask.bits
 
@@ -35,7 +39,8 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
     block_data.tris(i).v2.x := triBits(223, 192)
     block_data.tris(i).v2.y := triBits(255, 224)
     block_data.tris(i).v2.z := triBits(287, 256)
-    block_data.tris(i).id := dpi_mem.io.addr_q + i.U(GlobalConfig.triMemAddrWidth.W)
+    block_data.tris(i).id := dpi_mem.io.addr_q * c.numPEs.U(GlobalConfig.triMemAddrWidth.W) +
+      i.U(GlobalConfig.triMemAddrWidth.W)
     block_data.mask(i) := dpi_mem.io.valid_mask(i)
   }
 
@@ -51,9 +56,11 @@ class TriangleMemMultiPort(
   require(numPorts > 0, "TriangleMemMultiPort needs at least one port")
   require(numBanks > 0, "TriangleMemMultiPort needs at least one bank")
   require(isPow2(numBanks), s"TriangleMemMultiPort currently requires numBanks to be power-of-two, got $numBanks")
+  require(isPow2(c.numPEs), s"TriangleMemMultiPort requires numPEs to be power-of-two, got ${c.numPEs}")
 
   private val srcW = math.max(1, log2Ceil(numPorts))
   private val bankSelW = math.max(1, log2Ceil(numBanks))
+  private val peSelW = math.max(1, log2Ceil(c.numPEs))
 
   class BankReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
@@ -71,7 +78,8 @@ class TriangleMemMultiPort(
     val block = Wire(new TriangleBlock(c))
     val bitsPerTri = 3 * 3 * c.cfg.totalWidth
     val numBanksU = numBanks.U(GlobalConfig.triMemAddrWidth.W)
-    val bankBase = addrQ * numBanksU + bankId.U(GlobalConfig.triMemAddrWidth.W)
+    val blockStrideU = (numBanks * c.numPEs).U(GlobalConfig.triMemAddrWidth.W)
+    val bankBase = addrQ * blockStrideU + bankId.U(GlobalConfig.triMemAddrWidth.W)
     for (i <- 0 until c.numPEs) {
       val hi = bitsPerTri * (i + 1) - 1
       val lo = bitsPerTri * i
@@ -104,7 +112,13 @@ class TriangleMemMultiPort(
   val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
   for (p <- 0 until numPorts) {
     targetedBank(p) := (if (numBanks == 1) 0.U else io.req(p).bits(bankSelW - 1, 0))
-    bankLocalAddr(p) := (if (numBanks == 1) io.req(p).bits else (io.req(p).bits >> bankSelW))
+    val localAddr = (numBanks, c.numPEs) match {
+      case (1, 1) => io.req(p).bits
+      case (1, _) => io.req(p).bits >> peSelW
+      case (_, 1) => io.req(p).bits >> bankSelW
+      case _ => io.req(p).bits >> (bankSelW + peSelW)
+    }
+    bankLocalAddr(p) := localAddr
   }
 
   val reqReady = Wire(Vec(numPorts, Bool()))

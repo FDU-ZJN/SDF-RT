@@ -6,7 +6,8 @@ import raytrace_utils._
 import raytrace_utils.fudian._
 
 class TriPE(val c: TriPeConfig) extends Module {
-  require(c.numPEs == 1, s"TriPE two-level fetch currently requires numPEs=1, got ${c.numPEs}")
+  require(c.numPEs == 1 || c.numPEs == 2, s"TriPE supports one or two triangle intersectors, got ${c.numPEs}")
+  require(isPow2(c.numPEs), s"TriPE requires numPEs to be power-of-two, got ${c.numPEs}")
 
   private val ctxCount = 2
   private val ctxW = 1
@@ -14,6 +15,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val refPackFactor = GlobalConfig.triRefPackFactor
   private val refPackShift = log2Ceil(refPackFactor)
   private val refCountWidth = log2Ceil(refPackFactor + 1)
+  private val triBankSelW = math.max(1, log2Ceil(GlobalConfig.triMemNumBanks))
+  private val triPeSelW = math.max(1, log2Ceil(c.numPEs))
 
   val io = IO(new Bundle {
     val ray_in: Ray = Input(new Ray(c.cfg))
@@ -30,9 +33,9 @@ class TriPE(val c: TriPeConfig) extends Module {
     val ref_mem_req = Decoupled(UInt(c.addrWidth.W))
     val ref_mem_resp = Flipped(Decoupled(UInt(GlobalConfig.triRefMemDataWidth.W)))
 
-    val mem_req: DecoupledIO[UInt] = Decoupled(UInt(c.addrWidth.W))
-    val mem_req_mask: DecoupledIO[UInt] = Decoupled(UInt(c.numPEs.W))
-    val mem_resp: DecoupledIO[TriangleBlock] = Flipped(Decoupled(new TriangleBlock(c)))
+    val mem_req = Vec(c.numPEs, Decoupled(UInt(c.addrWidth.W)))
+    val mem_req_mask = Vec(c.numPEs, Decoupled(UInt(c.numPEs.W)))
+    val mem_resp = Vec(c.numPEs, Flipped(Decoupled(new TriangleBlock(c))))
 
     val start_ready = Output(Vec(ctxCount, Bool()))
     val output_ready = Output(Vec(ctxCount, Bool()))
@@ -254,99 +257,158 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   class MemReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+    val mask = UInt(c.numPEs.W)
     val ctx = UInt(ctxW.W)
     val epoch = Bool()
   }
 
-  val memReqQ = Module(new Queue(new MemReq, 4))
+  class PeHit extends Bundle {
+    val ctx = UInt(ctxW.W)
+    val id = UInt(c.addrWidth.W)
+    val t = UInt(c.cfg.totalWidth.W)
+  }
+
+  private def triMemLaneMask(triId: UInt): UInt = {
+    if (c.numPEs == 1) {
+      1.U(1.W)
+    } else {
+      UIntToOH((triId >> triBankSelW)(triPeSelW - 1, 0), c.numPEs)
+    }
+  }
+
+  val memReqQs = Seq.fill(c.numPEs)(Module(new Queue(new MemReq, 4)))
   private val memRr = RegInit(false.B)
   private val memSel = Wire(UInt(ctxW.W))
   private val memEnqValid = memCanEnq.asUInt.orR
   memSel := Mux(memCanEnq(0) && (!memRr || !memCanEnq(1)), 0.U, 1.U)
 
-  memReqQ.io.enq.valid := memEnqValid
-  memReqQ.io.enq.bits.addr := geomTriId(memSel)
-  memReqQ.io.enq.bits.ctx := memSel
-  memReqQ.io.enq.bits.epoch := activeEpoch(memSel)
+  val memIssueIds = Wire(Vec(c.numPEs, UInt(triIdWidth.W)))
+  val memIssueValids = Wire(Vec(c.numPEs, Bool()))
+  val memIssueReadyPrefix = Wire(Vec(c.numPEs, Bool()))
+  for (lane <- 0 until c.numPEs) {
+    val idx = refBufIdx(memSel) + lane.U
+    memIssueIds(lane) := refBuffer(memSel)(idx)
+    memIssueReadyPrefix(lane) := (0 to lane).map(i => memReqQs(i).io.enq.ready).reduce(_ && _)
+    memIssueValids(lane) := memEnqValid &&
+      (refBufCount(memSel) > lane.U) &&
+      memIssueReadyPrefix(lane)
+    memReqQs(lane).io.enq.valid := memIssueValids(lane)
+    memReqQs(lane).io.enq.bits.addr := memIssueIds(lane)
+    memReqQs(lane).io.enq.bits.mask := triMemLaneMask(memIssueIds(lane))
+    memReqQs(lane).io.enq.bits.ctx := memSel
+    memReqQs(lane).io.enq.bits.epoch := activeEpoch(memSel)
+  }
 
-  when(memReqQ.io.enq.fire) {
-    refBufIdx(memSel) := refBufIdx(memSel) + 1.U
-    refBufCount(memSel) := refBufCount(memSel) - 1.U
+  val memIssuedCount = PopCount(VecInit((0 until c.numPEs).map(lane => memReqQs(lane).io.enq.fire)))
+  when(memIssuedCount =/= 0.U) {
+    refBufIdx(memSel) := refBufIdx(memSel) + memIssuedCount
+    refBufCount(memSel) := refBufCount(memSel) - memIssuedCount
     memRr := !memSel(0)
   }
 
-  val memReqStale = memReqQ.io.deq.valid &&
-    ((memReqQ.io.deq.bits.epoch =/= activeEpoch(memReqQ.io.deq.bits.ctx)) || io.clear_ctx(memReqQ.io.deq.bits.ctx))
-  val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale
-  val memReqToMemReady = io.mem_req.ready && io.mem_req_mask.ready
-  io.mem_req.valid := memReqToMemValid
-  io.mem_req.bits := memReqQ.io.deq.bits.addr
-  io.mem_req_mask.valid := memReqToMemValid
-  io.mem_req_mask.bits := 1.U
-  memReqQ.io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
-
-  io.mem_resp.ready := true.B
-
   private val memReqPipeLen = GlobalConfig.triMemDpiLatency
-  private val memReqLivePipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
-  private val memReqCtxPipe = Reg(Vec(memReqPipeLen, UInt(ctxW.W)))
-  private val memReqEpochPipe = Reg(Vec(memReqPipeLen, Bool()))
-  private val memReqIssued = memReqQ.io.deq.fire && !memReqStale
-  memReqLivePipe(0) := memReqIssued
-  memReqCtxPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.ctx, 0.U)
-  memReqEpochPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.epoch, false.B)
-  for (i <- 1 until memReqPipeLen) {
-    memReqLivePipe(i) := memReqLivePipe(i - 1)
-    memReqCtxPipe(i) := memReqCtxPipe(i - 1)
-    memReqEpochPipe(i) := memReqEpochPipe(i - 1)
+  private val memReqLivePipe = Seq.fill(c.numPEs)(RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B))))
+  private val memReqCtxPipe = Seq.fill(c.numPEs)(Reg(Vec(memReqPipeLen, UInt(ctxW.W))))
+  private val memReqEpochPipe = Seq.fill(c.numPEs)(Reg(Vec(memReqPipeLen, Bool())))
+
+  private val memReqIssued = Wire(Vec(c.numPEs, Bool()))
+  private val memRespCtx = Wire(Vec(c.numPEs, UInt(ctxW.W)))
+  private val memRespLive = Wire(Vec(c.numPEs, Bool()))
+
+  for (lane <- 0 until c.numPEs) {
+    val memReqStale = memReqQs(lane).io.deq.valid &&
+      ((memReqQs(lane).io.deq.bits.epoch =/= activeEpoch(memReqQs(lane).io.deq.bits.ctx)) ||
+        io.clear_ctx(memReqQs(lane).io.deq.bits.ctx))
+    val memReqToMemValid = memReqQs(lane).io.deq.valid && !memReqStale
+    val memReqToMemReady = io.mem_req(lane).ready && io.mem_req_mask(lane).ready
+    io.mem_req(lane).valid := memReqToMemValid
+    io.mem_req(lane).bits := memReqQs(lane).io.deq.bits.addr
+    io.mem_req_mask(lane).valid := memReqToMemValid
+    io.mem_req_mask(lane).bits := memReqQs(lane).io.deq.bits.mask
+    memReqQs(lane).io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
+
+    io.mem_resp(lane).ready := true.B
+    memReqIssued(lane) := memReqQs(lane).io.deq.fire && !memReqStale
+    memReqLivePipe(lane)(0) := memReqIssued(lane)
+    memReqCtxPipe(lane)(0) := Mux(memReqIssued(lane), memReqQs(lane).io.deq.bits.ctx, 0.U)
+    memReqEpochPipe(lane)(0) := Mux(memReqIssued(lane), memReqQs(lane).io.deq.bits.epoch, false.B)
+    for (i <- 1 until memReqPipeLen) {
+      memReqLivePipe(lane)(i) := memReqLivePipe(lane)(i - 1)
+      memReqCtxPipe(lane)(i) := memReqCtxPipe(lane)(i - 1)
+      memReqEpochPipe(lane)(i) := memReqEpochPipe(lane)(i - 1)
+    }
+
+    memRespCtx(lane) := memReqCtxPipe(lane).last
+    memRespLive(lane) := io.mem_resp(lane).fire &&
+      memReqLivePipe(lane).last &&
+      (memReqEpochPipe(lane).last === activeEpoch(memRespCtx(lane))) &&
+      !io.clear_ctx(memRespCtx(lane))
   }
 
-  private val memRespCtx = memReqCtxPipe.last
-  private val memRespLive =
-    io.mem_resp.fire &&
-      memReqLivePipe.last &&
-      (memReqEpochPipe.last === activeEpoch(memRespCtx)) &&
-      !io.clear_ctx(memRespCtx)
-
-  private val pe = Module(new RayTriangleIntersection(c.cfg))
-  pe.io.ray := rayReg(memRespCtx)
-  pe.io.tri := io.mem_resp.bits.tris(0)
-  pe.io.in_valid := memRespLive && io.mem_resp.bits.mask(0)
+  private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
+  for (lane <- 0 until c.numPEs) {
+    val selectedTri = Wire(new Triangle(c.cfg))
+    selectedTri := io.mem_resp(lane).bits.tris(0)
+    for (memLane <- 1 until c.numPEs) {
+      when(io.mem_resp(lane).bits.mask(memLane)) {
+        selectedTri := io.mem_resp(lane).bits.tris(memLane)
+      }
+    }
+    pes(lane).io.ray := rayReg(memRespCtx(lane))
+    pes(lane).io.tri := selectedTri
+    pes(lane).io.in_valid := memRespLive(lane) && io.mem_resp(lane).bits.mask.asUInt.orR
+  }
 
   private val peLatency =
     c.cfg.faddLatency + (c.cfg.fmulLatency + c.cfg.faddLatency) + (c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
       math.max(c.cfg.fdivLatency, c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
       c.cfg.fmulLatency + c.cfg.faddLatency
-  private val peCtxOut = PipeUtils.pipeData(memRespCtx, peLatency)
+  private val peCtxOut = Seq.tabulate(c.numPEs)(lane => PipeUtils.pipeData(memRespCtx(lane), peLatency))
 
-  val fcmp = Module(new FCMP(c.cfg))
-  fcmp.io.a := pe.io.t
-  fcmp.io.b := bestT(peCtxOut)
-  fcmp.io.signaling := false.B
-
-  for (ctx <- 0 until ctxCount) {
-    val triIssued = memReqQ.io.enq.fire && memSel === ctx.U
-    val invalidMemResp = memRespLive && !io.mem_resp.bits.mask(0) && memRespCtx === ctx.U
-    val triDone = pe.io.out_valid && peCtxOut === ctx.U
-    val triRetired = invalidMemResp || triDone
-    when(invalidMemResp && triDone) {
-      assert(false.B, "TriPE invalid mem response and PE done for same context in same cycle")
-    }
-    when(io.clear_ctx(ctx)) {
-      triOutstanding(ctx) := 0.U
-    }.otherwise {
-      switch(Cat(triIssued, triRetired)) {
-        is("b10".U) { triOutstanding(ctx) := triOutstanding(ctx) + 1.U }
-        is("b01".U) { triOutstanding(ctx) := triOutstanding(ctx) - 1.U }
-      }
+  private val hitQs = Seq.fill(c.numPEs)(Module(new Queue(new PeHit, 4)))
+  for (lane <- 0 until c.numPEs) {
+    hitQs(lane).io.enq.valid := pes(lane).io.out_valid && pes(lane).io.hit
+    hitQs(lane).io.enq.bits.ctx := peCtxOut(lane)
+    hitQs(lane).io.enq.bits.id := pes(lane).io.id
+    hitQs(lane).io.enq.bits.t := pes(lane).io.t
+    when(hitQs(lane).io.enq.valid) {
+      assert(hitQs(lane).io.enq.ready, s"TriPE hit update queue overflow on lane $lane")
     }
   }
 
-  when(pe.io.out_valid && pe.io.hit) {
-    when(fcmp.io.lt || !hasHit(peCtxOut)) {
-      bestT(peCtxOut) := pe.io.t
-      bestId(peCtxOut) := pe.io.id
-      hasHit(peCtxOut) := true.B
+  val hitArb = Module(new RRArbiter(new PeHit, c.numPEs))
+  for (lane <- 0 until c.numPEs) {
+    hitArb.io.in(lane) <> hitQs(lane).io.deq
+  }
+  hitArb.io.out.ready := true.B
+
+  val fcmp = Module(new FCMP(c.cfg))
+  fcmp.io.a := hitArb.io.out.bits.t
+  fcmp.io.b := bestT(hitArb.io.out.bits.ctx)
+  fcmp.io.signaling := false.B
+  private val hitCmpValid = PipeUtils.pipeBool(hitArb.io.out.fire, c.cfg.fcmpLatency, false.B)
+  private val hitCmpBits = PipeUtils.pipeData(hitArb.io.out.bits, c.cfg.fcmpLatency)
+
+  for (ctx <- 0 until ctxCount) {
+    val triIssued = PopCount(VecInit((0 until c.numPEs).map(lane =>
+      memReqQs(lane).io.enq.fire && memSel === ctx.U
+    )))
+    val triRetired = PopCount(VecInit((0 until c.numPEs).flatMap(lane => Seq(
+      memRespLive(lane) && !io.mem_resp(lane).bits.mask.asUInt.orR && memRespCtx(lane) === ctx.U,
+      pes(lane).io.out_valid && peCtxOut(lane) === ctx.U
+    ))))
+    when(io.clear_ctx(ctx)) {
+      triOutstanding(ctx) := 0.U
+    }.otherwise {
+      triOutstanding(ctx) := triOutstanding(ctx) + triIssued - triRetired
+    }
+  }
+
+  when(hitCmpValid) {
+    when(fcmp.io.lt || !hasHit(hitCmpBits.ctx)) {
+      bestT(hitCmpBits.ctx) := hitCmpBits.t
+      bestId(hitCmpBits.ctx) := hitCmpBits.id
+      hasHit(hitCmpBits.ctx) := true.B
     }
   }
 
@@ -356,7 +418,9 @@ class TriPE(val c: TriPeConfig) extends Module {
         refBufCount(ctx) === 0.U &&
         refShadowEmpty(ctx) &&
         !refInflight(ctx)
-    val batchDoneNow = batchInProgress(ctx) && batchSourceDrained && triOutstanding(ctx) === 0.U
+    val hitUpdatesDrained = hitQs.map(q => !q.io.deq.valid).reduce(_ && _) && !hitArb.io.out.valid && !hitCmpValid
+    val batchDoneNow = batchInProgress(ctx) && batchSourceDrained && (triOutstanding(ctx) === 0.U) &&
+      hitUpdatesDrained
 
     when(resultValidReg(ctx) && outSel === ctx.U && !io.clear_ctx(ctx)) {
       resultValidReg(ctx) := false.B

@@ -8,10 +8,11 @@ object GlobalConfig {
   val frameHeight = 1080
   val pixelQueueDepth = 512
   val traceNumWorkers = 8
-  val triMemNumBanks = traceNumWorkers
+  val triMemNumPEs = 2
+  val triMemNumBanks = 8
   val ddaNumWorkers = 2
   val sdfStepNumWorkers = 2
-  val triRefPackFactor = 16
+  val triRefPackFactor = 32
 
   private var useBlackBoxState = 0
   def memImplMode: Int = useBlackBoxState
@@ -81,7 +82,6 @@ object GlobalConfig {
 
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
-  val triMemNumPEs = 1
   val triMemDataWidth = triMemNumPEs * 9 * 32
   val triRefIdWidth = 16
   val triRefMemDataWidth = triRefPackFactor * triRefIdWidth

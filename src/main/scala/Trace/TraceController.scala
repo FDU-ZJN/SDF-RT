@@ -28,7 +28,7 @@ class TraceController(
   val workers = Seq.fill(numWorkers)(Module(new TriPE(c)))
   val cmdQueues = Seq.fill(slotCount)(Module(new Queue(new TriBatch(c.addrWidth), maxCmds, hasFlush = true)))
   val refMem = Module(new TriRefMemMultiPort(numWorkers, c.addrWidth))
-  val mem = Module(new TriangleMemMultiPort(c, numWorkers))
+  val mem = Module(new TriangleMemMultiPort(c, numWorkers * c.numPEs))
 
   val sEmpty :: sIssueRay :: sReadyFirst :: sWaitBatch :: sReadyCont :: sResultPending :: Nil = Enum(6)
   val ctxState = RegInit(VecInit(Seq.fill(numWorkers)(VecInit(Seq.fill(ctxCount)(sEmpty)))))
@@ -113,9 +113,12 @@ class TraceController(
 
     refMem.io.req(w) <> workers(w).io.ref_mem_req
     workers(w).io.ref_mem_resp <> refMem.io.resp(w)
-    mem.io.req(w) <> workers(w).io.mem_req
-    mem.io.req_mask(w) <> workers(w).io.mem_req_mask
-    workers(w).io.mem_resp <> mem.io.resp(w)
+    for (lane <- 0 until c.numPEs) {
+      val memPort = w * c.numPEs + lane
+      mem.io.req(memPort) <> workers(w).io.mem_req(lane)
+      mem.io.req_mask(memPort) <> workers(w).io.mem_req_mask(lane)
+      workers(w).io.mem_resp(lane) <> mem.io.resp(memPort)
+    }
   }
 
   val allocFree = Wire(Vec(workerCtxCount, Bool()))
