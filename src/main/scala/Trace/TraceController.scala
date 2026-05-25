@@ -11,14 +11,14 @@ class TraceController(
   private val numWorkers = GlobalConfig.traceNumWorkers
   private val ctxCount = 2
   private val ctxW = 1
-  private val slotCount = GlobalConfig.ddaRetryQueueDepth
+  private val slotCount = GlobalConfig.ddaTraceSlotCount
   private val traceSlotBits = GlobalConfig.ddaTraceSlotBits
   private val cmdIdxW = math.max(1, log2Ceil(maxCmds))
   private val workerCtxCount = numWorkers * ctxCount
 
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
-    val cmd_write = Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds)))
+    val cmd_write = Vec(2, Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds))))
     val slot_release = Valid(UInt(traceSlotBits.W))
     val result_out = Decoupled(new TraceResult(c.cfg, c.addrWidth))
   })
@@ -44,10 +44,14 @@ class TraceController(
   val cmdQueueReady = Wire(Vec(slotCount, Bool()))
   val cmdQueueValid = Wire(Vec(slotCount, Bool()))
   val cmdQueueBits = Wire(Vec(slotCount, new TriBatch(c.addrWidth)))
+  val cmdWriteReady = Wire(Vec(2, Bool()))
   val clearCtx = Wire(Vec(numWorkers, Vec(ctxCount, Bool())))
 
   for (s <- 0 until slotCount) {
     cmdQueueReady(s) := false.B
+  }
+  for (lane <- 0 until 2) {
+    cmdWriteReady(lane) := false.B
   }
   for (w <- 0 until numWorkers) {
     for (ctx <- 0 until ctxCount) {
@@ -59,16 +63,22 @@ class TraceController(
   io.slot_release.valid := false.B
   io.slot_release.bits := 0.U
 
-  val cmdWriteReady = WireDefault(false.B)
   for (s <- 0 until slotCount) {
-    cmdQueues(s).io.enq.valid := io.cmd_write.valid && (io.cmd_write.bits.slotIdx === s.U)
-    cmdQueues(s).io.enq.bits := io.cmd_write.bits.tri
+    val laneHits = Wire(Vec(2, Bool()))
+    for (lane <- 0 until 2) {
+      laneHits(lane) := io.cmd_write(lane).valid && (io.cmd_write(lane).bits.slotIdx === s.U)
+    }
+    assert(PopCount(laneHits) <= 1.U, s"TraceController does not allow same-slot dual cmd writes for slot $s")
+    cmdQueues(s).io.enq.valid := laneHits.asUInt.orR
+    cmdQueues(s).io.enq.bits := Mux(laneHits(0), io.cmd_write(0).bits.tri, io.cmd_write(1).bits.tri)
     cmdQueues(s).io.flush.get := slotFlushPending(s)
     cmdQueues(s).io.deq.ready := cmdQueueReady(s)
     cmdQueueValid(s) := slotCmdCount(s) =/= 0.U
     cmdQueueBits(s) := cmdQueues(s).io.deq.bits
-    when(io.cmd_write.bits.slotIdx === s.U) {
-      cmdWriteReady := cmdQueues(s).io.enq.ready
+    for (lane <- 0 until 2) {
+      when(laneHits(lane)) {
+        cmdWriteReady(lane) := cmdQueues(s).io.enq.ready
+      }
     }
 
     val cmdEnqFire = cmdQueues(s).io.enq.fire
@@ -84,8 +94,10 @@ class TraceController(
     }
   }
 
-  when(io.cmd_write.valid) {
-    assert(cmdWriteReady, "TraceController cmd queue overflow")
+  for (lane <- 0 until 2) {
+    when(io.cmd_write(lane).valid) {
+      assert(cmdWriteReady(lane), s"TraceController cmd queue overflow on lane $lane")
+    }
   }
 
   for (w <- 0 until numWorkers) {
@@ -137,9 +149,13 @@ class TraceController(
 
   val issueRr = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   val issueGrantValid = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
-  val issueGrantCtx = RegInit(VecInit(Seq.fill(numWorkers)(0.U(ctxW.W))))
-  val issueGrantSlot = RegInit(VecInit(Seq.fill(numWorkers)(0.U(traceSlotBits.W))))
-  val issueGrantEnd = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
+  val issueGrantCtx = Reg(Vec(numWorkers, UInt(ctxW.W)))
+  val issueGrantSlot = Reg(Vec(numWorkers, UInt(traceSlotBits.W)))
+  val issueGrantEnd = Reg(Vec(numWorkers, Bool()))
+  val batchIssueValid = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
+  val batchIssueBits = Reg(Vec(numWorkers, new TriBatch(c.addrWidth)))
+  val batchIssueCtx = Reg(Vec(numWorkers, UInt(ctxW.W)))
+  val batchIssueEnd = Reg(Vec(numWorkers, Bool()))
   for (w <- 0 until numWorkers) {
     val issueRay0 = ctxState(w)(0) === sIssueRay && workers(w).io.start_ready(0)
     val issueRay1 = ctxState(w)(1) === sIssueRay && workers(w).io.start_ready(1)
@@ -159,11 +175,13 @@ class TraceController(
       firstReady(ctx) := ctxState(w)(ctx) === sReadyFirst &&
         workers(w).io.output_ready(ctx) &&
         cmdQueueValid(slot) &&
-        !issueGrantValid(w)
+        !issueGrantValid(w) &&
+        !batchIssueValid(w)
       contReady(ctx) := ctxState(w)(ctx) === sReadyCont &&
         workers(w).io.output_ready(ctx) &&
         cmdQueueValid(slot) &&
-        !issueGrantValid(w)
+        !issueGrantValid(w) &&
+        !batchIssueValid(w)
     }
 
     val useFirst = firstReady.asUInt.orR
@@ -172,7 +190,8 @@ class TraceController(
     val planBatch = issue0 || issue1
     val planCtx = Mux(issue0, 0.U(ctxW.W), 1.U(ctxW.W))
     val planSlot = ctxJob(w)(planCtx).traceSlot
-    val grantFire = issueGrantValid(w) &&
+    val cmdDeqToIssue = issueGrantValid(w) &&
+      !batchIssueValid(w) &&
       workers(w).io.output_ready(issueGrantCtx(w)) &&
       cmdQueueValid(issueGrantSlot(w))
 
@@ -186,13 +205,24 @@ class TraceController(
     }
 
     when(issueGrantValid(w)) {
-      workers(w).io.tri_batch_in := cmdQueueBits(issueGrantSlot(w))
-      workers(w).io.tri_batch_ctx := issueGrantCtx(w)
-      workers(w).io.tri_batch_valid := grantFire
-      workers(w).io.end_exec := issueGrantEnd(w)
-      cmdQueueReady(issueGrantSlot(w)) := workers(w).io.output_ready(issueGrantCtx(w))
-      when(grantFire) {
+      cmdQueueReady(issueGrantSlot(w)) := !batchIssueValid(w) &&
+        workers(w).io.output_ready(issueGrantCtx(w))
+      when(cmdDeqToIssue) {
+        batchIssueValid(w) := true.B
+        batchIssueBits(w) := cmdQueueBits(issueGrantSlot(w))
+        batchIssueCtx(w) := issueGrantCtx(w)
+        batchIssueEnd(w) := issueGrantEnd(w)
         issueGrantValid(w) := false.B
+      }
+    }
+
+    when(batchIssueValid(w)) {
+      workers(w).io.tri_batch_in := batchIssueBits(w)
+      workers(w).io.tri_batch_ctx := batchIssueCtx(w)
+      workers(w).io.tri_batch_valid := workers(w).io.output_ready(batchIssueCtx(w))
+      workers(w).io.end_exec := batchIssueEnd(w)
+      when(workers(w).io.output_ready(batchIssueCtx(w))) {
+        batchIssueValid(w) := false.B
       }
     }
 

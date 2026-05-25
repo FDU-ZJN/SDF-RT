@@ -27,8 +27,6 @@ csrc/
 ├── include/                      # C++ headers
 │   ├── GlobalConfig.h            # Configuration parameters (resolution, VCD, etc.)
 │   ├── Mem.h                     # Memory management and data structures
-│   ├── BVH.h                     # BVH hierarchy definitions
-│   ├── SDF.h                     # SDF data structures
 │   ├── SdfSanity.h               # SDF sanity check utilities
 │   ├── DebugHooks.h              # Debug hook definitions
 │   ├── SimUtils.h                # Simulation utilities
@@ -37,8 +35,6 @@ csrc/
 │   ├── npy.hpp                   # NumPy array support
 │   └── tiny_obj_loader.h         # OBJ model loader
 ├── src/utils/                    # C++ utilities
-│   ├── BVH.cpp                   # BVH construction and traversal
-│   ├── SDF.cpp                   # SDF generation and queries
 │   ├── Mem.cpp                   # Memory management
 │   ├── MemExport.cpp             # Vivado .mem file export
 │   ├── SdfSanity.cpp             # SDF sanity checks
@@ -50,7 +46,6 @@ csrc/
 └── vivado_mem/                   # Exported memory files for Vivado
     ├── triangle_mem.mem          # 14203 compact triangles (36 words/entry)
     ├── normal_mem.mem            # 14203 normals (3 words/entry)
-    ├── bvh_mem.mem               # BVH nodes (8 words/entry)
     ├── sdf_global_mem.mem        # Global SDF (16³ grid)
     ├── sdf_local_mem.mem         # Local SDF (4³ per cell)
     ├── sdf_local_mapping.mem     # Local SDF cell mapping
@@ -77,12 +72,11 @@ make MODE=fpga run
 
 This will:
 1. Load model data from OBJ files
-2. Build BVH hierarchy
-3. Generate SDF data
-4. Export memory files to `vivado_mem/`
-5. Initialize Verilator simulation
-6. Run frame rendering
-7. Save output to `render_fpga_400x400.ppm`
+2. Generate SDF data
+3. Export memory files to `vivado_mem/`
+4. Initialize Verilator simulation
+5. Run frame rendering
+6. Save output to `render_fpga_400x400.ppm`
 
 ---
 
@@ -134,18 +128,13 @@ inline constexpr bool kEnableProgressPrint = true;  // Print progress messages
 - Assigns triangles to subgrids
 - Produces compact triangle list: ~14203 entries (with repetition for subgrids)
 
-### 3. BVH Construction
-
-- Builds bounding volume hierarchy over compact triangles
-- Outputs BVH nodes with AABB and child pointers
-
-### 4. SDF Generation
+### 3. SDF Generation
 
 - Computes global SDF (16³ grid)
 - Computes local SDF for active cells (4³ per cell)
 - Creates subgrid metadata
 
-### 5. Memory Export
+### 4. Memory Export
 
 `MemExport.cpp` exports all data structures to `.mem` files for Vivado simulation:
 
@@ -153,12 +142,11 @@ inline constexpr bool kEnableProgressPrint = true;  // Print progress messages
 |------|---------|--------|
 | `triangle_mem.mem` | Compact triangles | 36 floats/address |
 | `normal_mem.mem` | Vertex normals | 3 floats/address |
-| `bvh_mem.mem` | BVH nodes | 8 words/address |
 | `sdf_global_mem.mem` | Global SDF | 1 word/address |
 | `sdf_local_mem.mem` | Local SDF | 1 word/address |
 | `subgrid_meta_mem.mem` | Subgrid metadata | Packed (triStart, triCount) |
 
-### 6. Simulation Execution
+### 5. Simulation Execution
 
 **SimTop Mode (`main.cpp`):**
 - Manually sends rays pixel by pixel
@@ -223,7 +211,6 @@ uint32_t packed = ((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF);
 ### Data Sources
 
 - **Triangles/Normals**: Compact list (14203 entries), not original (9500 entries)
-- **BVH**: Built over compact triangle list
 - **SDF**: Computed from compact geometry
 - **SubgridMeta**: Derived from subgrid layout optimization
 
@@ -328,7 +315,6 @@ sbt "runMain SimTopGen"
 - Camera position incorrect
 - Scene boundaries don't contain model
 - Triangle normals missing or wrong
-- BVH construction error
 
 **Debugging Steps:**
 1. Verify setup parameters (origin, grid min/max)

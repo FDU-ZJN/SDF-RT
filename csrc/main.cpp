@@ -1,16 +1,15 @@
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
 #include "verilated.h"
 #include "VSimTop.h"
 
-#include <BVH.h>
 #include <DebugHooks.h>
 #include <GlobalConfig.h>
 #include <Mem.h>
-#include <SDF.h>
 #include <SdfSanity.h>
 #include <SimUtils.h>
 
@@ -21,6 +20,11 @@ using std::vector;
 using namespace rt::config;
 
 uint64_t main_time = 0;
+
+static std::string modelMemDirFromObjPath(const std::string& objPath) {
+    return (std::filesystem::path("./vivado_mem") /
+            ("mem_" + std::filesystem::path(objPath).stem().string())).string();
+}
 
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
@@ -93,11 +97,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (kEnableReferenceOracle) {
-        // BVH is only needed by software-reference debug paths.
-        globalBVH.build(triangles, normals);
-    }
-
     const auto bounds = computeScaledBoundsFromTriangles(triangles);
     const float gridMinX = bounds[0];
     const float gridMinY = bounds[1];
@@ -141,7 +140,7 @@ int main(int argc, char** argv) {
     writeSubgridTriCountHistogramPPM("subgrid_tricount_hist.ppm", kDdaGlobalRes, kDdaSubRes);
 
     // Export memory to .mem files for Vivado simulation
-    std::string memExportDir = "./vivado_mem";
+    std::string memExportDir = modelMemDirFromObjPath(kObjPath);
     std::cout << "\nExporting memories to: " << memExportDir << std::endl;
     export_all_mems_for_vivado(memExportDir);
 
@@ -174,16 +173,6 @@ int main(int argc, char** argv) {
     vector<RayWorkItem> workItems;
     workItems.reserve(framePixels);
 
-    // Build software SDF oracle result for every ray.
-    const array<float, 3> lightDir = {0.577f, 0.577f, 0.577f};
-    SdfConfig sdfCfg;
-    sdfCfg.globalResX = kSDFGlobalRes;
-    sdfCfg.globalResY = kSDFGlobalRes;
-    sdfCfg.globalResZ = kSDFGlobalRes;
-    sdfCfg.localResX = kSDFSubRes;
-    sdfCfg.localResY = kSDFSubRes;
-    sdfCfg.localResZ = kSDFSubRes;
-
     for (int py = 0; py < kHeight; ++py) {
         for (int px = 0; px < kWidth; ++px) {
             if (debugOptions.singlePixelDebug &&
@@ -194,34 +183,6 @@ int main(int argc, char** argv) {
             item.px = px;
             item.py = py;
             item.dir = makeRayDir(px, py, kWidth, kHeight);
-
-            if (kEnableReferenceOracle) {
-                const SdfSoftwareHit swHit = sdfSoftwareTraceCompact(
-                    setupOrigin,
-                    item.dir,
-                    gridMin,
-                    gridMax,
-                    sdfCfg,
-                    kDdaGlobalRes,
-                    kDdaSubRes,
-                    kDdaTraceSteps);
-
-                item.expectedTriId = swHit.originalTriId;
-                item.expectedCompactTriId = swHit.compactTriId;
-                if (swHit.originalTriId >= 0) {
-                    item.expectedRgb = globalBVH.render(swHit.originalTriId, lightDir);
-                }
-
-                if (swHit.sdfHit) {
-                    int gIdx = -1;
-                    int sIdx = -1;
-                    if (mapPointToDdaGlobalSub(swHit.sdfHitOrigin, gridMin, gridMax, kDdaGlobalRes, kDdaSubRes, gIdx, sIdx)) {
-                        item.swGlobalIdx = gIdx;
-                        item.swSubIdx = sIdx;
-                    }
-                }
-            }
-
             workItems.push_back(item);
         }
     }
@@ -279,8 +240,6 @@ int main(int argc, char** argv) {
     size_t retired = 0;
     int stallCycles = 0;
 
-    size_t hitCount = 0;
-    size_t mismatchCount = 0;
     bool stopRequested = false;
 
     while (retired < totalRays && !stopRequested) {
@@ -321,29 +280,6 @@ int main(int argc, char** argv) {
                 debug.onPixelRetired(item, static_cast<int>(dut->io_out_id));
             }
 
-            bool mismatch = false;
-            if (kEnableReferenceOracle) {
-                if (item.expectedTriId >= 0) {
-                    ++hitCount;
-                    const int expectedHwTriId =
-                        (item.expectedCompactTriId >= 0) ? item.expectedCompactTriId : item.expectedTriId;
-                    if (static_cast<int>(dut->io_out_id) != expectedHwTriId) {
-                        mismatch = true;
-                        debug.onMismatch(item,
-                                         static_cast<int>(dut->io_out_id),
-                                         gridMin,
-                                         gridMax,
-                                         kDdaGlobalRes,
-                                         kDdaSubRes,
-                                         kDdaTraceSteps);
-                    }
-                }
-            }
-
-            if (mismatch) {
-                ++mismatchCount;
-            }
-
             ++retired;
             if (debug.onPixelRetiredControl(item)) {
                 stopRequested = true;
@@ -374,16 +310,10 @@ int main(int argc, char** argv) {
         std::printf("\nDone. Average cycles/ray: %.2f\n",
                 static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
     }
-    if (kEnableReferenceOracle) {
-        std::printf("Total hits: %zu, Mismatches: %zu, Average cycles/ray: %.2f\n",
-                    hitCount,
-                    mismatchCount,
-                    static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
-    } else {
-        std::printf("Reference oracle disabled. Average cycles/ray: %.2f\n",
-                    static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
-    }
+    std::printf("Software reference oracle removed. Average cycles/ray: %.2f\n",
+                static_cast<double>(main_time / 2) / static_cast<double>(totalRays));
 
+    replaceBlackWithBackground(image, kWidth, kHeight);
     writePPM("render_400x400.ppm", image, kWidth, kHeight);
 
     debug.closeVcd();

@@ -4,12 +4,13 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
-  val frameWidth = 1920
+  val frameWidth =1920
   val frameHeight = 1080
   val pixelQueueDepth = 512
-  val traceNumWorkers = 4
+  val traceNumWorkers = 8
   val triMemNumBanks = traceNumWorkers
-  val ddaNumWorkers = 1
+  val ddaNumWorkers = 2
+  val sdfStepNumWorkers = 2
   val triRefPackFactor = 16
 
   private var useBlackBoxState = 0
@@ -45,18 +46,15 @@ object GlobalConfig {
   val slotBits = log2Ceil(commitQueueDepth)
 
   val ddaRetryQueueDepth = 16
-  val triBatchQueueDepth = 16
-  val ddaTraceSlotBits = log2Ceil(ddaRetryQueueDepth)
+  val ddaTraceSlotCount = ddaNumWorkers * ddaRetryQueueDepth
+  val triBatchQueueDepth = ddaTraceSlotCount
+  val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
 
   val sdfRetryQueueDepth = 128
-  val simInitHitRingbufDepth = 128
-  val simSdfHitQueueDepth = 128
+  val sdfFinalQueueDepth = 128
+  val sdfMissWritebackQueueDepth = 4
+  val renderOutputQueueDepth = 16
 
-  // Unused / reserved for future
-  val bvhReqQueueDepth = 16
-  val bvhLeafQueueDepth = 16
-  val bvhMissQueueDepth = 8
-  
   val normalMemDpiLatency = 3
   val triMemDpiLatency = 3
   val triRefMemDpiLatency = 2
@@ -70,8 +68,8 @@ object GlobalConfig {
   val fptointLatency = 1
   val fdivLatency = 10
 
-  val Trinum = 19347
-  val TriOriginalNum = 8554
+  val Trinum = 33205
+  val TriOriginalNum = 16000
 
   val GlobalSdfRes = 16
   val LocalSdfRes = 4
@@ -94,8 +92,8 @@ object GlobalConfig {
   val normalMemDataWidth = 3 * 32  // = 96 bits
 
   val subgridMetaMemAddrWidth = 32
-  val subgridMetaMemTriStartWidth = 24
-  val subgridMetaMemTriCountWidth = 8
+  val subgridMetaMemTriStartWidth = 22
+  val subgridMetaMemTriCountWidth = 10
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
@@ -106,13 +104,9 @@ object GlobalConfig {
   // SDF memory internal banking (for synthesis BlackBox)
   val sdfMemBankDepth = 4096
   val sdfMemUramCount = 64
-  val sdfMemLocalGridSize = 64
-
-  // BVH memory (unused currently, but configured for future)
-  val bvhMemAddrWidth = 32
-  val bvhMemNodeBytes = 32  // 6 floats bounds + 4 int32 node info
-  val bvhMemDataWidth = bvhMemNodeBytes * 8  // = 256 bits
-
+  val sdfMemLocalPerCell = LocalSdfRes * LocalSdfRes * LocalSdfRes
+  val sdfMemLocalLaneBits = log2Ceil(sdfMemLocalPerCell)
+  val sdfMemLocalGridSize = sdfMemLocalPerCell
 
   val addrWidth = 32
 
@@ -153,7 +147,6 @@ object GlobalConfig {
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
   val sdfLocalMemDepth = LocalCell
-  val bvhMemDepth = 65536          // nouse
 }
 case class FloatConfig(
                         expWidth: Int,
@@ -187,15 +180,6 @@ object FloatConfig {
 
 case class TriPeConfig(
   numPEs: Int = GlobalConfig.triMemNumPEs,
-  cfg: FloatConfig = FloatConfig.FP32
-) {
-  val addrWidth = GlobalConfig.addrWidth
-}
-
-case class BvhPeConfig(
-  stackDepth: Int = 64,
-  reqQueueDepth: Int = GlobalConfig.bvhReqQueueDepth,
-  leafQueueDepth: Int = GlobalConfig.bvhLeafQueueDepth,
   cfg: FloatConfig = FloatConfig.FP32
 ) {
   val addrWidth = GlobalConfig.addrWidth

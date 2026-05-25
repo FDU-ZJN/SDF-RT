@@ -28,6 +28,11 @@ bool mapPointToDdaGlobalSub(
     int& outSubIdx);
 
 void writePPM(const std::string& path, const std::vector<uint8_t>& img, int width, int height);
+bool replaceBlackWithBackground(
+    std::vector<uint8_t>& img,
+    int width,
+    int height,
+    const std::string& backgroundPath = "background.jpg");
 void writeSubgridTriCountHistogramPPM(
     const std::string& path,
     int globalRes,

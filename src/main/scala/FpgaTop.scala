@@ -59,7 +59,6 @@ class FpgaTop(
   val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
   val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), postHitQueueDepth)))
-  val postHitArb = Module(new RRArbiter(new RayIssue(c.cfg, c.addrWidth), 2))
   val postInitQs = Seq.fill(2)(Module(new Queue(new InitStageResp(c.cfg, c.addrWidth), postInitQueueDepth)))
 
   val setupReg        = RegInit(false.B)
@@ -95,8 +94,10 @@ class FpgaTop(
   ddaStage.io.grid_min := setupUnit.io.gridMin
   ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
   ddaStage.io.slot_release := traceController.io.slot_release
-  traceController.io.cmd_write.valid := ddaStage.io.cmd_write.valid
-  traceController.io.cmd_write.bits := ddaStage.io.cmd_write.bits
+  for (lane <- 0 until 2) {
+    traceController.io.cmd_write(lane).valid := ddaStage.io.cmd_write(lane).valid
+    traceController.io.cmd_write(lane).bits := ddaStage.io.cmd_write(lane).bits
+  }
   traceJobQueue.io.enq <> ddaStage.io.trace_job_out
   when(traceJobQueue.io.enq.valid) {
     assert(traceJobQueue.io.enq.ready, "FpgaTop traceJobQueue overflow")
@@ -163,28 +164,37 @@ class FpgaTop(
     postHitQs(lane).io.enq.bits.ray := postInitQs(lane).io.deq.bits.ray
     postHitQs(lane).io.enq.bits.meta := postInitQs(lane).io.deq.bits.meta
     postHitQs(lane).io.enq.bits.meta.slotId := commitQueue.io.allocSlot(lane)
-    postHitArb.io.in(lane) <> postHitQs(lane).io.deq
     postInitQs(lane).io.deq.ready := postInitDispatch
     when(hitPush) {
       assert(postHitQs(lane).io.enq.ready, s"FpgaTop postHitQ lane $lane overflow")
     }
   }
 
-  sdfStage.io.issue_in <> postHitArb.io.out
+  val sdfMissWbQs = Seq.fill(2)(Module(new Queue(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.sdfMissWritebackQueueDepth)))
 
-  val sdfOut = sdfStage.io.out.bits
-  val sdfOutValid = sdfStage.io.out.valid
-  val sdfOutHit = sdfOut.hit
+  for (lane <- 0 until 2) {
+    sdfStage.io.issue_in(lane) <> postHitQs(lane).io.deq
 
-  val sdfHitQ = Module(new Queue(new DdaTraversalReq(c.cfg, c.addrWidth), GlobalConfig.simSdfHitQueueDepth))
-  sdfHitQ.io.enq.valid := sdfOutValid && sdfOutHit
-  sdfHitQ.io.enq.bits.ray := sdfOut.ray
-  sdfHitQ.io.enq.bits.meta := sdfOut.meta
-  sdfHitQ.io.enq.bits.traceSlot := 0.U
-  when(sdfHitQ.io.enq.valid) {
-    assert(sdfHitQ.io.enq.ready, "FpgaTop sdfHitQ overflow")
+    val sdfOut = sdfStage.io.out(lane).bits
+    val sdfOutValid = sdfStage.io.out(lane).valid
+    val sdfOutHit = sdfOut.hit
+
+    val wb3 = Wire(new RenderResult(c.cfg, c.addrWidth))
+    wb3.meta := sdfOut.meta
+    wb3.hit := false.B
+    wb3.hitId := 0.U
+    wb3.rgb8 := 0.U
+
+    ddaStage.io.in(lane).valid := sdfOutValid && sdfOutHit
+    ddaStage.io.in(lane).bits.ray := sdfOut.ray
+    ddaStage.io.in(lane).bits.meta := sdfOut.meta
+    ddaStage.io.in(lane).bits.traceSlot := 0.U
+
+    sdfMissWbQs(lane).io.enq.valid := sdfOutValid && !sdfOutHit
+    sdfMissWbQs(lane).io.enq.bits := wb3
+
+    sdfStage.io.out(lane).ready := Mux(sdfOutHit, ddaStage.io.in(lane).ready, sdfMissWbQs(lane).io.enq.ready)
   }
-  ddaStage.io.in <> sdfHitQ.io.deq
 
   commitQueue.io.writeback.valid := renderStage.io.out.valid
   commitQueue.io.writeback.bits := renderStage.io.out.bits
@@ -195,14 +205,14 @@ class FpgaTop(
   wb2.meta.slotId := commitQueue.io.allocSlot(0)
   wb2.hit := false.B
   wb2.hitId := 0.U
-  wb2.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
+  wb2.rgb8 := 0.U
 
   val wb4 = Wire(new RenderResult(c.cfg, c.addrWidth))
   wb4.meta := postInitQs(1).io.deq.bits.meta
   wb4.meta.slotId := commitQueue.io.allocSlot(1)
   wb4.hit := false.B
   wb4.hitId := 0.U
-  wb4.rgb8 := Cat(0.U(8.W), 255.U(8.W), 0.U(8.W))
+  wb4.rgb8 := 0.U
 
   when(commitQueue.io.writeback2.ready) {
     initMissWb2ValidReg := false.B
@@ -226,24 +236,8 @@ class FpgaTop(
   commitQueue.io.writeback4.valid := initMissWb4ValidReg
   commitQueue.io.writeback4.bits := initMissWb4BitsReg
 
-  val wb3 = Wire(new RenderResult(c.cfg, c.addrWidth))
-  wb3.meta := sdfOut.meta
-  wb3.hit := false.B
-  wb3.hitId := 0.U
-  wb3.rgb8 := Cat(0.U(8.W), 0.U(8.W), 128.U(8.W))
-  val sdfWriteback3ValidReg = RegInit(false.B)
-  val sdfWriteback3BitsReg = Reg(new RenderResult(c.cfg, c.addrWidth))
-  when(commitQueue.io.writeback3.ready) {
-    sdfWriteback3ValidReg := false.B
-  }
-  when(sdfOutValid && !sdfOutHit) {
-    assert(!sdfWriteback3ValidReg || commitQueue.io.writeback3.ready, "FpgaTop sdf miss writeback buffer overflow")
-    sdfWriteback3ValidReg := true.B
-    sdfWriteback3BitsReg := wb3
-  }
-  commitQueue.io.writeback3.valid := sdfWriteback3ValidReg
-  commitQueue.io.writeback3.bits := sdfWriteback3BitsReg
-  sdfStage.io.out.ready := true.B
+  commitQueue.io.writeback3 <> sdfMissWbQs(0).io.deq
+  commitQueue.io.writeback5 <> sdfMissWbQs(1).io.deq
 
   val issuedCount = RegInit(0.U(pixelCountW.W))
   val retiredCount = RegInit(0.U(pixelCountW.W))
@@ -416,7 +410,7 @@ object FpgaTopGen {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=1,withUseFloatIP:Boolean=true): Unit = {
+  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=0,withUseFloatIP:Boolean=true): Unit = {
     println("Generating FPGA_TOP Verilog...")
     GlobalConfig.withMemImplMode(withMemImplMode) {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {

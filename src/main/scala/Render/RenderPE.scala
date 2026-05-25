@@ -18,9 +18,9 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val val_0_0  = "h00000000".U
   val val_0_15 = "h3E19999A".U   // 0.15f
   val val_1_0  = "h3F800000".U   // 1.0f
-  val yellowR  = val_1_0
-  val yellowG  = val_1_0
-  val yellowB  = val_0_0
+  val missR  = val_0_0
+  val missG  = val_0_0
+  val missB  = val_0_0
   // ── Stage 1: dot(normal, lightDir) ──────────────────────────────────────
   val dotUnit = Module(new DotProductUnit(cfg))
   dotUnit.io.a  := io.in_normal
@@ -46,11 +46,11 @@ class RenderPE(cfg: FloatConfig) extends Module {
   val id_sync    = PipeUtils.pipeData(io.hit_id,   totalLatency)
   val meta_sync  = PipeUtils.pipeData(io.in_meta,  totalLatency)
 
-  // ── 选色：命中用光照色，miss 用黄色 ─────────────────────────────────────
+  // ── 选色：命中用光照色，miss 用黑色 ─────────────────────────────────────
   val finalRGB = Seq(
-    Mux(hit_sync, clampedBrightness, yellowR),
-    Mux(hit_sync, clampedBrightness, yellowG),
-    Mux(hit_sync, clampedBrightness, yellowB)
+    Mux(hit_sync, clampedBrightness, missR),
+    Mux(hit_sync, clampedBrightness, missG),
+    Mux(hit_sync, clampedBrightness, missB)
   )
   def floatTo8bit(fp: UInt): UInt = {
     val exp  = fp(30, 23)

@@ -14,9 +14,9 @@ inline constexpr bool kFpgaMode = false;
 
 inline constexpr int kWidth = 1920;
 inline constexpr int kHeight = 1080;
-inline constexpr int kMaxWaitCycles = 10000;  // Increased for deep pipeline: RayDirCalc(82) + SimTop(SDF/DDA/Render)
+inline constexpr int kMaxWaitCycles = 10000;  // Ordered commit can hide long Trace tails behind one pixel pair.
 inline constexpr int kTriNumPE = 1;
-inline constexpr int kTriNumBanks = 4;
+inline constexpr int kTriNumBanks = 8;
 inline constexpr int kTriRefPackFactor = 16;
 
 inline constexpr int kSDFGlobalRes = 16;
@@ -31,7 +31,7 @@ inline constexpr int kSanityFullY = 145;
 inline constexpr int kSanityFullZ = 195;
 
 inline constexpr bool kUseComputedHybridSdf = false;
-inline constexpr bool kForceRebuildSdfCacheFpga = false;
+inline constexpr bool kForceRebuildSdfCacheFpga = true;
 inline constexpr float kLocalActiveBand = 0.15f;
 
 inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";

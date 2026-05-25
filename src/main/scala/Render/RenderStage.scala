@@ -38,6 +38,12 @@ class RenderStage(cfg: FloatConfig) extends Module {
 
   pe.io.in_normal := Mux(launchHit, normal_from_mem, zeroNormal)
   pe.io.in_valid  := mem.io.valid
-  io.out.bits := pe.io.out_result
-  io.out.valid := pe.io.out_valid
+
+  val outQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), GlobalConfig.renderOutputQueueDepth))
+  outQ.io.enq.valid := pe.io.out_valid
+  outQ.io.enq.bits := pe.io.out_result
+  when(pe.io.out_valid) {
+    assert(outQ.io.enq.ready, "RenderStage output queue overflow")
+  }
+  io.out <> outQ.io.deq
 }

@@ -8,7 +8,6 @@
 #include <string>
 #include <iostream>
 #include <cstring>
-#include <BVH.h>
 // NPZ loader
 #include <cnpy.h>
 #include <vector>
@@ -507,6 +506,9 @@ void build_hybrid_sdf_from_mesh(
         return std::vector<uint32_t>(uniq.begin(), uniq.end());
     };
 
+    const float localPositiveBand = activeBand;
+    const float localNegativeBand = -0.4f * activeBand;
+
     std::vector<std::array<int, 3>> activeCells;
     activeCells.reserve(globalTotal / 2);
 
@@ -523,7 +525,7 @@ void build_hybrid_sdf_from_mesh(
                 const size_t idx = static_cast<size_t>(gx + gy * globalResX + gz * globalResX * globalResY);
                 global_sdf_flat[idx] = sdf;
 
-                if (sdf <= activeBand && sdf>=-0.4*activeBand) {
+                if (sdf <= localPositiveBand && sdf >= localNegativeBand) {
                     activeCells.push_back({gx, gy, gz});
                 }
             }
@@ -582,10 +584,11 @@ void build_hybrid_sdf_from_mesh(
     }
 
     std::printf(
-        "[HybridSDF] built in-memory | global=(%zu,%zu,%zu) local=(%zu,%zu,%zu,%zu) active_band=%.6f num_cells=%zu\n",
+        "[HybridSDF] built in-memory | global=(%zu,%zu,%zu) local=(%zu,%zu,%zu,%zu) local_range=[%.6f, %.6f] num_cells=%zu\n",
         global_sdf_shape[0], global_sdf_shape[1], global_sdf_shape[2],
         local_sdf_shape[0], local_sdf_shape[1], local_sdf_shape[2], local_sdf_shape[3],
-        activeBand,
+        localNegativeBand,
+        localPositiveBand,
         num_cells);
 }
 
@@ -811,46 +814,6 @@ extern "C" void tri_ref_mem_read(int addr, const svOpenArrayHandle data) {
     }
 }
 
-extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data) {
-    if (data == nullptr) {
-        return;
-    }
-
-    auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
-    if (out == nullptr) {
-        return;
-    }
-
-    constexpr int kBytesPerBVHNode = 40; // 6 floats + 4 int32
-    const int totalBytes = svSize(data, 1);
-    if (totalBytes <= 0) {
-        return;
-    }
-
-    std::memset(out, 0, static_cast<size_t>(totalBytes));
-    const int nodeLanes = totalBytes / kBytesPerBVHNode;
-    for (int lane = 0; lane < nodeLanes; ++lane) {
-        const int nodeIdx = addr + lane;
-        if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= globalBVH.nodeCount()) {
-            continue;
-        }
-
-        const BVHNode& node = globalBVH.nodeAt(static_cast<size_t>(nodeIdx));
-        uint8_t* base = out + lane * kBytesPerBVHNode;
-
-        writeU32LE(base + 0,  floatToRawU32(node.bounds.min[0]));
-        writeU32LE(base + 4,  floatToRawU32(node.bounds.min[1]));
-        writeU32LE(base + 8,  floatToRawU32(node.bounds.min[2]));
-        writeU32LE(base + 12, floatToRawU32(node.bounds.max[0]));
-        writeU32LE(base + 16, floatToRawU32(node.bounds.max[1]));
-        writeU32LE(base + 20, floatToRawU32(node.bounds.max[2]));
-
-        writeU32LE(base + 24, static_cast<uint32_t>(node.left));
-        writeU32LE(base + 28, static_cast<uint32_t>(node.right));
-        writeU32LE(base + 32, static_cast<uint32_t>(node.triStart));
-        writeU32LE(base + 36, static_cast<uint32_t>(node.triCount));
-    }
-}
 void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,
@@ -1060,7 +1023,7 @@ void build_subgrid_triangle_index(
 
         const size_t span = j - i;
         const uint16_t count = static_cast<uint16_t>(
-            std::min<size_t>(span, 0xFFu));
+            std::min<size_t>(span, 0x3FFu));
         subgrid_tri_meta[key] = SubgridTriMeta{start, count};
         if (count > subgrid_max_tri_per_cell) {
             subgrid_max_tri_per_cell = count;

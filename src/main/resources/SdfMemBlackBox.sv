@@ -22,8 +22,8 @@ module SdfMemResourceBB #(
 
   localparam int FIXED_LATENCY     = 3;
   localparam int URAM_READ_LATENCY = FIXED_LATENCY - 1;
-  localparam int MAX_GLOBAL        = 4096;
-  localparam int MAX_LOCAL         = 131072;
+  localparam int MAX_GLOBAL        = GLOBAL_SDF_SIZE;
+  localparam int MAX_LOCAL         = LOCAL_SDF_SIZE;
   localparam int GLOBAL_BASE_ADDR  = 0;
   localparam int LOCAL_BASE_ADDR   = GLOBAL_SDF_SIZE;
   localparam int LOCAL_END_ADDR    = LOCAL_BASE_ADDR + LOCAL_SDF_SIZE;
@@ -31,13 +31,14 @@ module SdfMemResourceBB #(
   localparam int GLOBAL_DATA_W     = 32;
   localparam int LOCAL_DEPTH       = LOCAL_CELL_COUNT;
   localparam int LOCAL_ADDR_W      = $clog2(LOCAL_DEPTH);
+  localparam int LOCAL_LANE_W      = $clog2(LOCAL_PER_CELL);
   localparam int LOCAL_DATA_W      = 32 * LOCAL_PER_CELL;
 
   logic        global_wr_active_q;
   logic        local_wr_active_q;
   logic [11:0] global_wr_addr_q;
   logic [LOCAL_ADDR_W-1:0] local_wr_cell_q;
-  logic [5:0]  local_wr_lane_q;
+  logic [LOCAL_LANE_W-1:0] local_wr_lane_q;
   logic [31:0] wr_data_q;
   logic        global_wr_active_d;
   logic        local_wr_active_d;
@@ -66,7 +67,9 @@ module SdfMemResourceBB #(
       sdf_local_mem_init_words[init_idx] = '0;
     end
     for (init_cell = 0; init_cell < LOCAL_CELL_COUNT; init_cell = init_cell + 1) begin
-      sdf_local_mem[init_cell] = '0;
+      for (init_lane = 0; init_lane < LOCAL_PER_CELL; init_lane = init_lane + 1) begin
+        sdf_local_mem[init_cell][init_lane * 32 +: 32] = '0;
+      end
     end
 
     if ($value$plusargs("SDF_GLOBAL_MEM_FILE=%s", global_mem_file)) begin
@@ -116,8 +119,8 @@ module SdfMemResourceBB #(
       global_wr_active_q <= global_wr_active_d;
       local_wr_active_q  <= local_wr_active_d;
       global_wr_addr_q   <= wr_addr[11:0];
-      local_wr_cell_q    <= local_wr_offset_d[16:6];
-      local_wr_lane_q    <= local_wr_offset_d[5:0];
+      local_wr_cell_q    <= local_wr_offset_d[LOCAL_ADDR_W + LOCAL_LANE_W - 1:LOCAL_LANE_W];
+      local_wr_lane_q    <= local_wr_offset_d[LOCAL_LANE_W-1:0];
       wr_data_q          <= wr_data;
       globalIdx_s0       <= globalIdx;
       localIdx_s0        <= localIdx;
@@ -128,7 +131,7 @@ module SdfMemResourceBB #(
   logic [GLOBAL_ADDR_BITS-1:0] mapping_addr;
   logic [15:0]                 mapping_entry;
   logic                        has_local;
-  logic [10:0]                 cell_idx;
+  logic [LOCAL_ADDR_W-1:0]     cell_idx;
 
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:0];
 
@@ -137,20 +140,20 @@ module SdfMemResourceBB #(
   end
 
   assign has_local = mapping_entry[15];
-  assign cell_idx  = mapping_entry[10:0];
+  assign cell_idx  = mapping_entry[LOCAL_ADDR_W-1:0];
 
   logic [11:0]               global_rd_addr;
   logic [LOCAL_ADDR_W-1:0]   local_rd_cell_addr;
-  logic [5:0]                local_rd_lane;
+  logic [LOCAL_LANE_W-1:0]  local_rd_lane;
   logic                      global_in_range;
   logic                      local_in_range;
 
   assign global_rd_addr = globalIdx_s0[11:0];
   assign local_rd_cell_addr = cell_idx;
-  assign local_rd_lane      = localIdx_s0[5:0];
+  assign local_rd_lane      = localIdx_s0[LOCAL_LANE_W-1:0];
   assign global_in_range = (globalIdx_s0 < MAX_GLOBAL);
   assign local_in_range  = has_local
-                         && ({21'b0, cell_idx} < LOCAL_CELL_COUNT)
+                         && ({21'b0, cell_idx} < 33'(LOCAL_CELL_COUNT))
                          && (localIdx_s0 < LOCAL_PER_CELL);
 
   logic [11:0]              global_uram_addr;
@@ -195,7 +198,7 @@ module SdfMemResourceBB #(
   logic [URAM_READ_LATENCY-1:0] use_local_pipe;
   logic [URAM_READ_LATENCY-1:0] global_ok_pipe;
   logic [URAM_READ_LATENCY-1:0] local_ok_pipe;
-  logic [5:0]                   local_lane_pipe [URAM_READ_LATENCY-1:0];
+  logic [LOCAL_LANE_W-1:0]      local_lane_pipe [URAM_READ_LATENCY-1:0];
 
   always_ff @(posedge clk) begin
     if (reset) begin

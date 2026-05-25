@@ -1,5 +1,7 @@
 *.mp4
 *.png
+*.jpg
+*.jpeg
 *.npz
 *.bin
 *.vcd
@@ -31,7 +33,16 @@ target/
 build/
 test_run_dir/
 vivado/
+ZCU104_vivado/
 ip_repo/
+.cache/
+.codex-home/
+.sbt/
+.sbt-boot/
+
+# Generated analysis outputs
+csrc/*blackspot*
+csrc/tripe_hit_step_hist.csv
 
 # IDE / tool metadata
 .idea/

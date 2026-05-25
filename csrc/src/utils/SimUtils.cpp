@@ -4,9 +4,12 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+
+#include <jpeglib.h>
 
 uint32_t floatToU32(float v) {
     uint32_t u = 0;
@@ -115,6 +118,113 @@ void writePPM(const std::string& path, const std::vector<uint8_t>& img, int widt
     }
     ofs << "P6\n" << width << " " << height << "\n255\n";
     ofs.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+}
+
+namespace {
+
+std::string resolveBackgroundPath(const std::string& path) {
+    if (std::filesystem::exists(path)) {
+        return path;
+    }
+
+    const std::filesystem::path csrcPath = std::filesystem::path("csrc") / path;
+    if (std::filesystem::exists(csrcPath)) {
+        return csrcPath.string();
+    }
+
+    return path;
+}
+
+std::vector<uint8_t> loadJpegRgb(const std::string& path, int& width, int& height) {
+    FILE* fp = std::fopen(path.c_str(), "rb");
+    if (fp == nullptr) {
+        throw std::runtime_error("failed to open background jpeg: " + path);
+    }
+
+    jpeg_decompress_struct cinfo{};
+    jpeg_error_mgr jerr{};
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    jpeg_stdio_src(&cinfo, fp);
+    jpeg_read_header(&cinfo, TRUE);
+    cinfo.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&cinfo);
+
+    width = static_cast<int>(cinfo.output_width);
+    height = static_cast<int>(cinfo.output_height);
+    const int channels = static_cast<int>(cinfo.output_components);
+    if (width <= 0 || height <= 0 || channels != 3) {
+        jpeg_finish_decompress(&cinfo);
+        jpeg_destroy_decompress(&cinfo);
+        std::fclose(fp);
+        throw std::runtime_error("unsupported background jpeg format: " + path);
+    }
+
+    std::vector<uint8_t> image(static_cast<size_t>(width) * static_cast<size_t>(height) * 3u);
+    std::vector<uint8_t> row(static_cast<size_t>(width) * 3u);
+    while (cinfo.output_scanline < cinfo.output_height) {
+        JSAMPROW rowPtr = row.data();
+        const JDIMENSION y = cinfo.output_scanline;
+        jpeg_read_scanlines(&cinfo, &rowPtr, 1);
+        std::memcpy(
+            image.data() + static_cast<size_t>(y) * static_cast<size_t>(width) * 3u,
+            row.data(),
+            row.size());
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    std::fclose(fp);
+    return image;
+}
+
+} // namespace
+
+bool replaceBlackWithBackground(
+    std::vector<uint8_t>& img,
+    int width,
+    int height,
+    const std::string& backgroundPath) {
+    if (width <= 0 || height <= 0 || img.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3u) {
+        throw std::runtime_error("invalid image buffer for background compositing");
+    }
+
+    const std::string resolvedPath = resolveBackgroundPath(backgroundPath);
+    int bgWidth = 0;
+    int bgHeight = 0;
+    std::vector<uint8_t> bg;
+    try {
+        bg = loadJpegRgb(resolvedPath, bgWidth, bgHeight);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[Background] %s; keeping black pixels.\n", e.what());
+        return false;
+    }
+
+    size_t replaced = 0;
+    for (int y = 0; y < height; ++y) {
+        const int by = static_cast<int>((static_cast<int64_t>(y) * bgHeight) / height);
+        for (int x = 0; x < width; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3u;
+            if (img[idx + 0] != 0 || img[idx + 1] != 0 || img[idx + 2] != 0) {
+                continue;
+            }
+
+            const int bx = static_cast<int>((static_cast<int64_t>(x) * bgWidth) / width);
+            const size_t bgIdx = (static_cast<size_t>(by) * static_cast<size_t>(bgWidth) + static_cast<size_t>(bx)) * 3u;
+            img[idx + 0] = bg[bgIdx + 0];
+            img[idx + 1] = bg[bgIdx + 1];
+            img[idx + 2] = bg[bgIdx + 2];
+            ++replaced;
+        }
+    }
+
+    std::printf(
+        "[Background] replaced %zu black pixels using %s (%dx%d)\n",
+        replaced,
+        resolvedPath.c_str(),
+        bgWidth,
+        bgHeight);
+    return true;
 }
 
 void writeSubgridTriCountHistogramPPM(

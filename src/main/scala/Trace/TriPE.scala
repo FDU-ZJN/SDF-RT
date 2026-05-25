@@ -51,14 +51,14 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val noMoreBatches = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val activeEpoch = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val batchRefIdx = RegInit(VecInit(Seq.fill(ctxCount)(0.U(c.addrWidth.W))))
-  private val batchRefsRemaining = RegInit(VecInit(Seq.fill(ctxCount)(0.U(16.W))))
+  private val batchRefIdx = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
+  private val batchRefsRemaining = Reg(Vec(ctxCount, UInt(16.W)))
   private val batchInProgress = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultCapturePending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
   private val refBuffer = Reg(Vec(ctxCount, Vec(refPackFactor, UInt(triIdWidth.W))))
-  private val refBufIdx = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refPackShift.W))))
-  private val refBufCount = RegInit(VecInit(Seq.fill(ctxCount)(0.U(refCountWidth.W))))
+  private val refBufIdx = Reg(Vec(ctxCount, UInt(refPackShift.W)))
+  private val refBufCount = Reg(Vec(ctxCount, UInt(refCountWidth.W)))
   private val refInflight = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
   class RefWord extends Bundle {
@@ -69,10 +69,10 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val bestT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val bestId = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
-  private val hasHit = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
-  private val triOutstanding = RegInit(VecInit(Seq.fill(ctxCount)(0.U(10.W))))
+  private val hasHit = Reg(Vec(ctxCount, Bool()))
+  private val triOutstanding = Reg(Vec(ctxCount, UInt(10.W)))
 
-  private val resultHitReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val resultHitReg = Reg(Vec(ctxCount, Bool()))
   private val resultIdReg = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
   private val resultTReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))

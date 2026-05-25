@@ -101,12 +101,10 @@ extern "C" int subgrid_tri_count_read(unsigned int global_idx, unsigned int loca
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data);
 extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle data);
 extern "C" void tri_ref_mem_read(int addr, const svOpenArrayHandle data);
-extern "C" void bvh_mem_read(int addr, const svOpenArrayHandle data);
 
 // Memory export utilities for Vivado simulation with $readmemh
 void export_triangle_mem(const std::string& filename, int numPEs, int numBanks = 1, int bankId = 0);
 void export_triangle_ref_mem(const std::string& filename, int packFactor = rt::config::kTriRefPackFactor);
-void export_bvh_mem(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
 void export_sdf_local_mapping(const std::string& filename);

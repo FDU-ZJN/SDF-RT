@@ -2,8 +2,6 @@
 // This file should be compiled separately and linked with main.cpp
 
 #include <Mem.h>
-#include <BVH.h>
-#include <SDF.h>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -12,8 +10,8 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <filesystem>
 
-// External declarations for SDF functions (defined in SDF.cpp)
 extern float get_global_sdf(int i, int j, int k);
 extern float get_local_sdf(int cell_idx, int li, int lj, int lk);
 
@@ -138,50 +136,6 @@ void export_triangle_ref_mem(const std::string& filename, int packFactor) {
               << " words, pack " << packFactor << ")" << std::endl;
 }
 
-// Export BVH memory to .mem file
-void export_bvh_mem(const std::string& filename) {
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
-    }
-
-    out << "// BVH Memory Initialization File" << std::endl;
-    out << "// Format: Each line = 1 BVH node (8 words: 6 floats bounds + 4 int32)" << std::endl;
-    out << "// $readmemh format: @address data..." << std::endl;
-    out << std::endl;
-
-    for (size_t nodeIdx = 0; nodeIdx < globalBVH.nodeCount(); ++nodeIdx) {
-        const BVHNode& node = globalBVH.nodeAt(nodeIdx);
-        
-        out << "@" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) 
-            << static_cast<uint32_t>(nodeIdx) << std::endl;
-        
-        // Bounds: min[3], max[3] (6 floats = 6 words)
-        out << u32ToHex(floatToRawU32(node.bounds.min[0])) << " ";
-        out << u32ToHex(floatToRawU32(node.bounds.min[1])) << " ";
-        out << u32ToHex(floatToRawU32(node.bounds.min[2])) << " ";
-        out << u32ToHex(floatToRawU32(node.bounds.max[0])) << " ";
-        out << u32ToHex(floatToRawU32(node.bounds.max[1])) << " ";
-        out << u32ToHex(floatToRawU32(node.bounds.max[2])) << " ";
-        
-        // Children and triangle info (2 more words to make 8 total)
-        // Pack: left(16bits) | right(16bits) | triStart(32bits) | triCount(16bits) | pad(16bits)
-        uint32_t packed0 = (static_cast<uint32_t>(node.left) << 16) | 
-                          (static_cast<uint32_t>(node.right) & 0xFFFF);
-        uint32_t packed1 = static_cast<uint32_t>(node.triStart);
-        uint32_t packed2 = (static_cast<uint32_t>(node.triCount) << 16);
-        
-        out << u32ToHex(packed0) << " ";
-        out << u32ToHex(packed1) << " ";
-        out << u32ToHex(packed2) << std::endl;
-    }
-
-    out.close();
-    std::cout << "[MemExport] Exported " << globalBVH.nodeCount() 
-              << " BVH nodes to " << filename << std::endl;
-}
-
 // Export normal memory to .mem file
 void export_normal_mem(const std::string& filename) {
     const auto& normal_store = normals;
@@ -304,7 +258,7 @@ void export_sdf_local_mapping(const std::string& filename) {
 
     out << "// SDF Local Mapping File" << std::endl;
     out << "// Format: Each address = Global SDF Index (0..4095)" << std::endl;
-    out << "// Data: [15]=valid, [10:0]=cell_idx (in 1998 cells)" << std::endl;
+    out << "// Data: [15]=valid, [11:0]=cell_idx" << std::endl;
     out << "// Linear $readmemh/XPM format: one 16-bit word per address, no @address markers" << std::endl;
     out << std::endl;
 
@@ -322,8 +276,8 @@ void export_sdf_local_mapping(const std::string& filename) {
         int cell_idx = mapping[globalLinear];
         uint16_t entry = 0;
         if (cell_idx >= 0) {
-            // valid bit (15) | cell_idx (10:0)
-            entry = (1 << 15) | (cell_idx & 0x7FF);
+            // valid bit (15) | cell_idx (11:0)
+            entry = (1 << 15) | (cell_idx & 0x0FFF);
         }
 
         out << std::hex << std::uppercase << std::setfill('0') << std::setw(4)
@@ -344,7 +298,7 @@ void export_subgrid_meta_mem(const std::string& filename) {
     }
 
     out << "// Subgrid Meta Memory Initialization File" << std::endl;
-    out << "// Format: Each line = packed [31:8]=triStart(uint24), [7:0]=triCount(uint8)" << std::endl;
+    out << "// Format: Each line = packed [31:10]=triStart(uint22), [9:0]=triCount(uint10)" << std::endl;
     out << "// Linear $readmemh/XPM format: one 32-bit word per address, no @address markers" << std::endl;
     out << std::endl;
 
@@ -366,8 +320,8 @@ void export_subgrid_meta_mem(const std::string& filename) {
             uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
 
             uint32_t packed_value =
-                ((triStart & 0xFFFFFFu) << 8) |
-                static_cast<uint32_t>(triCount & 0xFFu);
+                ((triStart & 0x3FFFFFu) << 10) |
+                static_cast<uint32_t>(triCount & 0x3FFu);
 
             out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
                 << packed_value << std::endl;
@@ -592,7 +546,7 @@ void export_sdf_local_mapping_coe(const std::string& filename) {
         uint16_t entry = 0;
         if (cell_idx >= 0) {
             // valid bit (15) | cell_idx (10:0)
-            entry = (1 << 15) | (cell_idx & 0x7FF);
+            entry = (1 << 15) | (cell_idx & 0x0FFF);
         }
 
         std::ostringstream oss;
@@ -630,7 +584,7 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 
     // COE file format for Xilinx block RAM
     out << "; Subgrid Meta Memory COE File for Vivado" << std::endl;
-    out << "; Format: 32-bit width per entry [31:8]=triStart, [7:0]=triCount" << std::endl;
+    out << "; Format: 32-bit width per entry [31:10]=triStart, [9:0]=triCount" << std::endl;
     out << "; Total entries: " << totalEntries << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
     out << "memory_initialization_vector=" << std::endl;
@@ -644,8 +598,8 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
             uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
 
             uint32_t packed_value =
-                ((triStart & 0xFFFFFFu) << 8) |
-                static_cast<uint32_t>(triCount & 0xFFu);
+                ((triStart & 0x3FFFFFu) << 10) |
+                static_cast<uint32_t>(triCount & 0x3FFu);
 
             std::ostringstream oss;
             oss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << packed_value;
@@ -664,6 +618,7 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 // Master export function
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
+    std::filesystem::create_directories(output_dir);
 
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem(
@@ -673,7 +628,6 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
             bank);
     }
     export_triangle_ref_mem(output_dir + "/triangle_ref_mem.mem", rt::config::kTriRefPackFactor);
-    export_bvh_mem(output_dir + "/bvh_mem.mem");
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
     export_sdf_local_mapping(output_dir + "/sdf_local_mapping.mem");

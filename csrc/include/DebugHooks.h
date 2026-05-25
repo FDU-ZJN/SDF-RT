@@ -12,11 +12,6 @@ struct RayWorkItem {
     int px = 0;
     int py = 0;
     std::array<float, 3> dir = {0.0f, 0.0f, 0.0f};
-    int expectedTriId = -1;
-    int expectedCompactTriId = -1;
-    std::array<uint8_t, 3> expectedRgb = {0, 0, 0};
-    int swGlobalIdx = -1;
-    int swSubIdx = -1;
 };
 
 struct DebugOptions {
@@ -49,15 +44,6 @@ public:
     bool onPixelRetiredControl(const RayWorkItem& item);
 
     void onPixelRetired(const RayWorkItem& item, int hwTriId) const;
-    void onMismatch(
-        const RayWorkItem& item,
-        int hwTriId,
-        const std::array<float, 3>& gridMin,
-        const std::array<float, 3>& gridMax,
-        int globalRes,
-        int subRes,
-        int ddaTraceSteps) const;
-
 private:
     bool pixelMatches(const RayWorkItem& item, int x, int y) const;
     void openVcdIfNeeded(VSimTop* dut);

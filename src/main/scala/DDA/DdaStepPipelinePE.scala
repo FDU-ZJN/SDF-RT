@@ -18,6 +18,8 @@ class DdaStepPipelinePE(
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
+    val subgrid_mem_req = Valid(new DdaSubgridMetaReq(addrWidth))
+    val subgrid_mem_resp = Input(Valid(new DdaSubgridMetaResp))
     val out = Decoupled(new DdaStepResult(cfg, addrWidth))
   })
 
@@ -34,8 +36,6 @@ class DdaStepPipelinePE(
 
   private def negStep(isNeg: Bool): SInt =
     Mux(isNeg, (-1).S((addrWidth + 1).W), 1.S((addrWidth + 1).W))
-
-  val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = memLatency))
 
   io.in.ready := true.B
   val inFire = io.in.fire
@@ -59,11 +59,9 @@ class DdaStepPipelinePE(
   val globalLinear = globalX + globalYScaled + globalZScaled
   val subLinear = subCellX + subYScaled + subZScaled
 
-  subgridMem.io.clk := clock
-  subgridMem.io.reset := reset
-  subgridMem.io.globalIdx := globalLinear
-  subgridMem.io.subIdx := subLinear
-  subgridMem.io.en := nonTerminalFire
+  io.subgrid_mem_req.valid := nonTerminalFire
+  io.subgrid_mem_req.bits.globalIdx := globalLinear
+  io.subgrid_mem_req.bits.subIdx := subLinear
 
   val cmpXY = Module(new FCMP(cfg))
   val cmpXZ = Module(new FCMP(cfg))
@@ -102,12 +100,12 @@ class DdaStepPipelinePE(
   val addXAtOut = pipeUInt(addTMaxX.io.res, totalStepLatency - cfg.faddLatency)
   val addYAtOut = pipeUInt(addTMaxY.io.res, totalStepLatency - cfg.faddLatency)
   val addZAtOut = pipeUInt(addTMaxZ.io.res, totalStepLatency - cfg.faddLatency)
-  val triStartAtOut = pipeUInt(subgridMem.io.triStart, totalStepLatency - memLatency)
-  val triCountAtOut = pipeUInt(subgridMem.io.triCount, totalStepLatency - memLatency)
+  val triStartAtOut = pipeUInt(io.subgrid_mem_resp.bits.triStart, totalStepLatency - memLatency)
+  val triCountAtOut = pipeUInt(io.subgrid_mem_resp.bits.triCount, totalStepLatency - memLatency)
 
   val nonTerminalAtMem = pipeBool(nonTerminalFire, memLatency)
   when(nonTerminalAtMem) {
-    assert(subgridMem.io.valid, "DdaStepPipelinePE expects fixed-latency subgridMem response")
+    assert(io.subgrid_mem_resp.valid, "DdaStepPipelinePE expects fixed-latency subgridMem response")
   }
 
   val stepNegXAtOut = ctxAtOut.ray.dir.x(cfg.totalWidth - 1)

@@ -51,7 +51,7 @@ module TriangleMem #(
     .READ_LATENCY_A     (LATENCY - 1),
     .ECC_MODE           ("no_ecc"),
     .AUTO_SLEEP_TIME    (0),
-    .CASCADE_HEIGHT     (5),
+    .CASCADE_HEIGHT     (0),
     .SIM_ASSERT_CHK     (0),
     .WAKEUP_TIME        ("disable_sleep"),
     .READ_RESET_VALUE_A ("0")
