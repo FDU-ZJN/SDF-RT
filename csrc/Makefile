@@ -32,12 +32,19 @@ else ifeq ($(MODE),useblackbox)
              +TRI_MEM_BANK2_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank2.mem \
              +TRI_MEM_BANK3_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank3.mem \
              +TRI_MEM_BANK4_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank4.mem \
-             +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
-             +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
-             +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
-             +TRI_REF_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_ref_mem.mem \
-             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
-             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
+	             +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
+	             +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
+	             +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
+	             +TRI_MEM_BANK8_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank8.mem \
+	             +TRI_MEM_BANK9_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank9.mem \
+	             +TRI_MEM_BANK10_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank10.mem \
+	             +TRI_MEM_BANK11_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank11.mem \
+	             +TRI_MEM_BANK12_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank12.mem \
+	             +TRI_MEM_BANK13_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank13.mem \
+	             +TRI_MEM_BANK14_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank14.mem \
+	             +TRI_MEM_BANK15_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank15.mem \
+	             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
+	             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
 else ifeq ($(MODE),fpga)
 	VERILOG_DIR := $(ROOT_DIR)/build/fpga
 	TOP_MODULE := FpgaTop
@@ -53,12 +60,19 @@ else ifeq ($(MODE),fpga)
              +TRI_MEM_BANK2_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank2.mem \
              +TRI_MEM_BANK3_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank3.mem \
              +TRI_MEM_BANK4_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank4.mem \
-             +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
-             +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
-             +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
-             +TRI_REF_MEM_FILE=$(VIVADO_MEM_DIR)/triangle_ref_mem.mem \
-             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
-             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
+	             +TRI_MEM_BANK5_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank5.mem \
+	             +TRI_MEM_BANK6_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank6.mem \
+	             +TRI_MEM_BANK7_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank7.mem \
+	             +TRI_MEM_BANK8_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank8.mem \
+	             +TRI_MEM_BANK9_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank9.mem \
+	             +TRI_MEM_BANK10_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank10.mem \
+	             +TRI_MEM_BANK11_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank11.mem \
+	             +TRI_MEM_BANK12_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank12.mem \
+	             +TRI_MEM_BANK13_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank13.mem \
+	             +TRI_MEM_BANK14_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank14.mem \
+	             +TRI_MEM_BANK15_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank15.mem \
+	             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
+	             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
 else
 	$(error Unknown MODE "$(MODE)". Use "noblackbox", "useblackbox", or "fpga")
 endif

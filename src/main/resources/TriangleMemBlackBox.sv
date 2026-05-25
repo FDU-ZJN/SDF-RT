@@ -51,11 +51,19 @@ module TriangleMemResourceBB #(
       2: mem_loaded = $value$plusargs("TRI_MEM_BANK2_FILE=%s", triangle_mem_file);
       3: mem_loaded = $value$plusargs("TRI_MEM_BANK3_FILE=%s", triangle_mem_file);
       4: mem_loaded = $value$plusargs("TRI_MEM_BANK4_FILE=%s", triangle_mem_file);
-      5: mem_loaded = $value$plusargs("TRI_MEM_BANK5_FILE=%s", triangle_mem_file);
-      6: mem_loaded = $value$plusargs("TRI_MEM_BANK6_FILE=%s", triangle_mem_file);
-      7: mem_loaded = $value$plusargs("TRI_MEM_BANK7_FILE=%s", triangle_mem_file);
-      default: mem_loaded = $value$plusargs("TRI_MEM_FILE=%s", triangle_mem_file);
-    endcase
+	      5: mem_loaded = $value$plusargs("TRI_MEM_BANK5_FILE=%s", triangle_mem_file);
+	      6: mem_loaded = $value$plusargs("TRI_MEM_BANK6_FILE=%s", triangle_mem_file);
+	      7: mem_loaded = $value$plusargs("TRI_MEM_BANK7_FILE=%s", triangle_mem_file);
+	      8: mem_loaded = $value$plusargs("TRI_MEM_BANK8_FILE=%s", triangle_mem_file);
+	      9: mem_loaded = $value$plusargs("TRI_MEM_BANK9_FILE=%s", triangle_mem_file);
+	      10: mem_loaded = $value$plusargs("TRI_MEM_BANK10_FILE=%s", triangle_mem_file);
+	      11: mem_loaded = $value$plusargs("TRI_MEM_BANK11_FILE=%s", triangle_mem_file);
+	      12: mem_loaded = $value$plusargs("TRI_MEM_BANK12_FILE=%s", triangle_mem_file);
+	      13: mem_loaded = $value$plusargs("TRI_MEM_BANK13_FILE=%s", triangle_mem_file);
+	      14: mem_loaded = $value$plusargs("TRI_MEM_BANK14_FILE=%s", triangle_mem_file);
+	      15: mem_loaded = $value$plusargs("TRI_MEM_BANK15_FILE=%s", triangle_mem_file);
+	      default: mem_loaded = $value$plusargs("TRI_MEM_FILE=%s", triangle_mem_file);
+	    endcase
 
     if (!mem_loaded && (INIT_FILE != "")) begin
       triangle_mem_file = INIT_FILE;

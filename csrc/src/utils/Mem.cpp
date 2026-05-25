@@ -739,13 +739,13 @@ extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle da
         return;
     }
 
-    const auto& tri_store = triangles;
+    const auto& tri_store = triangles_compact.empty() ? triangles : triangles_compact;
 
     std::memset(out, 0, static_cast<size_t>(totalBytes));
     const int triCount = totalBytes / kBytesPerTri;
 
     for (int lane = 0; lane < triCount; ++lane) {
-        const int triIdx = bank + ((addr * triCount) + lane) * rt::config::kTriNumBanks;
+        const int triIdx = ((addr * rt::config::kTriNumBanks) + bank) * triCount + lane;
         if (triIdx < 0 || static_cast<size_t>(triIdx) >= tri_store.size()) {
             continue;
         }
@@ -779,7 +779,7 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
         return; 
     }
     std::memset(out, 0, static_cast<size_t>(totalBytes));
-    const auto& normal_store = normals;
+    const auto& normal_store = normals_compact.empty() ? normals : normals_compact;
 
     if (addr < 0 || static_cast<size_t>(addr) >= normal_store.size()) {
         return;
@@ -788,30 +788,6 @@ extern "C" void normal_mem_read(int addr, const svOpenArrayHandle data) {
     writeU32LE(out + 0,  floatToRawU32(n[0])); // x
     writeU32LE(out + 4,  floatToRawU32(n[1])); // y
     writeU32LE(out + 8,  floatToRawU32(n[2])); // z
-}
-
-extern "C" void tri_ref_mem_read(int addr, const svOpenArrayHandle data) {
-    if (data == nullptr) return;
-    auto* out = static_cast<uint8_t*>(svGetArrayPtr(data));
-    if (out == nullptr) return;
-
-    const int totalBytes = svSize(data, 1);
-    if (totalBytes <= 0) {
-        return;
-    }
-
-    std::memset(out, 0, static_cast<size_t>(totalBytes));
-    const int refsPerWord = totalBytes / 2;
-    const size_t baseIdx = static_cast<size_t>(std::max(addr, 0)) * static_cast<size_t>(refsPerWord);
-    for (int i = 0; i < refsPerWord; ++i) {
-        const size_t refIdx = baseIdx + static_cast<size_t>(i);
-        if (refIdx >= triangles_compact_src_ids.size()) {
-            continue;
-        }
-        const uint16_t triId = static_cast<uint16_t>(triangles_compact_src_ids[refIdx] & 0xFFFFu);
-        out[i * 2 + 0] = static_cast<uint8_t>(triId & 0xFFu);
-        out[i * 2 + 1] = static_cast<uint8_t>((triId >> 8) & 0xFFu);
-    }
 }
 
 void loadModelFromObj(
@@ -1006,9 +982,11 @@ void build_subgrid_triangle_index(
         return a.second < b.second;
     });
 
-    triangles_compact_src_ids.reserve(refs.size());
     triangles_compact.clear();
     normals_compact.clear();
+    triangles_compact_src_ids.reserve(refs.size());
+    triangles_compact.reserve(refs.size());
+    normals_compact.reserve(refs.size());
 
     size_t i = 0;
     while (i < refs.size()) {
@@ -1018,6 +996,8 @@ void build_subgrid_triangle_index(
         while (j < refs.size() && refs[j].first == key) {
             const uint32_t triId = refs[j].second;
             triangles_compact_src_ids.push_back(triId);
+            triangles_compact.push_back(triangles[triId]);
+            normals_compact.push_back(normals[triId]);
             ++j;
         }
 
@@ -1098,6 +1078,10 @@ bool get_compact_triangle_by_addr(
         return false;
     }
     out_original_tri_id = static_cast<int>(triangles_compact_src_ids[compact_addr]);
+    if (compact_addr < triangles_compact.size()) {
+        out_tri = triangles_compact[compact_addr];
+        return true;
+    }
     if (out_original_tri_id < 0 || static_cast<size_t>(out_original_tri_id) >= triangles.size()) {
         return false;
     }

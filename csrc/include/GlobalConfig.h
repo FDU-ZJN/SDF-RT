@@ -15,9 +15,8 @@ inline constexpr bool kFpgaMode = false;
 inline constexpr int kWidth = 1920;
 inline constexpr int kHeight = 1080;
 inline constexpr int kMaxWaitCycles = 10000;  // Ordered commit can hide long Trace tails behind one pixel pair.
-inline constexpr int kTriNumPE = 2;
+inline constexpr int kTriNumPE = 1;
 inline constexpr int kTriNumBanks = 8;
-inline constexpr int kTriRefPackFactor = 32;
 
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;

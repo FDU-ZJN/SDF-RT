@@ -44,6 +44,14 @@ ip_repo/
 csrc/*blackspot*
 csrc/tripe_hit_step_hist.csv
 
+# Local notes and scratch assets
+AGENTS.md
+docs/
+remote.sh
+software_backup/material.mtl
+software_backup/normalize_ww.py
+论文参考/
+
 # IDE / tool metadata
 .idea/
 .vscode/
