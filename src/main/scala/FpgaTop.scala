@@ -3,7 +3,6 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 import DDA.DDA
-import Render.RenderStage
 import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
 import Trace.TraceController
 
@@ -14,7 +13,7 @@ import scala.io.Source
 class FpgaTop(
                maxWidth:        Int = GlobalConfig.frameWidth,
                maxHeight:       Int = GlobalConfig.frameHeight,
-               pixelQueueDepth: Int = GlobalConfig.pixelQueueDepth
+               traceRespQueueDepth: Int = GlobalConfig.pixelQueueDepth
              ) extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32.copy())
   private val sdfCfg = SdfPeConfig(cfg = c.cfg)
@@ -36,16 +35,12 @@ class FpgaTop(
 
     val frame_start      = Input(Bool())
 
-    val pixel_valid      = Output(Bool())
-    val pixel_ready      = Input(Bool())
-    val pixel_rgb8       = Output(UInt((24 * 2).W))
-    val pixel_hit_id     = Output(UInt((c.addrWidth * 2).W))
+    val trace_resp_valid = Output(Bool())
+    val trace_resp_slotId = Output(Vec(2, UInt(GlobalConfig.slotBits.W)))
+    val trace_resp_hit    = Output(Vec(2, Bool()))
+    val trace_resp_hitId  = Output(Vec(2, UInt(c.addrWidth.W)))
 
-    val frame_done       = Output(Bool())
-    val busy             = Output(Bool())
-    val frame_count      = Output(UInt(32.W))
-    val validation_error = Output(Bool())
-    val stall_detected   = Output(Bool())
+    val trace_resp_ready = Input(Bool())
 
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
@@ -58,7 +53,6 @@ class FpgaTop(
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
   val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
   val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
-  val renderStage = Module(new RenderStage(c.cfg))
   val commitQueue = Module(new CommitQueue(c.cfg))
   val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), postHitQueueDepth)))
   val postInitQs = Seq.fill(2)(Module(new Queue(new InitStageResp(c.cfg, c.addrWidth), postInitQueueDepth)))
@@ -131,7 +125,22 @@ class FpgaTop(
     assert(traceJobQueue.io.enq.ready, "FpgaTop traceJobQueue overflow")
   }
   traceController.io.job_in <> traceJobQueue.io.deq
-  renderStage.io.in <> traceController.io.result_out
+
+  val traceWbQ = Module(new Queue(new RenderResult(c.cfg, c.addrWidth), 16))
+  traceWbQ.io.enq.valid := traceController.io.result_out.valid
+  traceWbQ.io.enq.bits.meta := traceController.io.result_out.bits.meta
+  traceWbQ.io.enq.bits.hit := traceController.io.result_out.bits.hit
+  traceWbQ.io.enq.bits.hitId := traceController.io.result_out.bits.hitId
+  traceWbQ.io.enq.bits.rgb8 := 0.U
+  traceController.io.result_out.ready := traceWbQ.io.enq.ready
+
+  commitQueue.io.writeback <> traceWbQ.io.deq
+  commitQueue.io.writeback6.valid := false.B
+  commitQueue.io.writeback6.bits  := 0.U.asTypeOf(new RenderResult(c.cfg, c.addrWidth))
+  commitQueue.io.traceDone(0).valid := false.B
+  commitQueue.io.traceDone(0).bits  := 0.U
+  commitQueue.io.traceDone(1).valid := false.B
+  commitQueue.io.traceDone(1).bits  := 0.U
 
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)
@@ -140,13 +149,11 @@ class FpgaTop(
   val totalPixelsRuntime = resXReg * resYReg
   val totalPairsRuntime = totalPixelsRuntime >> 1
   val frameCountReg = RegInit(0.U(32.W))
-  io.frame_count := frameCountReg
 
   val frameStartReg   = RegNext(io.frame_start, false.B)
   val frameStartPulse = io.frame_start && !frameStartReg
 
   val frameDonePulse = WireInit(false.B)
-  io.frame_done := frameDonePulse
 
   val setupReady = setupUnit.io.setup_finish
   val inputPair = WireDefault(false.B)
@@ -225,10 +232,6 @@ class FpgaTop(
     sdfStage.io.out(lane).ready := Mux(sdfOutHit, ddaStage.io.in(lane).ready, sdfMissWbQs(lane).io.enq.ready)
   }
 
-  commitQueue.io.writeback.valid := renderStage.io.out.valid
-  commitQueue.io.writeback.bits := renderStage.io.out.bits
-  renderStage.io.out.ready := commitQueue.io.writeback.ready
-
   val wb2 = Wire(new RenderResult(c.cfg, c.addrWidth))
   wb2.meta := postInitQs(0).io.deq.bits.meta
   wb2.meta.slotId := commitQueue.io.allocSlot(0)
@@ -279,8 +282,6 @@ class FpgaTop(
   val issuePairFire = canLaunchPairReg && (state === rendering) && (remainingPairsReg =/= 0.U)
 
   val validationError = RegInit(false.B)   // Fix 8
-  io.validation_error := validationError
-
   val enqFire = WireDefault(false.B)
   val retiredPixelsThisBeat = WireDefault(0.U(2.W))
 
@@ -320,8 +321,6 @@ class FpgaTop(
       state          := idle
     }
   }
-
-  io.busy := (state === rendering)
 
   val rayPush0 = rayDirCalcs(0).io.out_valid
   val rayPush1 = rayDirCalcs(1).io.out_valid
@@ -363,38 +362,37 @@ class FpgaTop(
   initStages(1).io.in.bits.rd.y := rayDirCalcs(1).io.dir_y
   initStages(1).io.in.bits.rd.z := rayDirCalcs(1).io.dir_z
 
-
-  class PixelBundle extends Bundle {
-    val rgb8   = UInt((24 * 2).W)
-    val hit_id = UInt((c.addrWidth * 2).W)
+  class TraceRespPair extends Bundle {
+    val lane0 = new RenderResult(c.cfg, c.addrWidth)
+    val lane1 = new RenderResult(c.cfg, c.addrWidth)
   }
 
-  val pixelQueue = Module(new Queue(new PixelBundle, pixelQueueDepth))
+  val traceRespPairQ = Module(new Queue(new TraceRespPair, traceRespQueueDepth))
 
-  // Fix 3: enqFire = 真实握手成功（valid && ready 同时为真）
   val commitOutValid = commitQueue.io.out.valid
-  retiredPixelsThisBeat := Mux(commitOutValid, 2.U, 0.U)
-  enqFire := commitOutValid && pixelQueue.io.enq.ready
+  val commitRespBufferFire = commitOutValid && traceRespPairQ.io.enq.ready
 
-  pixelQueue.io.enq.valid        := commitOutValid
-  pixelQueue.io.enq.bits.rgb8 := Cat(
-    commitQueue.io.out.bits(1).rgb8,
-    commitQueue.io.out.bits(0).rgb8
-  )
-  pixelQueue.io.enq.bits.hit_id := Cat(
-    commitQueue.io.out.bits(1).hitId,
-    commitQueue.io.out.bits(0).hitId
-  )
-  pixelQueue.io.deq.ready       := io.pixel_ready
+  traceRespPairQ.io.enq.valid := commitOutValid
+  traceRespPairQ.io.enq.bits.lane0 := commitQueue.io.out.bits(0)
+  traceRespPairQ.io.enq.bits.lane1 := commitQueue.io.out.bits(1)
 
   assert(
-    !(commitOutValid && !pixelQueue.io.enq.ready),
-    "[FpgaTop] BUG: pixelQueue full! Increase pixelQueueDepth or topMaxInflight"
+    !(commitOutValid && !traceRespPairQ.io.enq.ready),
+    "[FpgaTop] BUG: trace response queue full! Increase top-side response buffering"
   )
 
-  io.pixel_valid  := pixelQueue.io.deq.valid
-  io.pixel_rgb8   := pixelQueue.io.deq.bits.rgb8
-  io.pixel_hit_id := pixelQueue.io.deq.bits.hit_id
+  io.trace_resp_valid := traceRespPairQ.io.deq.valid
+  io.trace_resp_slotId(0) := traceRespPairQ.io.deq.bits.lane0.meta.slotId
+  io.trace_resp_slotId(1) := traceRespPairQ.io.deq.bits.lane1.meta.slotId
+  io.trace_resp_hit(0) := traceRespPairQ.io.deq.bits.lane0.hit
+  io.trace_resp_hit(1) := traceRespPairQ.io.deq.bits.lane1.hit
+  io.trace_resp_hitId(0) := traceRespPairQ.io.deq.bits.lane0.hitId
+  io.trace_resp_hitId(1) := traceRespPairQ.io.deq.bits.lane1.hitId
+  traceRespPairQ.io.deq.ready := io.trace_resp_ready
+
+  val traceRespFire = traceRespPairQ.io.deq.fire
+  retiredPixelsThisBeat := Mux(traceRespFire, 2.U, 0.U)
+  enqFire := traceRespFire
 
 
   val underflow = retiredCount > issuedCount
@@ -405,7 +403,7 @@ class FpgaTop(
   }
 
   val stallCounter = RegInit(0.U(16.W))
-  val progressMade = rayIssueFire0 || rayIssueFire1 || enqFire
+  val progressMade = rayIssueFire0 || rayIssueFire1 || commitRespBufferFire || traceRespFire
 
   when(state === idle) {
     stallCounter := 0.U           // Fix 7
@@ -416,7 +414,6 @@ class FpgaTop(
   }
 
   val stallTimeout = stallCounter > 10000.U
-  io.stall_detected := stallTimeout
 
   when(stallTimeout && (state === rendering)) {
     validationError := true.B
@@ -450,7 +447,7 @@ object FpgaTopGen {
           new FpgaTop(
             maxWidth = GlobalConfig.frameWidth,
             maxHeight = GlobalConfig.frameHeight,
-            pixelQueueDepth = GlobalConfig.pixelQueueDepth
+            traceRespQueueDepth = GlobalConfig.pixelQueueDepth
           ),
           Array("--target-dir", targetDir)
         )

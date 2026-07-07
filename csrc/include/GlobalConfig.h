@@ -3,21 +3,12 @@
 
 namespace rt {
 namespace config {
-
-// ============================================================
-// Simulation Mode Selection
-// ============================================================
-// MODE=noblackbox: Verilator simulation with SimTop (default)
-// MODE=useblackbox: Verilator with BlackBox memory + SimTop
-// MODE=fpga: FPGA simulation with FpgaTop (waits for frame_done)
 inline constexpr bool kFpgaMode = false;
-
 inline constexpr int kWidth = 1920;
 inline constexpr int kHeight = 1080;
-inline constexpr int kMaxWaitCycles = 10000;  // Ordered commit can hide long Trace tails behind one pixel pair.
+inline constexpr int kMaxWaitCycles = 100000;
 inline constexpr int kTriNumPE = 1;
 inline constexpr int kTriNumBanks = 8;
-
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
 
@@ -40,8 +31,6 @@ inline constexpr const char* kVcdPath = RT_VCD_PATH;
 #else
 inline constexpr const char* kVcdPath = "raytrace.vcd";
 #endif
-
-// Debug configuration (edit here directly, no CLI parsing).
 inline constexpr bool kEnableVcd = false;
 inline constexpr bool kVcdWindowByPixel = false;
 inline constexpr int kVcdStartPixelX = 150;

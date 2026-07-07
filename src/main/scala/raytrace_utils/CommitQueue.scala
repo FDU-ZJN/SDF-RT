@@ -19,7 +19,10 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     val writeback3 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val writeback4 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val writeback5 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
+    val writeback6 = Flipped(Decoupled(new RenderResult(cfg, cfg.addrWidth)))
     val out        = Output(Valid(Vec(2, new RenderResult(cfg, cfg.addrWidth))))
+
+    val traceDone = Vec(2, Flipped(Valid(UInt(slotBits.W))))
   })
 
   val entries  = Reg(Vec(depth, new RenderResult(cfg, cfg.addrWidth)))
@@ -43,45 +46,52 @@ class CommitQueue(cfg: FloatConfig) extends Module {
   val doAlloc1 = io.alloc(1).fire
   val allocCount = PopCount(Seq(doAlloc0, doAlloc1))
 
-  val renderWbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
-  val init0WbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val initWbQ0 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val initWbQ1 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
   val sdfWbQ0 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
-  val init1WbQ = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
   val sdfWbQ1 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val traceWbQ0 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
+  val traceWbQ1 = Module(new Queue(new RenderResult(cfg, cfg.addrWidth), 2))
 
-  renderWbQ.io.enq <> io.writeback
-  init0WbQ.io.enq <> io.writeback2
-  sdfWbQ0.io.enq <> io.writeback3
-  init1WbQ.io.enq <> io.writeback4
-  sdfWbQ1.io.enq <> io.writeback5
+  initWbQ0.io.enq <> io.writeback2
+  sdfWbQ0.io.enq  <> io.writeback3
+  initWbQ1.io.enq <> io.writeback4
+  sdfWbQ1.io.enq  <> io.writeback5
+  traceWbQ0.io.enq <> io.writeback
+  traceWbQ1.io.enq <> io.writeback6
 
   val physWbValid = Wire(Vec(2, Bool()))
   val physWbBits = Wire(Vec(2, new RenderResult(cfg, cfg.addrWidth)))
   val physWbIdx = Wire(Vec(2, UInt(slotBits.W)))
 
-  private val wbSourceCount = 5
+  private val wbSourceCount = 6
 
   val wbValid = Wire(Vec(wbSourceCount, Bool()))
   val wbBits = Wire(Vec(wbSourceCount, new RenderResult(cfg, cfg.addrWidth)))
   val wbReady = WireInit(VecInit(Seq.fill(wbSourceCount)(false.B)))
 
-  wbValid(0) := renderWbQ.io.deq.valid
-  wbBits(0) := renderWbQ.io.deq.bits
-  wbValid(1) := init0WbQ.io.deq.valid
-  wbBits(1) := init0WbQ.io.deq.bits
+  wbValid(0) := initWbQ0.io.deq.valid
+  wbBits(0) := initWbQ0.io.deq.bits
+  wbValid(1) := initWbQ1.io.deq.valid
+  wbBits(1) := initWbQ1.io.deq.bits
   wbValid(2) := sdfWbQ0.io.deq.valid
   wbBits(2) := sdfWbQ0.io.deq.bits
-  wbValid(3) := init1WbQ.io.deq.valid
-  wbBits(3) := init1WbQ.io.deq.bits
-  wbValid(4) := sdfWbQ1.io.deq.valid
-  wbBits(4) := sdfWbQ1.io.deq.bits
+  wbValid(3) := sdfWbQ1.io.deq.valid
+  wbBits(3) := sdfWbQ1.io.deq.bits
+  wbValid(4) := traceWbQ0.io.deq.valid
+  wbBits(4) := traceWbQ0.io.deq.bits
+  wbValid(5) := traceWbQ1.io.deq.valid
+  wbBits(5) := traceWbQ1.io.deq.bits
 
-  val init0Valid = wbValid(1)
-  val init1Valid = wbValid(3)
+  val init0Valid = wbValid(0)
+  val init1Valid = wbValid(1)
   val sdf0Valid = wbValid(2)
-  val sdf1Valid = wbValid(4)
+  val sdf1Valid = wbValid(3)
+  val trace0Valid = wbValid(4)
+  val trace1Valid = wbValid(5)
   val initAny = init0Valid || init1Valid
   val sdfAny = sdf0Valid || sdf1Valid
+  val traceAny = trace0Valid || trace1Valid
   val zeroResult = 0.U.asTypeOf(new RenderResult(cfg, cfg.addrWidth))
 
   physWbValid(0) := false.B
@@ -93,43 +103,63 @@ class CommitQueue(cfg: FloatConfig) extends Module {
 
   when(initAny) {
     physWbValid(0) := true.B
-    physWbBits(0) := Mux(init0Valid, wbBits(1), wbBits(3))
-    wbReady(1) := init0Valid
-    wbReady(3) := !init0Valid && init1Valid
+    physWbBits(0) := Mux(init0Valid, wbBits(0), wbBits(1))
+    wbReady(0) := init0Valid
+    wbReady(1) := !init0Valid && init1Valid
 
     when(init0Valid && init1Valid) {
       physWbValid(1) := true.B
-      physWbBits(1) := wbBits(3)
-      wbReady(3) := true.B
+      physWbBits(1) := wbBits(1)
+      wbReady(1) := true.B
+    }.elsewhen(sdfAny) {
+      physWbValid(1) := true.B
+      physWbBits(1) := Mux(sdf0Valid, wbBits(2), wbBits(3))
+      wbReady(2) := sdf0Valid
+      wbReady(3) := !sdf0Valid && sdf1Valid
+    }.elsewhen(traceAny) {
+      physWbValid(1) := true.B
+      physWbBits(1) := Mux(trace0Valid, wbBits(4), wbBits(5))
+      wbReady(4) := trace0Valid
+      wbReady(5) := !trace0Valid && trace1Valid
     }
   }.elsewhen(sdfAny) {
     physWbValid(0) := true.B
-    physWbBits(0) := Mux(sdf0Valid, wbBits(2), wbBits(4))
+    physWbBits(0) := Mux(sdf0Valid, wbBits(2), wbBits(3))
     wbReady(2) := sdf0Valid
-    wbReady(4) := !sdf0Valid && sdf1Valid
+    wbReady(3) := !sdf0Valid && sdf1Valid
 
     when(sdf0Valid && sdf1Valid) {
       physWbValid(1) := true.B
-      physWbBits(1) := wbBits(4)
-      wbReady(4) := true.B
+      physWbBits(1) := wbBits(3)
+      wbReady(3) := true.B
+    }.elsewhen(traceAny) {
+      physWbValid(1) := true.B
+      physWbBits(1) := Mux(trace0Valid, wbBits(4), wbBits(5))
+      wbReady(4) := trace0Valid
+      wbReady(5) := !trace0Valid && trace1Valid
     }
-  }.elsewhen(wbValid(0)) {
+  }.elsewhen(traceAny) {
     physWbValid(0) := true.B
-    physWbBits(0) := wbBits(0)
-    wbReady(0) := true.B
+    physWbBits(0) := Mux(trace0Valid, wbBits(4), wbBits(5))
+    wbReady(4) := trace0Valid
+    wbReady(5) := !trace0Valid && trace1Valid
+
+    when(trace0Valid && trace1Valid) {
+      physWbValid(1) := true.B
+      physWbBits(1) := wbBits(5)
+      wbReady(5) := true.B
+    }
   }
 
   physWbIdx(0) := physWbBits(0).meta.slotId(slotBits - 1, 0)
   physWbIdx(1) := physWbBits(1).meta.slotId(slotBits - 1, 0)
 
-  val doPhysWb0 = physWbValid(0)
-  val doPhysWb1 = physWbValid(1)
-
-  renderWbQ.io.deq.ready := wbReady(0)
-  init0WbQ.io.deq.ready := wbReady(1)
-  sdfWbQ0.io.deq.ready := wbReady(2)
-  init1WbQ.io.deq.ready := wbReady(3)
-  sdfWbQ1.io.deq.ready := wbReady(4)
+  initWbQ0.io.deq.ready := wbReady(0)
+  initWbQ1.io.deq.ready := wbReady(1)
+  sdfWbQ0.io.deq.ready  := wbReady(2)
+  sdfWbQ1.io.deq.ready  := wbReady(3)
+  traceWbQ0.io.deq.ready := wbReady(4)
+  traceWbQ1.io.deq.ready := wbReady(5)
 
   val physWbValidReg = RegInit(VecInit(Seq.fill(2)(false.B)))
   val physWbBitsReg = Reg(Vec(2, new RenderResult(cfg, cfg.addrWidth)))
@@ -144,14 +174,24 @@ class CommitQueue(cfg: FloatConfig) extends Module {
     }
   }
 
+  // Direct done-set for trace results, bypasses writeback arbitration
+  for (i <- 0 until 2) {
+    when(io.traceDone(i).valid) {
+      assert(reserved(io.traceDone(i).bits), "CommitQueue traceDone on unreserved slot")
+      assert(!done(io.traceDone(i).bits), "CommitQueue duplicate traceDone")
+      entries(io.traceDone(i).bits) := zeroResult
+      done(io.traceDone(i).bits)    := true.B
+    }
+  }
+
   when(physWbValidReg(0) && physWbValidReg(1)) {
     assert(physWbIdxReg(0) =/= physWbIdxReg(1), "CommitQueue two physical writebacks target the same slot")
   }
 
-  physWbValidReg(0) := doPhysWb0
+  physWbValidReg(0) := physWbValid(0)
   physWbBitsReg(0) := physWbBits(0)
   physWbIdxReg(0) := physWbIdx(0)
-  physWbValidReg(1) := doPhysWb1
+  physWbValidReg(1) := physWbValid(1)
   physWbBitsReg(1) := physWbBits(1)
   physWbIdxReg(1) := physWbIdx(1)
 

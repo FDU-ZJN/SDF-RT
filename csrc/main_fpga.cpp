@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@
 using std::array;
 using std::cout;
 using std::endl;
+using std::queue;
 using std::vector;
 using namespace rt::config;
 
@@ -23,6 +25,32 @@ uint64_t main_time = 0;
 VerilatedVcdC* tfp = nullptr;
 
 namespace {
+
+struct TraceResultEntry {
+    int  slotId;
+    bool hit;
+    int  hitId;
+};
+
+queue<TraceResultEntry> traceResultQueue;
+
+constexpr float kAmbient  = 0.15f;
+constexpr float kLightDirX = 0.57735f;
+constexpr float kLightDirY = 0.57735f;
+constexpr float kLightDirZ = 0.57735f;
+
+void shading(const std::array<float, 3>& normal, uint8_t& r, uint8_t& g, uint8_t& b) {
+    float dot = normal[0] * kLightDirX + normal[1] * kLightDirY + normal[2] * kLightDirZ;
+    if (dot < 0.0f) dot = 0.0f;
+
+    float brightness = kAmbient + dot;
+    if (brightness > 1.0f) brightness = 1.0f;
+
+    uint8_t c = static_cast<uint8_t>(brightness * 255.0f + 0.5f);
+    r = c;
+    g = c;
+    b = c;
+}
 
 std::string modelMemDirFromObjPath(const std::string& objPath) {
     return (std::filesystem::path("./vivado_mem") /
@@ -43,34 +71,6 @@ void tick(VFpgaTop* dut) {
     if (tfp != nullptr) {
         tfp->dump(main_time);
     }
-}
-
-uint32_t extractPackedRgb48Lane(QData packed, int lane) {
-    switch (lane) {
-        case 0:
-            return static_cast<uint32_t>(packed & 0x00FFFFFFULL);
-        case 1:
-            return static_cast<uint32_t>((packed >> 24) & 0x00FFFFFFULL);
-        default:
-            return 0;
-    }
-}
-
-uint16_t rgb888ToRgb565(uint32_t rgb8) {
-    const uint16_t r5 = static_cast<uint16_t>((rgb8 >> 19) & 0x1F);
-    const uint16_t g6 = static_cast<uint16_t>((rgb8 >> 10) & 0x3F);
-    const uint16_t b5 = static_cast<uint16_t>((rgb8 >> 3) & 0x1F);
-    return static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
-}
-
-uint32_t rgb565ToRgb888(uint16_t rgb565) {
-    const uint32_t r5 = (rgb565 >> 11) & 0x1F;
-    const uint32_t g6 = (rgb565 >> 5) & 0x3F;
-    const uint32_t b5 = rgb565 & 0x1F;
-    const uint32_t r8 = (r5 << 3) | (r5 >> 2);
-    const uint32_t g8 = (g6 << 2) | (g6 >> 4);
-    const uint32_t b8 = (b5 << 3) | (b5 >> 2);
-    return (r8 << 16) | (g8 << 8) | b8;
 }
 
 } // namespace
@@ -116,14 +116,9 @@ int main(int argc, char** argv) {
     if (shouldRebuildSdf) {
         std::printf("Rebuilding SDF cache%s...\n", sdfCacheExists ? "" : " (cache missing)");
         build_hybrid_sdf_from_mesh(
-            gridMin,
-            gridMax,
-            kSDFGlobalRes,
-            kSDFGlobalRes,
-            kSDFGlobalRes,
-            kSDFSubRes,
-            kSDFSubRes,
-            kSDFSubRes,
+            gridMin, gridMax,
+            kSDFGlobalRes, kSDFGlobalRes, kSDFGlobalRes,
+            kSDFSubRes, kSDFSubRes, kSDFSubRes,
             kLocalActiveBand);
         save_sdf_npz(kComputedSdfOutPath);
     } else {
@@ -136,14 +131,9 @@ int main(int argc, char** argv) {
     }
 
     build_subgrid_triangle_index(
-        gridMin,
-        gridMax,
-        kDdaGlobalRes,
-        kDdaGlobalRes,
-        kDdaGlobalRes,
-        kDdaSubRes,
-        kDdaSubRes,
-        kDdaSubRes);
+        gridMin, gridMax,
+        kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes,
+        kDdaSubRes, kDdaSubRes, kDdaSubRes);
     writeSubgridTriCountHistogramPPM("subgrid_tricount_hist_fpga.ppm", kDdaGlobalRes, kDdaSubRes);
 
     const std::string memExportDir = modelMemDirFromObjPath(kObjPath);
@@ -177,7 +167,7 @@ int main(int argc, char** argv) {
     dut->io_setup_res_x = kWidth;
     dut->io_setup_res_y = kHeight;
     dut->io_frame_start = 0;
-    dut->io_pixel_ready = 1;
+    dut->io_trace_resp_ready = 0;
 
     for (int i = 0; i < 4; ++i) tick(dut);
     dut->reset = 0;
@@ -204,86 +194,97 @@ int main(int argc, char** argv) {
     tick(dut);
     dut->io_frame_start = 0;
 
-    std::cout << "Phase 3: Waiting for frame_done..." << std::endl;
-    size_t pixelCount = 0;
+    std::cout << "Phase 3: Waiting for all trace responses..." << std::endl;
+    size_t traceRendered = 0;
+    size_t traceResultsReceived = 0;
+    size_t traceHits = 0;
+    size_t traceMisses = 0;
     int stallCycles = 0;
     uint64_t totalCycles = 0;
-    uint64_t pixelValidCount = 0;
     constexpr uint64_t maxTotalCycles = 100000000ULL;
 
-    while (!dut->io_frame_done) {
+
+    while (traceResultsReceived < framePixels) {
+        dut->io_trace_resp_ready = (traceResultQueue.size() < 64) ? 1 : 0;
+
         tick(dut);
         ++totalCycles;
 
-        if (totalCycles > maxTotalCycles) {
-            std::cerr << "\nTimeout: exceeded " << maxTotalCycles << " total cycles." << endl;
-            std::cerr << "Pixels collected: " << pixelCount << " / " << framePixels << endl;
-            delete dut;
-            return 4;
+        if (dut->io_trace_resp_valid && dut->io_trace_resp_ready) {
+            TraceResultEntry entry0;
+            entry0.slotId = static_cast<int>(dut->io_trace_resp_slotId_0);
+            entry0.hit    = dut->io_trace_resp_hit_0 != 0;
+            entry0.hitId  = static_cast<int>(dut->io_trace_resp_hitId_0);
+            traceResultQueue.push(entry0);
+            ++traceResultsReceived;
+            if (entry0.hit) ++traceHits; else ++traceMisses;
+
+            TraceResultEntry entry1;
+            entry1.slotId = static_cast<int>(dut->io_trace_resp_slotId_1);
+            entry1.hit    = dut->io_trace_resp_hit_1 != 0;
+            entry1.hitId  = static_cast<int>(dut->io_trace_resp_hitId_1);
+            traceResultQueue.push(entry1);
+            ++traceResultsReceived;
+            if (entry1.hit) ++traceHits; else ++traceMisses;
         }
 
-        if (dut->io_pixel_valid) {
-            pixelValidCount += 2;
-            for (int lane = 0; lane < 2; ++lane) {
-                if (pixelCount >= framePixels) {
-                    std::cerr << "\nError: received more pixels than expected (" << framePixels << ")." << endl;
-                    delete dut;
-                    return 5;
+        while (!traceResultQueue.empty()) {
+            auto& entry = traceResultQueue.front();
+            if (traceRendered < framePixels) {
+                const size_t idx = traceRendered * 3;
+                const size_t compactHitId = static_cast<size_t>(entry.hitId);
+                const bool compactIdValid = compactHitId < triangles_compact_src_ids.size();
+                const size_t originalTriId = compactIdValid ? static_cast<size_t>(triangles_compact_src_ids[compactHitId]) : 0U;
+                if (entry.hit && compactIdValid && originalTriId < normals.size()) {
+                    uint8_t r, g, b;
+                    shading(normals[originalTriId], r, g, b);
+                    image[idx + 0] = r;
+                    image[idx + 1] = g;
+                    image[idx + 2] = b;
+                } else {
+                    image[idx + 0] = 0;
+                    image[idx + 1] = 0;
+                    image[idx + 2] = 0;
                 }
-
-                const uint32_t rgb8 = rgb565ToRgb888(
-                    rgb888ToRgb565(extractPackedRgb48Lane(dut->io_pixel_rgb8, lane)));
-                const size_t idx = pixelCount * 3;
-                image[idx + 0] = static_cast<uint8_t>((rgb8 >> 16) & 0xFF);
-                image[idx + 1] = static_cast<uint8_t>((rgb8 >> 8) & 0xFF);
-                image[idx + 2] = static_cast<uint8_t>(rgb8 & 0xFF);
-                ++pixelCount;
+                ++traceRendered;
             }
+            traceResultQueue.pop();
             stallCycles = 0;
         }
 
         if (totalCycles % 1000000 == 0) {
-            std::printf("\r[FPGA] cycle=%lu pixel_valid=%lu pixels=%zu/%zu busy=%d frame_done=%d",
+            std::printf("\r[FPGA] cycle=%lu trace_results=%zu/%zu rendered=%zu",
                         static_cast<unsigned long>(totalCycles),
-                        static_cast<unsigned long>(pixelValidCount),
-                        pixelCount,
-                        framePixels,
-                        dut->io_busy,
-                        dut->io_frame_done);
+                        traceResultsReceived, framePixels, traceRendered);
             std::fflush(stdout);
         }
 
         if (++stallCycles >= kMaxWaitCycles) {
-            std::cerr << "\nTimeout: no pixel progress for " << stallCycles << " cycles." << endl;
-            std::cerr << "Pixels collected: " << pixelCount << " / " << framePixels
-                      << " busy=" << static_cast<int>(dut->io_busy)
-                      << " frame_done=" << static_cast<int>(dut->io_frame_done)
-                      << " validation_error=" << static_cast<int>(dut->io_validation_error)
-                      << " stall_detected=" << static_cast<int>(dut->io_stall_detected)
+            std::cerr << "\nTimeout: no progress for " << stallCycles << " cycles." << endl;
+            std::cerr << "Trace results: " << traceResultsReceived << " / " << framePixels
+                      << "  rendered: " << traceRendered
                       << endl;
             delete dut;
             return 4;
         }
 
-        if (kEnableProgressPrint && pixelCount > 0 && pixelCount % 1000 == 0) {
-            std::printf("\rPixels collected: %zu / %zu (%.1f%%) | Cycles: %lu",
-                        pixelCount,
-                        framePixels,
-                        100.0 * static_cast<double>(pixelCount) / static_cast<double>(framePixels),
+        if (kEnableProgressPrint && traceResultsReceived > 0 && traceResultsReceived % 1000 == 0) {
+            std::printf("\rTrace results: %zu / %zu (%.1f%%) | Cycles: %lu",
+                        traceResultsReceived, framePixels,
+                        100.0 * static_cast<double>(traceResultsReceived) / static_cast<double>(framePixels),
                         static_cast<unsigned long>(totalCycles));
             std::fflush(stdout);
         }
     }
 
-    std::cout << "\nFrame done received! Total pixels collected: "
-              << pixelCount << " / " << framePixels << std::endl;
+    std::cout << "\nAll trace responses received: "
+              << traceResultsReceived << " / " << framePixels << std::endl;
+    std::cout << "  Hits: " << traceHits << "  Misses: " << traceMisses << std::endl;
     std::cout << "Total simulation cycles: " << (main_time / 2) << std::endl;
-    std::cout << "Frame count: " << dut->io_frame_count << std::endl;
 
     const std::string outputPath =
         "render_fpga_" + std::to_string(kWidth) + "x" + std::to_string(kHeight) + ".ppm";
     std::cout << "Phase 4: Saving image to " << outputPath << "..." << std::endl;
-    replaceBlackWithBackground(image, kWidth, kHeight);
     writePPM(outputPath, image, kWidth, kHeight);
     std::cout << "Image saved successfully." << std::endl;
 

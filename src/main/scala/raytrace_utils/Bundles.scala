@@ -93,6 +93,16 @@ class SdfMemReq(addrWidth: Int = 32) extends Bundle {
   val localIdx = UInt(addrWidth.W)
 }
 
+class NormalMemReq(addrWidth: Int = 16, tagWidth: Int = 2) extends Bundle {
+  val addr = UInt(addrWidth.W)
+  val tag = UInt(tagWidth.W)
+}
+
+class NormalMemResp(tagWidth: Int = 2) extends Bundle {
+  val data = UInt(GlobalConfig.normalMemDataWidth.W)
+  val tag = UInt(tagWidth.W)
+}
+
 class SdfInitReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val rd = new Vec3(cfg)
   val meta = new RayMeta(addrWidth)

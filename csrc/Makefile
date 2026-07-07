@@ -92,16 +92,6 @@ VERILOG_SRC = $(wildcard $(VERILOG_DIR)/*.sv)
 
 VCD2WLF = /opt/intelFPGA/20.1/modelsim_ase/bin/vcd2wlf
 
-# Prefer a compiler cache for Verilator's generated C++ build.
-SCCACHE := $(shell command -v sccache 2>/dev/null)
-CCACHE := $(shell command -v ccache 2>/dev/null)
-ifeq ($(strip $(SCCACHE)),)
-	OBJCACHE_TOOL := $(CCACHE)
-else
-	OBJCACHE_TOOL := $(SCCACHE)
-endif
-SCCACHE_DIR ?= $(ROOT_DIR)/.cache/sccache
-
 # 自动搜集 C++ 源文件
 # FPGA模式排除DebugHooks等不需要的文件
 ifeq ($(MODE),fpga)
@@ -140,32 +130,32 @@ TARGET = $(VERILOG_DIR)/test_runner
 
 all: $(TARGET)
 
-# 可选：重新生成 Verilog（调用 sbt）
+# Verilog 输出文件（作为 prerequisite 目标触发 sbt 生成）
+VERILOG_TARGET := $(VERILOG_DIR)/FpgaTop.sv
+
+$(VERILOG_TARGET):
+	@echo "Verilog 源文件缺失，自动调用 sbt 生成..."
+	cd $(ROOT_DIR) && sbt "runMain FpgaTopGen"
+
+# 可选：强制重新生成 Verilog
 generate:
 	@echo "============================================"
 	@echo "通过 sbt 重新生成 Verilog 代码..."
 	@echo "============================================"
-	cd $(ROOT_DIR) && sbt "runMain SimTopGen"
+	cd $(ROOT_DIR) && sbt "runMain FpgaTopGen"
 
-$(TARGET): $(VERILOG_SRC) $(CPPS) $(HEADERS)
+$(TARGET): $(VERILOG_TARGET) $(CPPS) $(HEADERS)
 	@echo "============================================"
 	@echo "编译 Verilator 仿真程序..."
 	@echo "  模式: $(MODE)"
 	@echo "  源目录: $(VERILOG_DIR)"
-	@echo "  源文件: $(VERILOG_SRC)"
 	@echo "  顶层模块: $(TOP_MODULE)"
-	@if [ -n "$(OBJCACHE_TOOL)" ]; then \
-		echo "  编译缓存: $(OBJCACHE_TOOL)"; \
-	else \
-		echo "  编译缓存: disabled"; \
-	fi
 	@echo "============================================"
 	@mkdir -p $(VERILOG_DIR)
-	@mkdir -p $(SCCACHE_DIR)
-	verilator $(V_OPTS) $(CPPS) $(VERILOG_SRC) -o $(TARGET)
+	verilator $(V_OPTS) $(CPPS) $(wildcard $(VERILOG_DIR)/*.sv) -o $(TARGET)
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.fast
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.slow
-	SCCACHE_DIR="$(SCCACHE_DIR)" $(MAKE) -C $(OBJ_DIR) -f V$(TOP_MODULE).mk -j $(shell nproc) OBJCACHE="$(OBJCACHE_TOOL)"
+	$(MAKE) -C $(OBJ_DIR) -f V$(TOP_MODULE).mk -j $(shell nproc)
 
 run: $(TARGET)
 	@echo "============================================"
