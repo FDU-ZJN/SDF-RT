@@ -211,6 +211,8 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_x = floatToU32(gridMaxX);
     dut->io_setup_grid_max_y = floatToU32(gridMaxY);
     dut->io_setup_grid_max_z = floatToU32(gridMaxZ);
+    dut->io_setup_res_x = kWidth;
+    dut->io_setup_res_y = kHeight;
     dut->io_rd_valid = 0;
     dut->io_rd_in_x = floatToU32(0.0f);
     dut->io_rd_in_y = floatToU32(0.0f);

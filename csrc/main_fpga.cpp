@@ -174,6 +174,8 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_x = floatToU32(gridMax[0]);
     dut->io_setup_grid_max_y = floatToU32(gridMax[1]);
     dut->io_setup_grid_max_z = floatToU32(gridMax[2]);
+    dut->io_setup_res_x = kWidth;
+    dut->io_setup_res_y = kHeight;
     dut->io_frame_start = 0;
     dut->io_pixel_ready = 1;
 

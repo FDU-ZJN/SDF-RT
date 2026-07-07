@@ -7,7 +7,7 @@ object GlobalConfig {
   val frameWidth =1920
   val frameHeight = 1080
   val pixelQueueDepth = 512
-  val traceNumWorkers = 8
+  val traceNumWorkers = 4
   val triMemNumPEs = 1
   val triMemNumBanks = 8
   val ddaNumWorkers = 2
@@ -53,7 +53,7 @@ object GlobalConfig {
   val sdfRetryQueueDepth = 128
   val sdfFinalQueueDepth = 128
   val sdfMissWritebackQueueDepth = 4
-  val renderOutputQueueDepth = 16
+  val renderOutputQueueDepth = 32
 
   val normalMemDpiLatency = 3
   val triMemDpiLatency = 3

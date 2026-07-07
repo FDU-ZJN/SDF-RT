@@ -12,8 +12,8 @@ import java.nio.file.{Files, Paths}
 import scala.io.Source
 
 class FpgaTop(
-               width:           Int = GlobalConfig.frameWidth,
-               height:          Int = GlobalConfig.frameHeight,
+               maxWidth:        Int = GlobalConfig.frameWidth,
+               maxHeight:       Int = GlobalConfig.frameHeight,
                pixelQueueDepth: Int = GlobalConfig.pixelQueueDepth
              ) extends Module {
   val c = TriPeConfig(cfg = FloatConfig.FP32.copy())
@@ -30,6 +30,8 @@ class FpgaTop(
     val setup_origin     = Input(new Vec3(c.cfg))
     val setup_grid_min   = Input(new Vec3(c.cfg))
     val setup_grid_max   = Input(new Vec3(c.cfg))
+    val setup_res_x      = Input(UInt(16.W))
+    val setup_res_y      = Input(UInt(16.W))
     val setup_ready      = Output(Bool())
 
     val frame_start      = Input(Bool())
@@ -49,7 +51,7 @@ class FpgaTop(
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
   })
 
-  val rayDirCalcs = Seq.tabulate(2)(lane => Module(new RayDirCalc(c.cfg, width, height, laneId = lane, numLanes = 2)))
+  val rayDirCalcs = Seq.tabulate(2)(lane => Module(new RayDirCalc(c.cfg, maxWidth, maxHeight, laneId = lane, numLanes = 2)))
   val initStages = Seq.fill(2)(Module(new InitStage(c.cfg, c.addrWidth)))
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
@@ -65,15 +67,41 @@ class FpgaTop(
   val setupOriginReg  = Reg(new Vec3(c.cfg))
   val setupGridMinReg = Reg(new Vec3(c.cfg))
   val setupGridMaxReg = Reg(new Vec3(c.cfg))
+  val resXReg         = RegInit(0.U(16.W))
+  val resYReg         = RegInit(0.U(16.W))
+  val zScaledMagReg   = RegInit(0.U(18.W))
+  val zScaledSqReg    = RegInit(0.U(36.W))
+  val zScaledFpReg    = RegInit(0.U(32.W))
 
   when(io.setup_valid && !setupReg) {
     setupOriginReg  := io.setup_origin
     setupGridMinReg := io.setup_grid_min
     setupGridMaxReg := io.setup_grid_max
+    resXReg         := io.setup_res_x
+    resYReg         := io.setup_res_y
     setupReg        := true.B
   }.elsewhen(setupUnit.io.setup_finish) {
     setupReg := false.B
   }
+
+  private def unsignedToFp32(value: UInt): UInt = {
+    val width = value.getWidth
+    val isZero = value === 0.U
+    val msbOH = PriorityEncoderOH(Reverse(value))
+    val msbFromTop = OHToUInt(msbOH)
+    val msbIdx = (width - 1).U - msbFromTop
+    val exp = (127.U(8.W) + msbIdx)(7, 0)
+    val aligned = (value << ((width - 1).U - msbIdx))(width - 1, 0)
+    val frac = if (width >= 24) aligned(width - 2, width - 24) else Cat(aligned(width - 2, 0), 0.U((24 - width).W))
+    Mux(isZero, 0.U(32.W), Cat(0.U(1.W), exp, frac))
+  }
+
+  val zScaledMag = (9.U * resYReg) / 5.U
+  val zScaledFpBase = unsignedToFp32(zScaledMag)
+  val zScaledFpNeg = Cat(1.U(1.W), zScaledFpBase(30, 0))
+  zScaledMagReg := zScaledMag
+  zScaledSqReg := zScaledMag * zScaledMag
+  zScaledFpReg := zScaledFpNeg
 
   setupUnit.io.setup_valid := setupReg
   setupUnit.io.setup_origin := setupOriginReg
@@ -108,8 +136,9 @@ class FpgaTop(
   val idle :: rendering :: frameComplete :: Nil = Enum(3)
   val state = RegInit(idle)
 
-  val pixelCountW   = log2Ceil(width * height + 1)
-  val totalPixels   = (width * height).U(pixelCountW.W)
+  val pixelCountW   = log2Ceil(maxWidth * maxHeight + 1)
+  val totalPixelsRuntime = resXReg * resYReg
+  val totalPairsRuntime = totalPixelsRuntime >> 1
   val frameCountReg = RegInit(0.U(32.W))
   io.frame_count := frameCountReg
 
@@ -241,8 +270,7 @@ class FpgaTop(
 
   val issuedCount = RegInit(0.U(pixelCountW.W))
   val retiredCount = RegInit(0.U(pixelCountW.W))
-  val totalPairs = (width * height / 2).U(log2Ceil(width * height / 2 + 1).W)
-  val remainingPairsReg = RegInit(0.U(log2Ceil(width * height / 2 + 1).W))
+  val remainingPairsReg = RegInit(0.U(pixelCountW.W))
   val rayIssueFire0 = WireDefault(false.B)
   val rayIssueFire1 = WireDefault(false.B)
   val rayIssueCount = WireDefault(0.U(2.W))
@@ -264,24 +292,24 @@ class FpgaTop(
       canLaunchPairReg := false.B
       validationError := false.B   // Fix 8
       when(frameStartPulse && !setupReg) {
-        remainingPairsReg := totalPairs
+        remainingPairsReg := totalPairsRuntime
         state := rendering
       }
     }
     is(rendering) {
       canLaunchPairReg := canLaunchPairNext
       when(rayIssueCount =/= 0.U) {
-        assert(issuedCount + rayIssueCount <= totalPixels, "FpgaTop issued more rays than totalPixels")
+        assert(issuedCount + rayIssueCount <= totalPixelsRuntime, "FpgaTop issued more rays than totalPixels")
         issuedCount := issuedCount + rayIssueCount
       }
       when(issuePairFire && (remainingPairsReg =/= 0.U)) {
         remainingPairsReg := remainingPairsReg - 1.U
       }
       when(enqFire) {
-        assert(retiredCount + retiredPixelsThisBeat <= totalPixels, "FpgaTop retired more pixels than totalPixels")
+        assert(retiredCount + retiredPixelsThisBeat <= totalPixelsRuntime, "FpgaTop retired more pixels than totalPixels")
         retiredCount := retiredCount + retiredPixelsThisBeat
       }
-      when(enqFire && (retiredCount + retiredPixelsThisBeat >= totalPixels)) {
+      when(enqFire && (retiredCount + retiredPixelsThisBeat >= totalPixelsRuntime)) {
         state := frameComplete
       }
     }
@@ -318,11 +346,15 @@ class FpgaTop(
     rayDirCalcs(lane).io.clear := (state === idle)
     rayDirCalcs(lane).io.in_valid := (if (lane == 0) rayIssueFire0 else rayIssueFire1)
     rayDirCalcs(lane).io.out_ready := true.B
+    rayDirCalcs(lane).io.width_in := resXReg
+    rayDirCalcs(lane).io.height_in := resYReg
+    rayDirCalcs(lane).io.z_scaled_fp := zScaledFpReg
+    rayDirCalcs(lane).io.z_scaled_sq := zScaledSqReg
   }
 
   assert(rayPush0 === rayPush1, "[FpgaTop] BUG: rayDir lanes lost pair alignment")
   assert(!(rayPush0 && !setupReady), "[FpgaTop] BUG: direct rayDir output not accepted by init pipeline")
-  assert((totalPixels(0) === 0.U), "[FpgaTop] pair-only issue path requires an even pixel count")
+  assert(totalPixelsRuntime(0) === 0.U, "[FpgaTop] pair-only issue path requires an even total pixel count")
 
   initStages(0).io.in.bits.rd.x := rayDirCalcs(0).io.dir_x
   initStages(0).io.in.bits.rd.y := rayDirCalcs(0).io.dir_y
@@ -366,7 +398,7 @@ class FpgaTop(
 
 
   val underflow = retiredCount > issuedCount
-  val overflow  = issuedCount > totalPixels
+  val overflow  = issuedCount > totalPixelsRuntime
 
   when(underflow || overflow) {
     validationError := true.B
@@ -416,8 +448,8 @@ object FpgaTopGen {
       GlobalConfig.withUseFloatIP(withUseFloatIP) {
         emitVerilog(
           new FpgaTop(
-            width = GlobalConfig.frameWidth,
-            height = GlobalConfig.frameHeight,
+            maxWidth = GlobalConfig.frameWidth,
+            maxHeight = GlobalConfig.frameHeight,
             pixelQueueDepth = GlobalConfig.pixelQueueDepth
           ),
           Array("--target-dir", targetDir)

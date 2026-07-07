@@ -30,7 +30,7 @@ inline constexpr int kSanityFullY = 145;
 inline constexpr int kSanityFullZ = 195;
 
 inline constexpr bool kUseComputedHybridSdf = false;
-inline constexpr bool kForceRebuildSdfCacheFpga = true;
+inline constexpr bool kForceRebuildSdfCacheFpga = false;
 inline constexpr float kLocalActiveBand = 0.15f;
 
 inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/bunny_10k.obj";

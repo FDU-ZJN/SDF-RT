@@ -7,35 +7,27 @@ import raytrace_utils.fudian._
 
 class RayDirCalc(
   cfg: FloatConfig = FloatConfig.FP32,
-  width: Int = GlobalConfig.frameWidth,
-  height: Int = GlobalConfig.frameHeight,
+  maxWidth: Int = GlobalConfig.frameWidth,
+  maxHeight: Int = GlobalConfig.frameHeight,
   laneId: Int = 0,
   numLanes: Int = 1
 ) extends Module {
   val io = IO(new Bundle {
-    val clear     = Input(Bool())
-    val in_valid  = Input(Bool())
-    val in_ready  = Output(Bool())
-    val out_valid = Output(Bool())
-    val out_ready = Input(Bool())
-    val dir_x     = Output(UInt(cfg.totalWidth.W))
-    val dir_y     = Output(UInt(cfg.totalWidth.W))
-    val dir_z     = Output(UInt(cfg.totalWidth.W))
+    val clear        = Input(Bool())
+    val in_valid     = Input(Bool())
+    val in_ready     = Output(Bool())
+    val out_valid    = Output(Bool())
+    val out_ready    = Input(Bool())
+    val dir_x        = Output(UInt(cfg.totalWidth.W))
+    val dir_y        = Output(UInt(cfg.totalWidth.W))
+    val dir_z        = Output(UInt(cfg.totalWidth.W))
+    val width_in     = Input(UInt(16.W))
+    val height_in    = Input(UInt(16.W))
+    val z_scaled_fp  = Input(UInt(32.W))
+    val z_scaled_sq  = Input(UInt(36.W))
   })
 
-  // =========================================================================
-  // FP32 constants computed at elaboration time
-  // =========================================================================
-  private def f32(v: Float): BigInt =
-    BigInt(java.lang.Float.floatToRawIntBits(v) & 0xFFFFFFFFL)
-
-  require(height % 5 == 0, "RayDirCalc integer normalization requires height to be divisible by 5 for z=-1.8")
-  require(math.max(width, height) <= 65535, "RayDirCalc integer normalization requires 16-bit numerator magnitude")
-
-  private val zScaledInt = -(9 * height / 5)
-  private val zScaledAbs = math.abs(zScaledInt)
-  private val zScaledSquared = BigInt(zScaledAbs) * BigInt(zScaledAbs)
-  val zScaledFp = f32(zScaledInt.toFloat).U(cfg.totalWidth.W)
+  require(math.max(maxWidth, maxHeight) <= 65535, "RayDirCalc integer normalization requires 16-bit numerator magnitude")
 
   private def unsignedToFp32(value: UInt): UInt = {
     val width = value.getWidth
@@ -55,10 +47,9 @@ class RayDirCalc(
 
   require(laneId >= 0 && laneId < numLanes, s"laneId $laneId must be in [0, $numLanes)")
 
-  private val pixelCoordW = log2Ceil(math.max(width, height) + numLanes + 1)
-  private val startX = (laneId % width).U(pixelCoordW.W)
-  private val startY = (laneId / width).U(pixelCoordW.W)
-  private val widthU = width.U(pixelCoordW.W)
+  private val pixelCoordW = log2Ceil(math.max(maxWidth, maxHeight) + numLanes + 1)
+  private val startX = (laneId % maxWidth).U(pixelCoordW.W)
+  private val startY = (laneId / maxWidth).U(pixelCoordW.W)
   private val laneStride = numLanes.U(pixelCoordW.W)
 
   val pixelXReg = RegInit(startX)
@@ -68,8 +59,8 @@ class RayDirCalc(
     pixelYReg := startY
   }.elsewhen(io.in_valid) {
     val nextX = pixelXReg + laneStride
-    when(nextX >= widthU) {
-      pixelXReg := nextX - widthU
+    when(nextX >= io.width_in) {
+      pixelXReg := nextX - io.width_in
       pixelYReg := pixelYReg + 1.U
     }.otherwise {
       pixelXReg := nextX
@@ -78,8 +69,8 @@ class RayDirCalc(
 
   private val numerW = pixelCoordW + 1
   require(numerW <= 16, "RayDirCalc IMUL path requires numerators to fit into 16 bits")
-  private val widthExt = width.U(numerW.W)
-  private val heightExt = height.U(numerW.W)
+  val widthExt = io.width_in.pad(numerW)
+  val heightExt = io.height_in.pad(numerW)
   val x2Int = (pixelXReg << 1).pad(numerW)
   val y2Int = (pixelYReg << 1).pad(numerW)
   val numerXSign = x2Int < widthExt
@@ -123,10 +114,10 @@ class RayDirCalc(
   val bFp = RegNext(Cat(numerYSignReg, bMagFp(cfg.totalWidth - 2, 0)))
 
   // =========================================================================
-  // S3: integer sumSq = A² + B² + (z*h)², then register and IntToFP
+  // S3: integer sumSq = A² + B² + zScaledSq, then register and IntToFP
   // =========================================================================
   val sumSqInt = Wire(UInt(32.W))
-  sumSqInt := mulA2.io.p + mulB2.io.p + zScaledSquared.U(32.W)
+  sumSqInt := mulA2.io.p + mulB2.io.p + io.z_scaled_sq(31, 0)
 
   val sumSqIntReg = Reg(UInt(32.W))
   sumSqIntReg := sumSqInt
@@ -144,7 +135,7 @@ class RayDirCalc(
 
   val aDelayed = PipeUtils.pipeData(aFp, invLenLatency - numerFpLatency)
   val bDelayed = PipeUtils.pipeData(bFp, invLenLatency - numerFpLatency)
-  val zDelayed = PipeUtils.pipeData(zScaledFp, invLenLatency)
+  val zDelayed = PipeUtils.pipeData(io.z_scaled_fp, invLenLatency)
 
   val mulDirX = Module(new FMUL(cfg))
   mulDirX.io.a := aDelayed
