@@ -20,12 +20,15 @@
 
 namespace {
 
-constexpr int kDefaultWidth = 1920;
-constexpr int kDefaultHeight = 1080;
+constexpr int kDefaultWidth = 4096;
+constexpr int kDefaultHeight = 2160;
 constexpr int kDefaultFrames = 100;
-constexpr const char* kDefaultObjPath = "../csrc/bunny_10k.obj";
+constexpr const char* kDefaultObjPath = "obj/stanford-bunny.obj";
 constexpr const char* kDefaultOutPath = "render_cuda_bvh_640x480.ppm";
-constexpr float kBoundsScale = 1.1f;
+constexpr float kTargetLongestEdge = 1.1f;
+constexpr float kTargetCenterX = 0.0f;
+constexpr float kTargetCenterY = 0.55f;
+constexpr float kTargetCenterZ = 0.0f;
 constexpr int kLeafTriThreshold = 4;
 constexpr int kSahBins = 12;
 constexpr float kCostAABB = 1.0f;
@@ -33,16 +36,23 @@ constexpr float kCostTri = 1.5f;
 constexpr float kAxisEpsilon = 1e-6f;
 constexpr int kMaxStackDepth = 64;
 constexpr float kCameraOriginX = 0.0f;
-constexpr float kCameraOriginY = 0.4f;
+constexpr float kCameraOriginY = 0.58f;
 constexpr float kCameraOriginZ = 1.5f;
 constexpr float kCameraDirZ = -1.8f;
-constexpr float kAmbient = 0.15f;
+constexpr float kAmbient = 0.18f;
 constexpr float kBaseColorR = 0.7f;
 constexpr float kBaseColorG = 0.8f;
 constexpr float kBaseColorB = 0.9f;
-constexpr float kLightDirX = 0.0f;
-constexpr float kLightDirY = 0.0f;
-constexpr float kLightDirZ = 0.70710677f;  // 0x3F3504F3, matches RenderPE io_b_z
+constexpr float kLightDirX = -0.55f;
+constexpr float kLightDirY = 0.72f;
+constexpr float kLightDirZ = 0.42f;
+constexpr int kMaxBounces = 4;
+constexpr float kRayEpsilon = 1e-4f;
+constexpr float kPlaneY = -0.58f;
+constexpr float kMetalSphereX = 0.62f;
+constexpr float kMetalSphereY = 0.12f;
+constexpr float kMetalSphereZ = 0.42f;
+constexpr float kMetalSphereR = 0.18f;
 
 struct Vec3 {
     float x;
@@ -73,9 +83,15 @@ struct Options {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     int frames = kDefaultFrames;
-    int fixedThreads = 175;
+    int fixedThreads = 0;
     std::string objPath = kDefaultObjPath;
     std::string outPath = kDefaultOutPath;
+};
+
+enum MaterialId : int {
+    kMatBunnyMetal = 0,
+    kMatGround = 1,
+    kMatMetalSphere = 2,
 };
 
 inline void checkCuda(cudaError_t err, const char* what) {
@@ -101,7 +117,9 @@ dim3 makeExactThreadBlock(int totalThreads) {
 inline Vec3 makeVec3(float x, float y, float z) { return Vec3{x, y, z}; }
 
 inline Vec3 sub(const Vec3& a, const Vec3& b) { return makeVec3(a.x - b.x, a.y - b.y, a.z - b.z); }
+inline Vec3 add(const Vec3& a, const Vec3& b) { return makeVec3(a.x + b.x, a.y + b.y, a.z + b.z); }
 inline Vec3 mul(const Vec3& a, float s) { return makeVec3(a.x * s, a.y * s, a.z * s); }
+inline Vec3 mulComp(const Vec3& a, const Vec3& b) { return makeVec3(a.x * b.x, a.y * b.y, a.z * b.z); }
 inline float dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline Vec3 cross(const Vec3& a, const Vec3& b) {
     return makeVec3(
@@ -166,7 +184,7 @@ void writePPM(const std::string& path, const std::vector<uint8_t>& img, int widt
     ofs.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
 }
 
-std::array<float, 6> computeScaledBoundsFromTriangles(const std::vector<Triangle>& tris, float scale = kBoundsScale) {
+std::array<float, 6> computeBoundsFromTriangles(const std::vector<Triangle>& tris) {
     float minX = std::numeric_limits<float>::infinity();
     float minY = std::numeric_limits<float>::infinity();
     float minZ = std::numeric_limits<float>::infinity();
@@ -186,7 +204,7 @@ std::array<float, 6> computeScaledBoundsFromTriangles(const std::vector<Triangle
         upd(tri.v1);
         upd(tri.v2);
     }
-    return {minX * scale, minY * scale, minZ * scale, maxX * scale, maxY * scale, maxZ * scale};
+    return {minX, minY, minZ, maxX, maxY, maxZ};
 }
 
 void loadModelFromObj(const std::string& filename,
@@ -212,7 +230,24 @@ void loadModelFromObj(const std::string& filename,
         minZ = std::min(minZ, attrib.vertices[i + 2]);
         maxZ = std::max(maxZ, attrib.vertices[i + 2]);
     }
-    std::printf("Model center: %f, %f, %f\n", (minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f);
+    const float centerX = (minX + maxX) * 0.5f;
+    const float centerY = (minY + maxY) * 0.5f;
+    const float centerZ = (minZ + maxZ) * 0.5f;
+    const float extentX = maxX - minX;
+    const float extentY = maxY - minY;
+    const float extentZ = maxZ - minZ;
+    const float longestEdge = std::max(extentX, std::max(extentY, extentZ));
+    if (longestEdge <= 0.0f) throw std::runtime_error("invalid model extent");
+    const float scale = kTargetLongestEdge / longestEdge;
+    std::printf("Original model center: %f, %f, %f | longest edge: %f | scale: %f\n",
+                centerX, centerY, centerZ, longestEdge, scale);
+
+    auto remapPoint = [&](const Vec3& p) -> Vec3 {
+        return makeVec3(
+            (p.x - centerX) * scale + kTargetCenterX,
+            (p.y - centerY) * scale + kTargetCenterY,
+            (p.z - centerZ) * scale + kTargetCenterZ);
+    };
 
     for (const auto& shape : shapes) {
         size_t indexOffset = 0;
@@ -225,10 +260,10 @@ void loadModelFromObj(const std::string& filename,
             Triangle tri{};
             for (size_t v = 0; v < 3; ++v) {
                 const tinyobj::index_t idx = shape.mesh.indices[indexOffset + v];
-                const Vec3 p = makeVec3(
+                const Vec3 p = remapPoint(makeVec3(
                     attrib.vertices[3 * idx.vertex_index + 0],
                     attrib.vertices[3 * idx.vertex_index + 1],
-                    attrib.vertices[3 * idx.vertex_index + 2]);
+                    attrib.vertices[3 * idx.vertex_index + 2]));
                 if (v == 0) tri.v0 = p;
                 else if (v == 1) tri.v1 = p;
                 else tri.v2 = p;
@@ -405,20 +440,42 @@ private:
 
 __device__ Vec3 d_makeVec3(float x, float y, float z) { return Vec3{x, y, z}; }
 __device__ Vec3 d_sub(const Vec3& a, const Vec3& b) { return d_makeVec3(a.x - b.x, a.y - b.y, a.z - b.z); }
+__device__ Vec3 d_add(const Vec3& a, const Vec3& b) { return d_makeVec3(a.x + b.x, a.y + b.y, a.z + b.z); }
+__device__ Vec3 d_mul(const Vec3& a, float s) { return d_makeVec3(a.x * s, a.y * s, a.z * s); }
+__device__ Vec3 d_mulComp(const Vec3& a, const Vec3& b) { return d_makeVec3(a.x * b.x, a.y * b.y, a.z * b.z); }
 __device__ Vec3 d_cross(const Vec3& a, const Vec3& b) {
     return d_makeVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
 }
 __device__ float d_dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-
-__device__ uint8_t fp32ToByteLikeRenderPE(float v) {
-    const uint32_t bits = __float_as_uint(v);
-    if (bits == 0x3F800000u) return 255u;
-    const uint32_t exp = (bits >> 23) & 0xFFu;
-    if (exp == 0u) return 0u;
-    const uint32_t frac = (1u << 23) | (bits & 0x7FFFFFu);
-    const uint32_t shift = 142u - exp;
-    return static_cast<uint8_t>((frac >> shift) & 0xFFu);
+__device__ float d_length(const Vec3& v) { return sqrtf(d_dot(v, v)); }
+__device__ Vec3 d_normalize(const Vec3& v) {
+    const float len = d_length(v);
+    return len > 0.0f ? d_mul(v, 1.0f / len) : d_makeVec3(0.0f, 0.0f, 0.0f);
 }
+__device__ Vec3 d_reflect(const Vec3& i, const Vec3& n) {
+    return d_sub(i, d_mul(n, 2.0f * d_dot(i, n)));
+}
+__device__ bool d_refract(const Vec3& i, const Vec3& n, float eta, Vec3& refracted) {
+    const float cosi = fmaxf(-1.0f, fminf(1.0f, -d_dot(i, n)));
+    const float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
+    if (k < 0.0f) return false;
+    refracted = d_add(d_mul(i, eta), d_mul(n, eta * cosi - sqrtf(k)));
+    return true;
+}
+__device__ uint8_t linearToByte(float v) {
+    const float clamped = fminf(fmaxf(v, 0.0f), 1.0f);
+    const float srgb = powf(clamped, 1.0f / 2.2f);
+    return static_cast<uint8_t>(srgb * 255.0f + 0.5f);
+}
+
+struct SceneHit {
+    bool hit;
+    float t;
+    Vec3 pos;
+    Vec3 normal;
+    Vec3 albedo;
+    int material;
+};
 
 __device__ bool rayTriangleIntersect(const Vec3& orig, const Vec3& dir, const Triangle& tri, float& t) {
     constexpr float epsilon = 1e-6f;
@@ -462,6 +519,234 @@ __device__ bool rayAabbIntersect(const Vec3& orig, const Vec3& dir, const AABB& 
     return tMaxV >= 0.0f;
 }
 
+__device__ bool intersectGroundPlane(const Vec3& orig, const Vec3& dir, SceneHit& hit) {
+    if (fabsf(dir.y) < 1.0e-6f) return false;
+    const float t = (kPlaneY - orig.y) / dir.y;
+    if (t <= kRayEpsilon || t >= hit.t) return false;
+    const Vec3 pos = d_add(orig, d_mul(dir, t));
+    const float tileScale = 0.45f;
+    const int tileX = static_cast<int>(floorf((pos.x + 4.0f) * tileScale));
+    const int tileZ = static_cast<int>(floorf((pos.z + 4.0f) * tileScale));
+    const bool checker = ((tileX + tileZ) & 1) != 0;
+    hit.hit = true;
+    hit.t = t;
+    hit.pos = pos;
+    hit.normal = d_makeVec3(0.0f, 1.0f, 0.0f);
+    hit.albedo = checker ? d_makeVec3(0.82f, 0.82f, 0.84f) : d_makeVec3(0.08f, 0.09f, 0.10f);
+    hit.material = kMatGround;
+    return true;
+}
+
+__device__ bool intersectSphere(const Vec3& orig, const Vec3& dir, const Vec3& center, float radius,
+                                const Vec3& albedo, int material, SceneHit& hit) {
+    const Vec3 oc = d_sub(orig, center);
+    const float a = d_dot(dir, dir);
+    const float b = 2.0f * d_dot(oc, dir);
+    const float c = d_dot(oc, oc) - radius * radius;
+    const float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) return false;
+    const float root = sqrtf(disc);
+    float t = (-b - root) / (2.0f * a);
+    if (t <= kRayEpsilon) t = (-b + root) / (2.0f * a);
+    if (t <= kRayEpsilon || t >= hit.t) return false;
+    const Vec3 pos = d_add(orig, d_mul(dir, t));
+    const Vec3 n = d_normalize(d_sub(pos, center));
+    hit.hit = true;
+    hit.t = t;
+    hit.pos = pos;
+    hit.normal = n;
+    hit.albedo = albedo;
+    hit.material = material;
+    return true;
+}
+
+__device__ bool intersectBvhTriangles(const Triangle* triangles,
+                                      const Vec3* normals,
+                                      const BVHNode* nodes,
+                                      int nodeCount,
+                                      const Vec3& orig,
+                                      const Vec3& dir,
+                                      SceneHit& hit) {
+    int stack[kMaxStackDepth];
+    int sp = 0;
+    if (nodeCount > 0) stack[sp++] = 0;
+    int bestTriId = -1;
+
+    while (sp > 0) {
+        const int curIdx = stack[--sp];
+        if (curIdx < 0 || curIdx >= nodeCount) continue;
+        const BVHNode node = nodes[curIdx];
+        float tAabb = 0.0f;
+        if (!rayAabbIntersect(orig, dir, node.bounds, tAabb)) continue;
+        if (tAabb >= hit.t) continue;
+
+        if (node.left < 0 && node.right < 0) {
+            for (int i = 0; i < node.triCount; ++i) {
+                const int triIdx = node.triStart + i;
+                float t = 0.0f;
+                if (rayTriangleIntersect(orig, dir, triangles[triIdx], t) && t < hit.t) {
+                    hit.t = t;
+                    bestTriId = triIdx;
+                }
+            }
+            continue;
+        }
+
+        float tLeft = 1e9f;
+        float tRight = 1e9f;
+        bool hitLeft = false;
+        bool hitRight = false;
+        if (node.left >= 0) {
+            hitLeft = rayAabbIntersect(orig, dir, nodes[node.left].bounds, tLeft);
+            if (tLeft >= hit.t) hitLeft = false;
+        }
+        if (node.right >= 0) {
+            hitRight = rayAabbIntersect(orig, dir, nodes[node.right].bounds, tRight);
+            if (tRight >= hit.t) hitRight = false;
+        }
+
+        if (hitLeft && hitRight) {
+            if (tLeft <= tRight) {
+                if (sp + 2 <= kMaxStackDepth) {
+                    stack[sp++] = node.right;
+                    stack[sp++] = node.left;
+                }
+            } else {
+                if (sp + 2 <= kMaxStackDepth) {
+                    stack[sp++] = node.left;
+                    stack[sp++] = node.right;
+                }
+            }
+        } else if (hitLeft) {
+            if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.left;
+        } else if (hitRight) {
+            if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.right;
+        }
+    }
+
+    if (bestTriId < 0) return false;
+    hit.hit = true;
+    hit.pos = d_add(orig, d_mul(dir, hit.t));
+    Vec3 n = normals[bestTriId];
+    if (d_dot(n, dir) > 0.0f) n = d_mul(n, -1.0f);
+    hit.normal = d_normalize(n);
+    hit.albedo = d_makeVec3(0.58f, 0.60f, 0.64f);
+    hit.material = kMatBunnyMetal;
+    return true;
+}
+
+__device__ SceneHit intersectScene(const Triangle* triangles,
+                                   const Vec3* normals,
+                                   const BVHNode* nodes,
+                                   int nodeCount,
+                                   const Vec3& orig,
+                                   const Vec3& dir) {
+    SceneHit hit{};
+    hit.hit = false;
+    hit.t = 1.0e30f;
+    intersectBvhTriangles(triangles, normals, nodes, nodeCount, orig, dir, hit);
+    intersectSphere(orig, dir, d_makeVec3(kMetalSphereX, kMetalSphereY, kMetalSphereZ), kMetalSphereR,
+                    d_makeVec3(0.86f, 0.87f, 0.90f), kMatMetalSphere, hit);
+    intersectGroundPlane(orig, dir, hit);
+    return hit;
+}
+
+__device__ bool isOccluded(const Triangle* triangles,
+                           const Vec3* normals,
+                           const BVHNode* nodes,
+                           int nodeCount,
+                           const Vec3& orig,
+                           const Vec3& dir,
+                           float maxDist) {
+    SceneHit shadowHit = intersectScene(triangles, normals, nodes, nodeCount, orig, dir);
+    return shadowHit.hit && shadowHit.t < maxDist;
+}
+
+__device__ Vec3 environmentColor(const Vec3& dir) {
+    const float t = 0.5f * (dir.y + 1.0f);
+    const Vec3 horizon = d_makeVec3(0.88f, 0.90f, 0.95f);
+    const Vec3 zenith = d_makeVec3(0.36f, 0.42f, 0.54f);
+    Vec3 sky = d_add(d_mul(horizon, 1.0f - t), d_mul(zenith, t));
+    const Vec3 sunDir = d_normalize(d_makeVec3(kLightDirX, kLightDirY, kLightDirZ));
+    const float sun = powf(fmaxf(d_dot(dir, sunDir), 0.0f), 320.0f);
+    sky = d_add(sky, d_mul(d_makeVec3(1.0f, 0.95f, 0.84f), 1.2f * sun));
+    return sky;
+}
+
+__device__ Vec3 directLighting(const Triangle* triangles,
+                               const Vec3* normals,
+                               const BVHNode* nodes,
+                               int nodeCount,
+                               const SceneHit& hit,
+                               const Vec3& viewDir,
+                               float specPower,
+                               float specScale) {
+    const Vec3 lightDir = d_normalize(d_makeVec3(kLightDirX, kLightDirY, kLightDirZ));
+    const Vec3 shadowOrig = d_add(hit.pos, d_mul(hit.normal, kRayEpsilon * 8.0f));
+    const bool blocked = isOccluded(triangles, normals, nodes, nodeCount, shadowOrig, lightDir, 1.0e20f);
+    const float ndotl = fmaxf(d_dot(hit.normal, lightDir), 0.0f);
+    const float vis = blocked ? 0.0f : 1.0f;
+    const Vec3 sunTint = d_makeVec3(1.00f, 0.95f, 0.84f);
+    Vec3 ambientTint = d_makeVec3(kAmbient * 0.72f, kAmbient * 0.78f, kAmbient * 0.90f);
+    if (blocked && hit.material == kMatGround) {
+        ambientTint = d_makeVec3(0.085f, 0.092f, 0.108f);
+    }
+    const Vec3 halfVec = d_normalize(d_add(lightDir, viewDir));
+    const float spec = powf(fmaxf(d_dot(hit.normal, halfVec), 0.0f), specPower) * specScale * vis;
+    Vec3 color = d_add(d_mulComp(hit.albedo, d_mul(sunTint, ndotl * vis)),
+                       d_mulComp(hit.albedo, ambientTint));
+    color = d_add(color, d_mul(sunTint, spec));
+    return color;
+}
+
+__device__ Vec3 traceColor(const Triangle* triangles,
+                           const Vec3* normals,
+                           const BVHNode* nodes,
+                           int nodeCount,
+                           Vec3 orig,
+                           Vec3 dir) {
+    Vec3 radiance = d_makeVec3(0.0f, 0.0f, 0.0f);
+    Vec3 throughput = d_makeVec3(1.0f, 1.0f, 1.0f);
+
+    for (int bounce = 0; bounce < kMaxBounces; ++bounce) {
+        const SceneHit hit = intersectScene(triangles, normals, nodes, nodeCount, orig, dir);
+        if (!hit.hit) {
+            radiance = d_add(radiance, d_mulComp(throughput, environmentColor(dir)));
+            break;
+        }
+
+        if (hit.material == kMatGround) {
+            const Vec3 direct = directLighting(triangles, normals, nodes, nodeCount, hit, d_mul(dir, -1.0f), 40.0f, 0.10f);
+            radiance = d_add(radiance, d_mulComp(throughput, direct));
+            const Vec3 refl = d_reflect(dir, hit.normal);
+            throughput = d_mulComp(throughput, d_makeVec3(0.08f, 0.08f, 0.08f));
+            orig = d_add(hit.pos, d_mul(hit.normal, kRayEpsilon * 8.0f));
+            dir = d_normalize(refl);
+            continue;
+        }
+
+        if (hit.material == kMatBunnyMetal) {
+            const Vec3 direct = directLighting(triangles, normals, nodes, nodeCount, hit, d_mul(dir, -1.0f), 14.0f, 0.035f);
+            radiance = d_add(radiance, d_mulComp(throughput, d_mul(direct, 0.95f)));
+            throughput = d_mulComp(throughput, d_mul(hit.albedo, 0.08f));
+            orig = d_add(hit.pos, d_mul(hit.normal, kRayEpsilon * 8.0f));
+            dir = d_normalize(d_reflect(dir, hit.normal));
+            continue;
+        }
+
+        if (hit.material == kMatMetalSphere) {
+            const Vec3 direct = directLighting(triangles, normals, nodes, nodeCount, hit, d_mul(dir, -1.0f), 72.0f, 0.30f);
+            radiance = d_add(radiance, d_mulComp(throughput, d_mul(direct, 0.62f)));
+            throughput = d_mulComp(throughput, d_mul(hit.albedo, 0.55f));
+            orig = d_add(hit.pos, d_mul(hit.normal, kRayEpsilon * 8.0f));
+            dir = d_normalize(d_reflect(dir, hit.normal));
+            continue;
+        }
+    }
+
+    return radiance;
+}
+
 __global__ void renderKernel(const Triangle* triangles,
                              const Vec3* normals,
                              const BVHNode* nodes,
@@ -486,81 +771,10 @@ __global__ void renderKernel(const Triangle* triangles,
         dir.y *= invLen;
         dir.z *= invLen;
 
-        int stack[kMaxStackDepth];
-        int sp = 0;
-        if (nodeCount > 0) stack[sp++] = 0;
-
-        float bestT = -1.0f;
-        int bestTriId = -1;
-
-        while (sp > 0) {
-            const int curIdx = stack[--sp];
-            if (curIdx < 0 || curIdx >= nodeCount) continue;
-            const BVHNode node = nodes[curIdx];
-            float tAabb = 0.0f;
-            if (!rayAabbIntersect(origin, dir, node.bounds, tAabb)) continue;
-            if (bestT >= 0.0f && tAabb >= bestT) continue;
-
-            if (node.left < 0 && node.right < 0) {
-                for (int i = 0; i < node.triCount; ++i) {
-                    const int triIdx = node.triStart + i;
-                    float t = 0.0f;
-                    if (rayTriangleIntersect(origin, dir, triangles[triIdx], t) && (bestT < 0.0f || t < bestT)) {
-                        bestT = t;
-                        bestTriId = triIdx;
-                    }
-                }
-                continue;
-            }
-
-            float tLeft = 1e9f;
-            float tRight = 1e9f;
-            bool hitLeft = false;
-            bool hitRight = false;
-            if (node.left >= 0) {
-                hitLeft = rayAabbIntersect(origin, dir, nodes[node.left].bounds, tLeft);
-                if (bestT >= 0.0f && tLeft >= bestT) hitLeft = false;
-            }
-            if (node.right >= 0) {
-                hitRight = rayAabbIntersect(origin, dir, nodes[node.right].bounds, tRight);
-                if (bestT >= 0.0f && tRight >= bestT) hitRight = false;
-            }
-
-            if (hitLeft && hitRight) {
-                if (tLeft <= tRight) {
-                    if (sp + 2 <= kMaxStackDepth) {
-                        stack[sp++] = node.right;
-                        stack[sp++] = node.left;
-                    }
-                } else {
-                    if (sp + 2 <= kMaxStackDepth) {
-                        stack[sp++] = node.left;
-                        stack[sp++] = node.right;
-                    }
-                }
-            } else if (hitLeft) {
-                if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.left;
-            } else if (hitRight) {
-                if (sp + 1 <= kMaxStackDepth) stack[sp++] = node.right;
-            }
-        }
-
-        uint8_t r = 0, g = 0, b = 0;
-        if (bestTriId >= 0) {
-            const Vec3 n = normals[bestTriId];
-            const float diff = fmaxf(n.x * kLightDirX + n.y * kLightDirY + n.z * kLightDirZ, 0.0f);
-            const float shade = diff + kAmbient;
-            const float cr = fminf(fmaxf(kBaseColorR * shade, 0.0f), 1.0f);
-            const float cg = fminf(fmaxf(kBaseColorG * shade, 0.0f), 1.0f);
-            const float cb = fminf(fmaxf(kBaseColorB * shade, 0.0f), 1.0f);
-            r = fp32ToByteLikeRenderPE(cr);
-            g = fp32ToByteLikeRenderPE(cg);
-            b = fp32ToByteLikeRenderPE(cb);
-        }
-
-        image[idx * 3 + 0] = r;
-        image[idx * 3 + 1] = g;
-        image[idx * 3 + 2] = b;
+        const Vec3 color = traceColor(triangles, normals, nodes, nodeCount, origin, dir);
+        image[idx * 3 + 0] = linearToByte(color.x);
+        image[idx * 3 + 1] = linearToByte(color.y);
+        image[idx * 3 + 2] = linearToByte(color.z);
     }
 }
 
@@ -602,8 +816,8 @@ int main(int argc, char** argv) {
         loadModelFromObj(opt.objPath, triangles, normals);
         if (triangles.empty()) throw std::runtime_error("no triangles loaded");
 
-        const auto bounds = computeScaledBoundsFromTriangles(triangles);
-        std::printf("Setup grid bounds (scaled 1.1): min=(%f, %f, %f), max=(%f, %f, %f)\n",
+        const auto bounds = computeBoundsFromTriangles(triangles);
+        std::printf("Setup grid bounds (normalized model): min=(%f, %f, %f), max=(%f, %f, %f)\n",
                     bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
 
         auto buildStart = std::chrono::high_resolution_clock::now();

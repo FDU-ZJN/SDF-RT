@@ -220,11 +220,23 @@ class TraceController(
       workers(w).io.end_exec := batchIssueEnd(w)
       when(workers(w).io.output_ready(batchIssueCtx(w))) {
         batchIssueValid(w) := false.B
+        when(batchIssueEnd(w)) {
+          ctxState(w)(batchIssueCtx(w)) := sWaitBatch
+        }.otherwise {
+          ctxCmdIdx(w)(batchIssueCtx(w)) := ctxCmdIdx(w)(batchIssueCtx(w)) + 1.U
+          ctxState(w)(batchIssueCtx(w)) := sReadyCont
+        }
       }
     }
 
     when(workers(w).io.out_done) {
       val outCtx = workers(w).io.out_ctx
+      when(issueGrantValid(w) && issueGrantCtx(w) === outCtx) {
+        issueGrantValid(w) := false.B
+      }
+      when(batchIssueValid(w) && batchIssueCtx(w) === outCtx) {
+        batchIssueValid(w) := false.B
+      }
       when(workers(w).io.out_best_hit) {
         ctxResult(w)(outCtx).meta := workers(w).io.out_meta
         ctxResult(w)(outCtx).hit := true.B
@@ -233,16 +245,13 @@ class TraceController(
         ctxState(w)(outCtx) := sResultPending
         slotFlushPending(ctxJob(w)(outCtx).traceSlot) := true.B
         clearCtx(w)(outCtx) := true.B
-      }.elsewhen(ctxCmdIdx(w)(outCtx) === (ctxJob(w)(outCtx).cmdCount - 1.U)) {
+      }.otherwise {
         ctxResult(w)(outCtx).meta := ctxJob(w)(outCtx).meta
         ctxResult(w)(outCtx).hit := false.B
         ctxResult(w)(outCtx).hitId := 0.U
         ctxResult(w)(outCtx).hitT := missT
         ctxState(w)(outCtx) := sResultPending
         clearCtx(w)(outCtx) := true.B
-      }.otherwise {
-        ctxCmdIdx(w)(outCtx) := ctxCmdIdx(w)(outCtx) + 1.U
-        ctxState(w)(outCtx) := sReadyCont
       }
     }
   }
@@ -289,7 +298,7 @@ class TraceController(
     when(workers(w).io.out_done) {
       val outCtx = workers(w).io.out_ctx
       assert(
-        ctxState(w)(outCtx) === sWaitBatch,
+        ctxState(w)(outCtx) === sWaitBatch || ctxState(w)(outCtx) === sReadyCont,
         "TraceController got TriPE out_done for a context that is not waiting for a batch"
       )
     }
