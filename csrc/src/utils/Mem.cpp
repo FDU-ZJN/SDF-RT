@@ -8,6 +8,7 @@
 #include <string>
 #include <iostream>
 #include <cstring>
+#include <cstdlib>
 // NPZ loader
 #include <cnpy.h>
 #include <vector>
@@ -703,6 +704,51 @@ inline void writeU32LE(uint8_t* dst, uint32_t value) {
     dst[2] = static_cast<uint8_t>((value >> 16) & 0xFFu);
     dst[3] = static_cast<uint8_t>((value >> 24) & 0xFFu);
 }
+
+struct TriCacheStats {
+    uint64_t totalAccess = 0;
+    uint64_t totalHit = 0;
+    std::array<uint64_t, 16> bankAccess{};
+    std::array<uint64_t, 16> bankHit{};
+    bool reportRegistered = false;
+};
+
+TriCacheStats& triCacheStats() {
+    static TriCacheStats stats;
+    return stats;
+}
+
+void printTriCacheStats() {
+    auto& stats = triCacheStats();
+    if (stats.totalAccess == 0) {
+        std::printf("[TriCache] No cache accesses recorded.\n");
+        return;
+    }
+
+    const double totalRate =
+        100.0 * static_cast<double>(stats.totalHit) / static_cast<double>(stats.totalAccess);
+    std::printf(
+        "[TriCache] total_access=%llu total_hit=%llu total_miss=%llu hit_rate=%.2f%%\n",
+        static_cast<unsigned long long>(stats.totalAccess),
+        static_cast<unsigned long long>(stats.totalHit),
+        static_cast<unsigned long long>(stats.totalAccess - stats.totalHit),
+        totalRate);
+
+    for (size_t bank = 0; bank < stats.bankAccess.size(); ++bank) {
+        if (stats.bankAccess[bank] == 0) {
+            continue;
+        }
+        const double bankRate =
+            100.0 * static_cast<double>(stats.bankHit[bank]) / static_cast<double>(stats.bankAccess[bank]);
+        std::printf(
+            "[TriCache] bank=%zu access=%llu hit=%llu miss=%llu hit_rate=%.2f%%\n",
+            bank,
+            static_cast<unsigned long long>(stats.bankAccess[bank]),
+            static_cast<unsigned long long>(stats.bankHit[bank]),
+            static_cast<unsigned long long>(stats.bankAccess[bank] - stats.bankHit[bank]),
+            bankRate);
+    }
+}
 } // namespace
 
 // Verilator DPI compatibility stubs
@@ -718,6 +764,26 @@ extern "C" __attribute__((weak)) int svSize(const svOpenArrayHandle h, int dim) 
     (void)h;
     (void)dim;
     return 0;
+}
+
+extern "C" void tri_cache_stats_record(int bank, int hit) {
+    auto& stats = triCacheStats();
+    if (!stats.reportRegistered) {
+        std::atexit(printTriCacheStats);
+        stats.reportRegistered = true;
+    }
+
+    ++stats.totalAccess;
+    if (hit != 0) {
+        ++stats.totalHit;
+    }
+
+    if (bank >= 0 && static_cast<size_t>(bank) < stats.bankAccess.size()) {
+        ++stats.bankAccess[static_cast<size_t>(bank)];
+        if (hit != 0) {
+            ++stats.bankHit[static_cast<size_t>(bank)];
+        }
+    }
 }
 
 extern "C" void tri_mem_read(int addr, const svOpenArrayHandle data) {

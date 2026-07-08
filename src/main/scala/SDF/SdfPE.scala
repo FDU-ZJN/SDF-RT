@@ -196,8 +196,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val iterAtAddr = pipeUInt(io.in.bits.iter, addrLatency)
 
   val slotIdAtAddr = pipeUInt(io.in.bits.meta.slotId, addrLatency)
-  val pixelXAtAddr = pipeUInt(io.in.bits.meta.pixelX, addrLatency)
-  val pixelYAtAddr = pipeUInt(io.in.bits.meta.pixelY, addrLatency)
 
 
   val sdfMemLatency = GlobalConfig.sdfMemDpiLatency
@@ -223,8 +221,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val bIter = pipeUInt(iterAtAddr,sdfMemLatency)
 
   val bSlotId = pipeUInt(slotIdAtAddr,sdfMemLatency)
-  val bPixelX = pipeUInt(pixelXAtAddr,  sdfMemLatency)
-  val bPixelY = pipeUInt(pixelYAtAddr, sdfMemLatency)
 
   io.sdf_mem_resp.ready := bValid && bInBounds
   when(bValid && bInBounds) {
@@ -268,8 +264,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val bPrevSdfCmp = pipeUInt(bPrevSdf, cmpLatency)
   val bSampleCmp = pipeUInt(bSample, cmpLatency)
   val bSlotIdCmp = pipeUInt(bSlotId, cmpLatency)
-  val bPixelXCmp = pipeUInt(bPixelX, cmpLatency)
-  val bPixelYCmp = pipeUInt(bPixelY, cmpLatency)
   val bSampleNegCmp = pipeBool(bSampleNeg, cmpLatency)
 
   val prevSdfHalf = fpHalf(bPrevSdfCmp)
@@ -304,16 +298,12 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val outPrevSdf = pipeUInt(nextPrevSdfRaw, advanceLatency)
 
   val outSlotId = pipeUInt(bSlotIdCmp, advanceLatency)
-  val outPixelX = pipeUInt(bPixelXCmp, advanceLatency)
-  val outPixelY = pipeUInt(bPixelYCmp, advanceLatency)
 
   val outDist = outCurrDist
 
   val hitOutValid = pipeBool(bValidCmp && bHit, advanceLatency)
   val hitOutIter = pipeUInt(bIterCmp + 1.U, advanceLatency)
   val hitOutSlotId = pipeUInt(bSlotIdCmp, advanceLatency)
-  val hitOutPixelX = pipeUInt(bPixelXCmp, advanceLatency)
-  val hitOutPixelY = pipeUInt(bPixelYCmp, advanceLatency)
   val hitOutOriginX = pipeUInt(bRayOXCmp, advanceLatency)
   val hitOutOriginY = pipeUInt(bRayOYCmp, advanceLatency)
   val hitOutOriginZ = pipeUInt(bRayOZCmp, advanceLatency)
@@ -329,8 +319,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   // --------------------
   io.out.valid := outValid
   io.out.bits.meta.slotId := outSlotId
-  io.out.bits.meta.pixelX := outPixelX
-  io.out.bits.meta.pixelY := outPixelY
   io.out.bits.hit := false.B
   io.out.bits.iter := outIter
   io.out.bits.prevSdf := outPrevSdf
@@ -345,8 +333,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   io.out_hit.valid := hitOutValid
   io.out_hit.bits.meta.slotId := hitOutSlotId
-  io.out_hit.bits.meta.pixelX := hitOutPixelX
-  io.out_hit.bits.meta.pixelY := hitOutPixelY
   io.out_hit.bits.hit := true.B
   io.out_hit.bits.iter := hitOutIter
   io.out_hit.bits.prevSdf := hitOutPrevSdf

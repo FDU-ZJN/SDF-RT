@@ -21,10 +21,8 @@ class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val dist = UInt(cfg.totalWidth.W)
 }
 
-class RayMeta(addrWidth: Int = 32, pixelWidth: Int = 16) extends Bundle {
+class RayMeta(addrWidth: Int = 32) extends Bundle {
   val slotId = UInt(addrWidth.W)
-  val pixelX = UInt(pixelWidth.W)
-  val pixelY = UInt(pixelWidth.W)
 }
 
 class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {

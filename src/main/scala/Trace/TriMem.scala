@@ -4,6 +4,49 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
+class TriMemReq(val c: TriPeConfig, val tagWidth: Int) extends Bundle {
+  val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+  val mask = UInt(c.numPEs.W)
+  val tag = UInt(tagWidth.W)
+}
+
+class TriMemResp(val c: TriPeConfig, val tagWidth: Int) extends Bundle {
+  val block = new TriangleBlock(c)
+  val tag = UInt(tagWidth.W)
+}
+
+class TriCacheStatsMonitor extends BlackBox with HasBlackBoxInline {
+  override def desiredName: String = "TriCacheStatsMonitor"
+
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val valid = Input(Bool())
+    val hit = Input(Bool())
+    val bank = Input(UInt(32.W))
+  })
+
+  setInline(
+    "TriCacheStatsMonitor.sv",
+    """import "DPI-C" function void tri_cache_stats_record(input int bank, input int hit);
+      |
+      |module TriCacheStatsMonitor (
+      |  input clk,
+      |  input reset,
+      |  input valid,
+      |  input hit,
+      |  input [31:0] bank
+      |);
+      |  always @(posedge clk) begin
+      |    if (!reset && valid) begin
+      |      tri_cache_stats_record(bank, {31'b0, hit});
+      |    end
+      |  end
+      |endmodule
+      |""".stripMargin
+  )
+}
+
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   require(isPow2(c.numPEs), s"TriangleMemWrapper requires numPEs to be power-of-two, got ${c.numPEs}")
 
@@ -12,43 +55,288 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
     val req_mask = Flipped(Decoupled(UInt(c.numPEs.W)))
     val resp     = Decoupled(new TriangleBlock(c))
   })
-  val dpi_mem = Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency))
+  val dpiMem = Module(new TriangleMemDPI(c, latency = GlobalConfig.triMemDpiLatency))
 
-  dpi_mem.io.clk := clock
-  dpi_mem.io.reset := reset
-  io.req.ready := dpi_mem.io.req_ready
-  io.req_mask.ready := dpi_mem.io.req_ready
-  dpi_mem.io.addr := io.req.bits
-  dpi_mem.io.req_valid := io.req.valid
-  dpi_mem.io.req_mask := io.req_mask.bits
+  dpiMem.io.clk := clock
+  dpiMem.io.reset := reset
+  io.req.ready := dpiMem.io.req_ready
+  io.req_mask.ready := dpiMem.io.req_ready
+  dpiMem.io.addr := io.req.bits
+  dpiMem.io.req_valid := io.req.valid
+  dpiMem.io.req_mask := io.req_mask.bits
 
-  val block_data = Wire(new TriangleBlock(c))
+  val blockData = Wire(new TriangleBlock(c))
   val bitsPerTri = 3 * 3 * c.cfg.totalWidth
-  for(i <- 0 until  c.numPEs) {
-    val hi = bitsPerTri*(i+1) - 1
-    val lo = bitsPerTri*i
-    val triBits = dpi_mem.io.data(hi, lo)
-    block_data.tris(i).v0.x := triBits(31, 0)
-    block_data.tris(i).v0.y := triBits(63, 32)
-    block_data.tris(i).v0.z := triBits(95, 64)
-    block_data.tris(i).v1.x := triBits(127, 96)
-    block_data.tris(i).v1.y := triBits(159, 128)
-    block_data.tris(i).v1.z := triBits(191, 160)
-    block_data.tris(i).v2.x := triBits(223, 192)
-    block_data.tris(i).v2.y := triBits(255, 224)
-    block_data.tris(i).v2.z := triBits(287, 256)
-    block_data.tris(i).id := dpi_mem.io.addr_q * c.numPEs.U(GlobalConfig.triMemAddrWidth.W) +
+  for (i <- 0 until c.numPEs) {
+    val hi = bitsPerTri * (i + 1) - 1
+    val lo = bitsPerTri * i
+    val triBits = dpiMem.io.data(hi, lo)
+    blockData.tris(i).v0.x := triBits(31, 0)
+    blockData.tris(i).v0.y := triBits(63, 32)
+    blockData.tris(i).v0.z := triBits(95, 64)
+    blockData.tris(i).v1.x := triBits(127, 96)
+    blockData.tris(i).v1.y := triBits(159, 128)
+    blockData.tris(i).v1.z := triBits(191, 160)
+    blockData.tris(i).v2.x := triBits(223, 192)
+    blockData.tris(i).v2.y := triBits(255, 224)
+    blockData.tris(i).v2.z := triBits(287, 256)
+    blockData.tris(i).id := dpiMem.io.addr_q * c.numPEs.U(GlobalConfig.triMemAddrWidth.W) +
       i.U(GlobalConfig.triMemAddrWidth.W)
-    block_data.mask(i) := dpi_mem.io.valid_mask(i)
+    blockData.mask(i) := dpiMem.io.valid_mask(i)
   }
 
-  io.resp.valid := dpi_mem.io.valid
-  io.resp.bits  := block_data
+  io.resp.valid := dpiMem.io.valid
+  io.resp.bits := blockData
+}
+
+class TriangleMemCachedBank(
+  val c: TriPeConfig,
+  val srcWidth: Int,
+  val tagWidth: Int,
+  val bankId: Int,
+  val numBanks: Int = GlobalConfig.triMemNumBanks,
+  val numSets: Int = GlobalConfig.triMemCacheSets,
+  val ways: Int = GlobalConfig.triMemCacheWays,
+  val reqQueueDepth: Int = GlobalConfig.triMemReqQueueDepth,
+  val mergeQueueDepth: Int = GlobalConfig.triMemMergeQueueDepth
+) extends Module {
+  require(ways == 2, s"TriangleMemCachedBank currently supports exactly 2 ways, got $ways")
+  require(isPow2(numSets), s"TriangleMemCachedBank requires power-of-two numSets, got $numSets")
+  require(reqQueueDepth > 0, "TriangleMemCachedBank reqQueueDepth must be > 0")
+  require(mergeQueueDepth > 0, "TriangleMemCachedBank mergeQueueDepth must be > 0")
+
+  private val bitsPerTri = 3 * 3 * c.cfg.totalWidth
+  private val totalBits = c.numPEs * bitsPerTri
+  private val bankSelW = math.max(1, log2Ceil(numBanks))
+  private val setIdxW = math.max(1, log2Ceil(numSets))
+  private val tagW = GlobalConfig.triMemAddrWidth - setIdxW
+  private val mergeIdxW = math.max(1, log2Ceil(mergeQueueDepth))
+  private val mergeCountW = log2Ceil(mergeQueueDepth + 1)
+
+  class BankReq extends Bundle {
+    val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+    val mask = UInt(c.numPEs.W)
+    val src = UInt(srcWidth.W)
+    val tag = UInt(tagWidth.W)
+  }
+
+  class BankResp extends Bundle {
+    val src = UInt(srcWidth.W)
+    val resp = new TriMemResp(c, tagWidth)
+  }
+
+  val io = IO(new Bundle {
+    val req = Flipped(Decoupled(new BankReq))
+    val resp = Decoupled(new BankResp)
+    val stat = Valid(Bool())
+  })
+
+  private def setIdxOf(addr: UInt): UInt = {
+    if (setIdxW == 0) 0.U else addr(setIdxW - 1, 0)
+  }
+
+  private def tagOf(addr: UInt): UInt = {
+    if (tagW == 0) 0.U else addr(GlobalConfig.triMemAddrWidth - 1, setIdxW)
+  }
+
+  private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt): TriangleBlock = {
+    val block = Wire(new TriangleBlock(c))
+    val numBanksU = numBanks.U(GlobalConfig.triMemAddrWidth.W)
+    val globalBlock = addrQ * numBanksU + bankId.U(GlobalConfig.triMemAddrWidth.W)
+    val bankBase = globalBlock * c.numPEs.U(GlobalConfig.triMemAddrWidth.W)
+    for (i <- 0 until c.numPEs) {
+      val hi = bitsPerTri * (i + 1) - 1
+      val lo = bitsPerTri * i
+      val triBits = data(hi, lo)
+      block.tris(i).v0.x := triBits(31, 0)
+      block.tris(i).v0.y := triBits(63, 32)
+      block.tris(i).v0.z := triBits(95, 64)
+      block.tris(i).v1.x := triBits(127, 96)
+      block.tris(i).v1.y := triBits(159, 128)
+      block.tris(i).v1.z := triBits(191, 160)
+      block.tris(i).v2.x := triBits(223, 192)
+      block.tris(i).v2.y := triBits(255, 224)
+      block.tris(i).v2.z := triBits(287, 256)
+      block.tris(i).id := bankBase + i.U(GlobalConfig.triMemAddrWidth.W)
+      block.mask(i) := mask(i)
+    }
+    block
+  }
+
+  val reqQ = Module(new Queue(new BankReq, reqQueueDepth))
+  reqQ.io.enq <> io.req
+
+  val cacheData = Seq.fill(ways)(SyncReadMem(numSets, UInt(totalBits.W)))
+  val cacheValid = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(false.B)))))
+  val cacheTag = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(0.U(tagW.W))))))
+  val cacheLru = RegInit(VecInit(Seq.fill(numSets)(false.B)))
+
+  val ddrFetch = Module(new TriangleMemDPI(
+    c,
+    latency = 1,
+    bankId = bankId,
+    numBanks = numBanks,
+    maxEntries = GlobalConfig.triMemBankDepth
+  ))
+  ddrFetch.io.clk := clock
+  ddrFetch.io.reset := reset
+
+  val sIdle :: sHitRead :: sHitResp :: sMissWait :: sEmitMissResp :: Nil = Enum(5)
+  val state = RegInit(sIdle)
+
+  val activeReq = Reg(new BankReq)
+  val activeAddr = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
+  val activeMask = Reg(UInt(c.numPEs.W))
+  val activeSrc = Reg(UInt(srcWidth.W))
+  val activeTag = Reg(UInt(tagWidth.W))
+
+  val hitWayReg = Reg(UInt(1.W))
+  val hitSetReg = Reg(UInt(setIdxW.W))
+  val hitMaskReg = Reg(UInt(c.numPEs.W))
+  val hitAddrReg = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
+  val hitSrcReg = Reg(UInt(srcWidth.W))
+  val hitTagReg = Reg(UInt(tagWidth.W))
+  val hitDataReg = Reg(UInt(totalBits.W))
+
+  val way0ReadEn = WireDefault(false.B)
+  val way1ReadEn = WireDefault(false.B)
+  val readSetIdx = WireDefault(0.U(setIdxW.W))
+  val way0ReadData = cacheData(0).read(readSetIdx, way0ReadEn)
+  val way1ReadData = cacheData(1).read(readSetIdx, way1ReadEn)
+
+  val refillSetReg = Reg(UInt(setIdxW.W))
+  val refillTagReg = Reg(UInt(tagW.W))
+  val refillVictimWay = Reg(UInt(1.W))
+  val refillDataReg = Reg(UInt(totalBits.W))
+
+  val mergedReqs = Reg(Vec(mergeQueueDepth, new BankReq))
+  val mergedCount = RegInit(0.U(mergeCountW.W))
+  val emitIdx = RegInit(0.U(mergeCountW.W))
+  val emitTotal = RegInit(0.U(mergeCountW.W))
+  val statsValid = WireDefault(false.B)
+  val statsHit = WireDefault(false.B)
+
+  ddrFetch.io.addr := activeAddr
+  ddrFetch.io.req_valid := false.B
+  ddrFetch.io.req_mask := Fill(c.numPEs, 1.U(1.W))
+  io.stat.valid := statsValid
+  io.stat.bits := statsHit
+
+  val headReq = reqQ.io.deq.bits
+  val headSet = setIdxOf(headReq.addr)
+  val headTag = tagOf(headReq.addr)
+  val headHitWay0 = cacheValid(0)(headSet) && cacheTag(0)(headSet) === headTag
+  val headHitWay1 = cacheValid(1)(headSet) && cacheTag(1)(headSet) === headTag
+  val headHit = headHitWay0 || headHitWay1
+  val headMissSameLine = state === sMissWait && headReq.addr === activeAddr
+  val missFetchDone = state === sMissWait && ddrFetch.io.valid
+  val canMergeHead = headMissSameLine && mergedCount =/= mergeQueueDepth.U
+
+  reqQ.io.deq.ready := false.B
+
+  when(state === sIdle && reqQ.io.deq.valid) {
+    reqQ.io.deq.ready := true.B
+    statsValid := true.B
+    statsHit := headHit
+    activeReq := headReq
+    activeAddr := headReq.addr
+    activeMask := headReq.mask
+    activeSrc := headReq.src
+    activeTag := headReq.tag
+    when(headHit) {
+      hitWayReg := Mux(headHitWay0, 0.U, 1.U)
+      hitSetReg := headSet
+      hitMaskReg := headReq.mask
+      hitAddrReg := headReq.addr
+      hitSrcReg := headReq.src
+      hitTagReg := headReq.tag
+      readSetIdx := headSet
+      way0ReadEn := headHitWay0
+      way1ReadEn := headHitWay1
+      state := sHitRead
+      when(headHitWay0) {
+        cacheLru(headSet) := true.B
+      }.otherwise {
+        cacheLru(headSet) := false.B
+      }
+    }.otherwise {
+      refillSetReg := headSet
+      refillTagReg := headTag
+      refillVictimWay := Mux(!cacheValid(0)(headSet), 0.U, Mux(!cacheValid(1)(headSet), 1.U, cacheLru(headSet)))
+      mergedCount := 0.U
+      emitIdx := 0.U
+      emitTotal := 0.U
+      ddrFetch.io.addr := headReq.addr
+      ddrFetch.io.req_valid := true.B
+      state := sMissWait
+    }
+  }.elsewhen(state === sHitRead) {
+    hitDataReg := Mux(hitWayReg === 0.U, way0ReadData, way1ReadData)
+    state := sHitResp
+  }.elsewhen(state === sMissWait) {
+    when(reqQ.io.deq.valid && canMergeHead && !missFetchDone) {
+      reqQ.io.deq.ready := true.B
+      statsValid := true.B
+      statsHit := false.B
+      mergedReqs(mergedCount(mergeIdxW - 1, 0)) := headReq
+      mergedCount := mergedCount + 1.U
+    }
+
+    when(ddrFetch.io.valid) {
+      refillDataReg := ddrFetch.io.data
+      when(refillVictimWay === 0.U) {
+        cacheData(0).write(refillSetReg, ddrFetch.io.data)
+      }.otherwise {
+        cacheData(1).write(refillSetReg, ddrFetch.io.data)
+      }
+      cacheValid(refillVictimWay)(refillSetReg) := true.B
+      cacheTag(refillVictimWay)(refillSetReg) := refillTagReg
+      cacheLru(refillSetReg) := !refillVictimWay
+      emitIdx := 0.U
+      emitTotal := mergedCount + 1.U
+      state := sEmitMissResp
+    }
+  }
+
+  val hitRespBlock = decodeBlock(hitDataReg, hitAddrReg, hitMaskReg)
+
+  val emitReq = Wire(new BankReq)
+  emitReq := activeReq
+  when(emitIdx =/= 0.U) {
+    emitReq := mergedReqs((emitIdx - 1.U)(mergeIdxW - 1, 0))
+  }
+  val missRespBlock = decodeBlock(refillDataReg, activeAddr, emitReq.mask)
+
+  io.resp.valid := false.B
+  io.resp.bits := 0.U.asTypeOf(new BankResp)
+
+  when(state === sHitResp) {
+    io.resp.valid := true.B
+    io.resp.bits.src := hitSrcReg
+    io.resp.bits.resp.block := hitRespBlock
+    io.resp.bits.resp.tag := hitTagReg
+    when(io.resp.ready) {
+      state := sIdle
+    }
+  }.elsewhen(state === sEmitMissResp) {
+    io.resp.valid := true.B
+    io.resp.bits.src := emitReq.src
+    io.resp.bits.resp.block := missRespBlock
+    io.resp.bits.resp.tag := emitReq.tag
+    when(io.resp.ready) {
+      when(emitIdx + 1.U >= emitTotal) {
+        state := sIdle
+      }.otherwise {
+        emitIdx := emitIdx + 1.U
+      }
+    }
+  }
 }
 
 class TriangleMemMultiPort(
   val c: TriPeConfig,
   val numPorts: Int,
+  val tagWidth: Int,
   val numBanks: Int = GlobalConfig.triMemNumBanks
 ) extends Module {
   require(numPorts > 0, "TriangleMemMultiPort needs at least one port")
@@ -58,18 +346,17 @@ class TriangleMemMultiPort(
 
   private val srcW = math.max(1, log2Ceil(numPorts))
   private val bankSelW = math.max(1, log2Ceil(numBanks))
-  private val peSelW = math.max(1, log2Ceil(c.numPEs))
 
   class BankReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
     val mask = UInt(c.numPEs.W)
     val src = UInt(srcW.W)
+    val tag = UInt(tagWidth.W)
   }
 
   val io = IO(new Bundle {
-    val req = Vec(numPorts, Flipped(Decoupled(UInt(GlobalConfig.triMemAddrWidth.W))))
-    val req_mask = Vec(numPorts, Flipped(Decoupled(UInt(c.numPEs.W))))
-    val resp = Vec(numPorts, Decoupled(new TriangleBlock(c)))
+    val req = Vec(numPorts, Flipped(Decoupled(new TriMemReq(c, tagWidth))))
+    val resp = Vec(numPorts, Decoupled(new TriMemResp(c, tagWidth)))
   })
 
   private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt, bankId: Int): TriangleBlock = {
@@ -97,82 +384,142 @@ class TriangleMemMultiPort(
     block
   }
 
-  val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemDPI(
-    c,
-    latency = GlobalConfig.triMemDpiLatency,
-    bankId = b,
-    numBanks = numBanks,
-    maxEntries = GlobalConfig.triMemBankDepth
-  )))
-  val arbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemCachedBank(c, srcW, tagWidth, b, numBanks)))
+      val statMons = Seq.fill(numBanks)(Module(new TriCacheStatsMonitor))
+      val reqArbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
 
-  val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
-  val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
-  for (p <- 0 until numPorts) {
-    targetedBank(p) := (if (numBanks == 1) 0.U else io.req(p).bits(bankSelW - 1, 0))
-    bankLocalAddr(p) := (if (numBanks == 1) io.req(p).bits else io.req(p).bits >> bankSelW)
-  }
-
-  val reqReady = Wire(Vec(numPorts, Bool()))
-  val reqMaskReady = Wire(Vec(numPorts, Bool()))
-  reqReady := VecInit(Seq.fill(numPorts)(false.B))
-  reqMaskReady := VecInit(Seq.fill(numPorts)(false.B))
-
-  for (b <- 0 until numBanks) {
-    for (p <- 0 until numPorts) {
-      val targetsBank = targetedBank(p) === b.U
-      arbs(b).io.in(p).valid := io.req(p).valid && io.req_mask(p).valid && targetsBank
-      arbs(b).io.in(p).bits.addr := bankLocalAddr(p)
-      arbs(b).io.in(p).bits.mask := io.req_mask(p).bits
-      arbs(b).io.in(p).bits.src := p.U
-
-      when(targetsBank) {
-        reqReady(p) := arbs(b).io.in(p).ready && banks(b).io.req_ready
-        reqMaskReady(p) := arbs(b).io.in(p).ready && banks(b).io.req_ready
+      for (b <- 0 until numBanks) {
+        statMons(b).io.clk := clock
+        statMons(b).io.reset := reset
+        statMons(b).io.valid := banks(b).io.stat.valid
+        statMons(b).io.hit := banks(b).io.stat.bits
+        statMons(b).io.bank := b.U
       }
-    }
 
-    banks(b).io.clk := clock
-    banks(b).io.reset := reset
-    banks(b).io.addr := arbs(b).io.out.bits.addr
-    banks(b).io.req_valid := arbs(b).io.out.valid
-    banks(b).io.req_mask := arbs(b).io.out.bits.mask
-    arbs(b).io.out.ready := banks(b).io.req_ready
-  }
+      val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
+      val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
+      for (p <- 0 until numPorts) {
+        targetedBank(p) := (if (numBanks == 1) 0.U else io.req(p).bits.addr(bankSelW - 1, 0))
+        bankLocalAddr(p) := (if (numBanks == 1) io.req(p).bits.addr else io.req(p).bits.addr >> bankSelW)
+      }
 
-  for (p <- 0 until numPorts) {
-    io.req(p).ready := reqReady(p)
-    io.req_mask(p).ready := reqMaskReady(p)
-  }
+      val reqReady = Wire(Vec(numPorts, Bool()))
+      reqReady := VecInit(Seq.fill(numPorts)(false.B))
 
-  val respValid = Wire(Vec(numPorts, Bool()))
-  val respBits = Wire(Vec(numPorts, new TriangleBlock(c)))
-  for (p <- 0 until numPorts) {
-    val defaultBlock = Wire(new TriangleBlock(c))
-    for (i <- 0 until c.numPEs) {
-      defaultBlock.tris(i) := 0.U.asTypeOf(new Triangle(c.cfg))
-      defaultBlock.mask(i) := false.B
-    }
-    respValid(p) := false.B
-    respBits(p) := defaultBlock
-  }
+      for (b <- 0 until numBanks) {
+        for (p <- 0 until numPorts) {
+          val targetsBank = targetedBank(p) === b.U
+          reqArbs(b).io.in(p).valid := io.req(p).valid && targetsBank
+          reqArbs(b).io.in(p).bits.addr := bankLocalAddr(p)
+          reqArbs(b).io.in(p).bits.mask := io.req(p).bits.mask
+          reqArbs(b).io.in(p).bits.src := p.U
+          reqArbs(b).io.in(p).bits.tag := io.req(p).bits.tag
+          when(targetsBank) {
+            reqReady(p) := reqArbs(b).io.in(p).ready && banks(b).io.req.ready
+          }
+        }
+        banks(b).io.req.valid := reqArbs(b).io.out.valid
+        banks(b).io.req.bits := reqArbs(b).io.out.bits
+        reqArbs(b).io.out.ready := banks(b).io.req.ready
+      }
 
-  for (b <- 0 until numBanks) {
-    val srcPipe = Reg(Vec(GlobalConfig.triMemDpiLatency, UInt(srcW.W)))
-    srcPipe(0) := Mux(arbs(b).io.out.fire, arbs(b).io.out.bits.src, 0.U)
-    for (i <- 1 until GlobalConfig.triMemDpiLatency) {
-      srcPipe(i) := srcPipe(i - 1)
-    }
+      for (p <- 0 until numPorts) {
+        io.req(p).ready := reqReady(p)
+      }
 
-    val bankBlock = decodeBlock(banks(b).io.data, banks(b).io.addr_q, banks(b).io.valid_mask, b)
-    when(banks(b).io.valid) {
-      respValid(srcPipe.last) := true.B
-      respBits(srcPipe.last) := bankBlock
-    }
-  }
+      val respArbs = Seq.fill(numPorts)(Module(new RRArbiter(new TriMemResp(c, tagWidth), numBanks)))
+      for (p <- 0 until numPorts) {
+        for (b <- 0 until numBanks) {
+          respArbs(p).io.in(b).valid := banks(b).io.resp.valid && banks(b).io.resp.bits.src === p.U
+          respArbs(p).io.in(b).bits := banks(b).io.resp.bits.resp
+        }
+        io.resp(p) <> respArbs(p).io.out
+      }
 
-  for (p <- 0 until numPorts) {
-    io.resp(p).valid := respValid(p)
-    io.resp(p).bits := respBits(p)
+      for (b <- 0 until numBanks) {
+        val respReadyVec = Wire(Vec(numPorts, Bool()))
+        for (p <- 0 until numPorts) {
+          respReadyVec(p) := respArbs(p).io.in(b).ready && banks(b).io.resp.bits.src === p.U
+        }
+        banks(b).io.resp.ready := respReadyVec.asUInt.orR
+      }
+
+    case _ =>
+      val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemDPI(
+        c,
+        latency = GlobalConfig.triMemDpiLatency,
+        bankId = b,
+        numBanks = numBanks,
+        maxEntries = GlobalConfig.triMemBankDepth
+      )))
+      val arbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
+
+      val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
+      val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
+      for (p <- 0 until numPorts) {
+        targetedBank(p) := (if (numBanks == 1) 0.U else io.req(p).bits.addr(bankSelW - 1, 0))
+        bankLocalAddr(p) := (if (numBanks == 1) io.req(p).bits.addr else io.req(p).bits.addr >> bankSelW)
+      }
+
+      val reqReady = Wire(Vec(numPorts, Bool()))
+      reqReady := VecInit(Seq.fill(numPorts)(false.B))
+      val tagPipe = Seq.fill(numBanks)(RegInit(VecInit(Seq.fill(GlobalConfig.triMemDpiLatency)(0.U(tagWidth.W)))))
+
+      for (b <- 0 until numBanks) {
+        for (p <- 0 until numPorts) {
+          val targetsBank = targetedBank(p) === b.U
+          arbs(b).io.in(p).valid := io.req(p).valid && targetsBank
+          arbs(b).io.in(p).bits.addr := bankLocalAddr(p)
+          arbs(b).io.in(p).bits.mask := io.req(p).bits.mask
+          arbs(b).io.in(p).bits.src := p.U
+          arbs(b).io.in(p).bits.tag := io.req(p).bits.tag
+
+          when(targetsBank) {
+            reqReady(p) := arbs(b).io.in(p).ready && banks(b).io.req_ready
+          }
+        }
+
+        banks(b).io.clk := clock
+        banks(b).io.reset := reset
+        banks(b).io.addr := arbs(b).io.out.bits.addr
+        banks(b).io.req_valid := arbs(b).io.out.valid
+        banks(b).io.req_mask := arbs(b).io.out.bits.mask
+        arbs(b).io.out.ready := banks(b).io.req_ready
+      }
+
+      for (p <- 0 until numPorts) {
+        io.req(p).ready := reqReady(p)
+      }
+
+      val respValid = Wire(Vec(numPorts, Bool()))
+      val respBits = Wire(Vec(numPorts, new TriMemResp(c, tagWidth)))
+      for (p <- 0 until numPorts) {
+        respValid(p) := false.B
+        respBits(p) := 0.U.asTypeOf(new TriMemResp(c, tagWidth))
+      }
+
+      for (b <- 0 until numBanks) {
+        val srcPipe = Reg(Vec(GlobalConfig.triMemDpiLatency, UInt(srcW.W)))
+        srcPipe(0) := Mux(arbs(b).io.out.fire, arbs(b).io.out.bits.src, 0.U)
+        tagPipe(b)(0) := Mux(arbs(b).io.out.fire, arbs(b).io.out.bits.tag, 0.U)
+        for (i <- 1 until GlobalConfig.triMemDpiLatency) {
+          srcPipe(i) := srcPipe(i - 1)
+          tagPipe(b)(i) := tagPipe(b)(i - 1)
+        }
+
+        val bankBlock = decodeBlock(banks(b).io.data, banks(b).io.addr_q, banks(b).io.valid_mask, b)
+        when(banks(b).io.valid) {
+          respValid(srcPipe.last) := true.B
+          respBits(srcPipe.last).block := bankBlock
+          respBits(srcPipe.last).tag := tagPipe(b).last
+        }
+      }
+
+      for (p <- 0 until numPorts) {
+        io.resp(p).valid := respValid(p)
+        io.resp(p).bits := respBits(p)
+      }
   }
 }

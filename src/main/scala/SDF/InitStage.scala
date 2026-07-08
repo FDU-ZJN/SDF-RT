@@ -90,8 +90,6 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   io.out.bits.ray.dir.z := outRdZ
   io.out.bits.ray.dist := tEntry
   io.out.bits.meta.slotId := outSlot
-  io.out.bits.meta.pixelX := 0.U
-  io.out.bits.meta.pixelY := 0.U
 
   when(io.out.valid) {
     assert(io.out.ready, "InitStage expects out.ready to stay high")

@@ -17,13 +17,12 @@ class TraceStage(c: TriPeConfig = TriPeConfig()) extends Module {
   })
 
   val pe  = Module(new TriPE(c))
-  val mem = Module(new TriangleMemWrapper(c))
+  val mem = Module(new TriangleMemMultiPort(c, numPorts = 1, tagWidth = 2))
 
   // --- 直接互联 (Direct Interconnect) ---
   // 1. 内存接口对接
-  mem.io.req <> pe.io.mem_req
-  mem.io.req_mask <> pe.io.mem_req_mask
-  pe.io.mem_resp <> mem.io.resp
+  mem.io.req(0) <> pe.io.mem_req
+  pe.io.mem_resp <> mem.io.resp(0)
 
   pe.io.ray_in := io.issue_in.bits.ray
   pe.io.ray_meta := io.issue_in.bits.meta

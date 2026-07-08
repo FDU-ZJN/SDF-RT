@@ -57,6 +57,8 @@ object GlobalConfig {
 
   val normalMemDpiLatency = 3
   val triMemDpiLatency = 3
+  val triMemCacheHitLatency = 1
+  val triMemMissPenalty = 60
   val sdfMemDpiLatency = 3
   val subgridMemDpiLatency = 2
   val fsqrtLatency = 11
@@ -81,6 +83,10 @@ object GlobalConfig {
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
   val triMemDataWidth = triMemNumPEs * 9 * 32
+  val triMemCacheSets = 256
+  val triMemCacheWays = 2
+  val triMemReqQueueDepth = 8
+  val triMemMergeQueueDepth = 8
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16

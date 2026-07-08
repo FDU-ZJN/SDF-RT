@@ -126,7 +126,7 @@ V_OPTS = --cc --trace --exe -j $(shell nproc) \
 # 目标程序路径（放在各自模式文件夹内）
 TARGET = $(VERILOG_DIR)/test_runner
 
-.PHONY: all clean run wave generate convert_vcd
+.PHONY: all clean run sim wave generate convert_vcd
 
 all: $(TARGET)
 
@@ -178,30 +178,33 @@ endif
 	fi
 	@$(MAKE) --no-print-directory convert_vcd MODE=$(MODE)
 
+sim:
+	$(MAKE) MODE=fpga generate run
+
 convert_vcd:
 	@echo "开始遍历并转换 VCD -> WLF ..."
-	@if [ ! -x "$(VCD2WLF)" ]; then \
+	@set -e; \
+	if [ ! -x "$(VCD2WLF)" ]; then \
 		echo "警告: 未找到可执行的 vcd2wlf 工具: $(VCD2WLF)"; \
 		echo "跳过转换。"; \
-		exit 0; \
-	fi
-	@set -e; \
-	converted=0; \
-	for dir in "$(CSRC_DIR)" "$(VERILOG_DIR)"; do \
-		if [ -d "$$dir" ]; then \
-			for vcd in "$$dir"/*.vcd; do \
-				[ -e "$$vcd" ] || continue; \
-				wlf="$${vcd%.vcd}.wlf"; \
-				echo "转换: $$vcd -> $$wlf"; \
-				"$(VCD2WLF)" "$$vcd" "$$wlf"; \
-				converted=$$((converted + 1)); \
-			done; \
-		fi; \
-	done; \
-	if [ "$$converted" -eq 0 ]; then \
-		echo "未发现可转换的 .vcd 文件。"; \
 	else \
-		echo "转换完成，共 $$converted 个文件。"; \
+		converted=0; \
+		for dir in "$(CSRC_DIR)" "$(VERILOG_DIR)"; do \
+			if [ -d "$$dir" ]; then \
+				for vcd in "$$dir"/*.vcd; do \
+					[ -e "$$vcd" ] || continue; \
+					wlf="$${vcd%.vcd}.wlf"; \
+					echo "转换: $$vcd -> $$wlf"; \
+					"$(VCD2WLF)" "$$vcd" "$$wlf"; \
+					converted=$$((converted + 1)); \
+				done; \
+			fi; \
+		done; \
+		if [ "$$converted" -eq 0 ]; then \
+			echo "未发现可转换的 .vcd 文件。"; \
+		else \
+			echo "转换完成，共 $$converted 个文件。"; \
+		fi; \
 	fi
 
 wave:

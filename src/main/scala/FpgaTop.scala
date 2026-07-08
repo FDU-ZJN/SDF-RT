@@ -134,6 +134,7 @@ class FpgaTop(
   traceWbQ.io.enq.bits.rgb8 := 0.U
   traceController.io.result_out.ready := traceWbQ.io.enq.ready
 
+
   commitQueue.io.writeback <> traceWbQ.io.deq
   commitQueue.io.writeback6.valid := false.B
   commitQueue.io.writeback6.bits  := 0.U.asTypeOf(new RenderResult(c.cfg, c.addrWidth))
@@ -162,8 +163,6 @@ class FpgaTop(
     initStages(lane).io.in.valid := inputPair
     initStages(lane).io.in.bits.rd := 0.U.asTypeOf(new Vec3(c.cfg))
     initStages(lane).io.in.bits.meta.slotId := 0.U
-    initStages(lane).io.in.bits.meta.pixelX := 0.U
-    initStages(lane).io.in.bits.meta.pixelY := 0.U
     postInitQs(lane).io.enq <> initStages(lane).io.out
   }
 

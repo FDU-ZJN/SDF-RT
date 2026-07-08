@@ -6,7 +6,8 @@ namespace config {
 inline constexpr bool kFpgaMode = false;
 inline constexpr int kWidth = 1920;
 inline constexpr int kHeight = 1080;
-inline constexpr int kMaxWaitCycles = 100000;
+inline constexpr int kMaxWaitCycles = 1000;
+inline constexpr int kTraceNoProgressCycles = 200000;
 inline constexpr int kTriNumPE = 1;
 inline constexpr int kTriNumBanks = 8;
 inline constexpr int kSDFGlobalRes = 16;

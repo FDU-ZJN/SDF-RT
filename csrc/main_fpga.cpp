@@ -203,7 +203,6 @@ int main(int argc, char** argv) {
     uint64_t totalCycles = 0;
     constexpr uint64_t maxTotalCycles = 100000000ULL;
 
-
     while (traceResultsReceived < framePixels) {
         dut->io_trace_resp_ready = (traceResultQueue.size() < 64) ? 1 : 0;
 
@@ -246,8 +245,8 @@ int main(int argc, char** argv) {
                     image[idx + 1] = 0;
                     image[idx + 2] = 0;
                 }
-                ++traceRendered;
             }
+            ++traceRendered;
             traceResultQueue.pop();
             stallCycles = 0;
         }
@@ -259,8 +258,8 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
 
-        if (++stallCycles >= kMaxWaitCycles) {
-            std::cerr << "\nTimeout: no progress for " << stallCycles << " cycles." << endl;
+        if (++stallCycles >= kTraceNoProgressCycles) {
+            std::cerr << "\nTimeout: no completed trace response for " << stallCycles << " cycles." << endl;
             std::cerr << "Trace results: " << traceResultsReceived << " / " << framePixels
                       << "  rendered: " << traceRendered
                       << endl;

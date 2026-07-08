@@ -11,6 +11,7 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   private val ctxCount = 2
   private val ctxW = 1
+  private val memTagW = ctxW + 1
   private val triPeSelW = math.max(1, log2Ceil(c.numPEs))
 
   val io = IO(new Bundle {
@@ -25,9 +26,8 @@ class TriPE(val c: TriPeConfig) extends Module {
     val end_exec = Input(Bool())
     val clear_ctx = Input(Vec(ctxCount, Bool()))
 
-    val mem_req = Decoupled(UInt(c.addrWidth.W))
-    val mem_req_mask = Decoupled(UInt(c.numPEs.W))
-    val mem_resp = Flipped(Decoupled(new TriangleBlock(c)))
+    val mem_req = Decoupled(new TriMemReq(c, memTagW))
+    val mem_resp = Flipped(Decoupled(new TriMemResp(c, memTagW)))
 
     val start_ready = Output(Vec(ctxCount, Bool()))
     val output_ready = Output(Vec(ctxCount, Bool()))
@@ -62,6 +62,10 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val resultTReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
   private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val debugMon = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val debugMemReqCount = RegInit(VecInit(Seq.fill(ctxCount)(0.U(16.W))))
+  private val debugHitCmpCount = RegInit(VecInit(Seq.fill(ctxCount)(0.U(16.W))))
+  private val debugTriRetireCount = RegInit(VecInit(Seq.fill(ctxCount)(0.U(16.W))))
 
   class BatchCmd extends Bundle {
     val tri = new TriBatch(c.addrWidth)
@@ -86,6 +90,10 @@ class TriPE(val c: TriPeConfig) extends Module {
     resultTReg(idx) := missT
     resultMetaReg(idx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
     resultValidReg(idx) := false.B
+    debugMon(idx) := false.B
+    debugMemReqCount(idx) := 0.U
+    debugHitCmpCount(idx) := 0.U
+    debugTriRetireCount(idx) := 0.U
     activeEpoch(idx) := !activeEpoch(idx)
   }
 
@@ -127,6 +135,10 @@ class TriPE(val c: TriPeConfig) extends Module {
     hasHit(io.ray_ctx) := false.B
     hitStop(io.ray_ctx) := false.B
     resultValidReg(io.ray_ctx) := false.B
+    debugMon(io.ray_ctx) := false.B
+    debugMemReqCount(io.ray_ctx) := 0.U
+    debugHitCmpCount(io.ray_ctx) := 0.U
+    debugTriRetireCount(io.ray_ctx) := 0.U
   }
 
   for (ctx <- 0 until ctxCount) {
@@ -192,46 +204,35 @@ class TriPE(val c: TriPeConfig) extends Module {
     batchTriIdx(memSel) := batchTriIdx(memSel) + blockIssueCount
     batchTrisRemaining(memSel) := batchTrisRemaining(memSel) - blockIssueCount
     memRr := !memSel(0)
+    when(debugMon(memSel)) {
+      debugMemReqCount(memSel) := debugMemReqCount(memSel) + blockIssueCount
+    }
   }
 
   val memReqStale = memReqQ.io.deq.valid &&
     ((memReqQ.io.deq.bits.epoch =/= activeEpoch(memReqQ.io.deq.bits.ctx)) ||
       io.clear_ctx(memReqQ.io.deq.bits.ctx))
   val memReqToMemValid = memReqQ.io.deq.valid && !memReqStale
-  val memReqToMemReady = io.mem_req.ready && io.mem_req_mask.ready
+  val memReqToMemReady = io.mem_req.ready
+  val memReqIssued = memReqQ.io.deq.fire && !memReqStale
   io.mem_req.valid := memReqToMemValid
-  io.mem_req.bits := memReqQ.io.deq.bits.blockAddr
-  io.mem_req_mask.valid := memReqToMemValid
-  io.mem_req_mask.bits := memReqQ.io.deq.bits.mask
+  io.mem_req.bits.addr := memReqQ.io.deq.bits.blockAddr
+  io.mem_req.bits.mask := memReqQ.io.deq.bits.mask
+  io.mem_req.bits.tag := Cat(memReqQ.io.deq.bits.epoch, memReqQ.io.deq.bits.ctx)
   memReqQ.io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
 
-  private val memReqPipeLen = GlobalConfig.triMemDpiLatency
-  private val memReqLivePipe = RegInit(VecInit(Seq.fill(memReqPipeLen)(false.B)))
-  private val memReqCtxPipe = Reg(Vec(memReqPipeLen, UInt(ctxW.W)))
-  private val memReqEpochPipe = Reg(Vec(memReqPipeLen, Bool()))
-  private val memReqIssued = memReqQ.io.deq.fire && !memReqStale
-
   io.mem_resp.ready := true.B
-  memReqLivePipe(0) := memReqIssued
-  memReqCtxPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.ctx, 0.U)
-  memReqEpochPipe(0) := Mux(memReqIssued, memReqQ.io.deq.bits.epoch, false.B)
-  for (i <- 1 until memReqPipeLen) {
-    memReqLivePipe(i) := memReqLivePipe(i - 1)
-    memReqCtxPipe(i) := memReqCtxPipe(i - 1)
-    memReqEpochPipe(i) := memReqEpochPipe(i - 1)
-  }
-
-  private val memRespCtx = memReqCtxPipe.last
+  private val memRespCtx = io.mem_resp.bits.tag(0)
+  private val memRespEpoch = io.mem_resp.bits.tag(1)
   private val memRespLive = io.mem_resp.fire &&
-    memReqLivePipe.last &&
-    (memReqEpochPipe.last === activeEpoch(memRespCtx)) &&
+    (memRespEpoch === activeEpoch(memRespCtx)) &&
     !io.clear_ctx(memRespCtx)
 
   private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
   for (lane <- 0 until c.numPEs) {
     pes(lane).io.ray := rayReg(memRespCtx)
-    pes(lane).io.tri := io.mem_resp.bits.tris(lane)
-    pes(lane).io.in_valid := memRespLive && io.mem_resp.bits.mask(lane)
+    pes(lane).io.tri := io.mem_resp.bits.block.tris(lane)
+    pes(lane).io.in_valid := memRespLive && io.mem_resp.bits.block.mask(lane)
   }
 
   private val peLatency =
@@ -265,10 +266,13 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val hitCmpBits = PipeUtils.pipeData(hitArb.io.out.bits, c.cfg.fcmpLatency)
 
   for (ctx <- 0 until ctxCount) {
-    val triIssued = Mux(memReqQ.io.enq.fire && memSel === ctx.U, blockIssueCount, 0.U)
+    val triIssued = Mux(memReqIssued && memReqQ.io.deq.bits.ctx === ctx.U, memReqQ.io.deq.bits.count, 0.U)
     val triRetired = PopCount(VecInit((0 until c.numPEs).map(lane =>
       pes(lane).io.out_valid && peCtxOut === ctx.U
     )))
+    when(triRetired =/= 0.U && debugMon(ctx)) {
+      debugTriRetireCount(ctx) := debugTriRetireCount(ctx) + triRetired
+    }
     when(io.clear_ctx(ctx)) {
       triOutstanding(ctx) := 0.U
     }.otherwise {
@@ -277,6 +281,9 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   when(hitCmpValid) {
+    when(debugMon(hitCmpBits.ctx)) {
+      debugHitCmpCount(hitCmpBits.ctx) := debugHitCmpCount(hitCmpBits.ctx) + 1.U
+    }
     hitStop(hitCmpBits.ctx) := true.B
     when(fcmp.io.lt || !hasHit(hitCmpBits.ctx)) {
       bestT(hitCmpBits.ctx) := hitCmpBits.t
