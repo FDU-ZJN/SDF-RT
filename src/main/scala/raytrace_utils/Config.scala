@@ -87,6 +87,7 @@ object GlobalConfig {
   val triMemCacheWays = 2
   val triMemReqQueueDepth = 8
   val triMemMergeQueueDepth = 8
+  val triMemMshrEntries = 4
 
   // Normal memory: address width (triangle index)
   val normalMemAddrWidth = 16

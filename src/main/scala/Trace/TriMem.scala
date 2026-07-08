@@ -15,6 +15,65 @@ class TriMemResp(val c: TriPeConfig, val tagWidth: Int) extends Bundle {
   val tag = UInt(tagWidth.W)
 }
 
+class TriCacheDataArrayBB(
+  val dataWidth: Int,
+  val depth: Int
+) extends BlackBox(
+      Map(
+        "DATA_WIDTH" -> dataWidth,
+        "DEPTH" -> depth,
+        "ADDR_WIDTH" -> math.max(1, log2Ceil(depth))
+      )
+    )
+    with HasBlackBoxResource {
+  val addrWidth = math.max(1, log2Ceil(depth))
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val rd_en = Input(Bool())
+    val rd_addr = Input(UInt(addrWidth.W))
+    val rd_data = Output(UInt(dataWidth.W))
+    val wr_en = Input(Bool())
+    val wr_addr = Input(UInt(addrWidth.W))
+    val wr_data = Input(UInt(dataWidth.W))
+  })
+  addResource("/TriCacheDataArray.sv")
+}
+
+class TriCacheDataArray(
+  val dataWidth: Int,
+  val depth: Int,
+  val useXpm: Boolean
+) extends Module {
+  val addrWidth = math.max(1, log2Ceil(depth))
+  val io = IO(new Bundle {
+    val rd_en = Input(Bool())
+    val rd_addr = Input(UInt(addrWidth.W))
+    val rd_data = Output(UInt(dataWidth.W))
+    val wr_en = Input(Bool())
+    val wr_addr = Input(UInt(addrWidth.W))
+    val wr_data = Input(UInt(dataWidth.W))
+  })
+
+  if (useXpm) {
+    val ram = Module(new TriCacheDataArrayBB(dataWidth, depth))
+    ram.io.clk := clock
+    ram.io.reset := reset
+    ram.io.rd_en := io.rd_en
+    ram.io.rd_addr := io.rd_addr
+    ram.io.wr_en := io.wr_en
+    ram.io.wr_addr := io.wr_addr
+    ram.io.wr_data := io.wr_data
+    io.rd_data := ram.io.rd_data
+  } else {
+    val mem = SyncReadMem(depth, UInt(dataWidth.W))
+    io.rd_data := mem.read(io.rd_addr, io.rd_en)
+    when(io.wr_en) {
+      mem.write(io.wr_addr, io.wr_data)
+    }
+  }
+}
+
 class TriCacheStatsMonitor extends BlackBox with HasBlackBoxInline {
   override def desiredName: String = "TriCacheStatsMonitor"
 
@@ -199,6 +258,116 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   io.resp.bits := blockData
 }
 
+class TriMemBackendReq(val c: TriPeConfig, val numBanks: Int, val idWidth: Int) extends Bundle {
+  val bank = UInt(math.max(1, log2Ceil(numBanks)).W)
+  val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+  val id = UInt(idWidth.W)
+}
+
+class TriMemBackendResp(val c: TriPeConfig, val idWidth: Int) extends Bundle {
+  val data = UInt((c.numPEs * 9 * c.cfg.totalWidth).W)
+  val id = UInt(idWidth.W)
+}
+
+class TriMemAllocReq(
+  val c: TriPeConfig,
+  val numBanks: Int,
+  val numSets: Int,
+  val idWidth: Int
+) extends Bundle {
+  val bank = UInt(math.max(1, log2Ceil(numBanks)).W)
+  val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+  val set = UInt(math.max(1, log2Ceil(numSets)).W)
+  val tag = UInt((GlobalConfig.triMemAddrWidth - math.max(1, log2Ceil(numSets))).W)
+  val victimWay = UInt(1.W)
+}
+
+class TriMemAllocResp(val idWidth: Int) extends Bundle {
+  val id = UInt(idWidth.W)
+  val merged = Bool()
+}
+
+class TriMemRefillDone(val c: TriPeConfig, val idWidth: Int) extends Bundle {
+  val id = UInt(idWidth.W)
+  val data = UInt((c.numPEs * 9 * c.cfg.totalWidth).W)
+}
+
+class TriMemRelease(val idWidth: Int) extends Bundle {
+  val id = UInt(idWidth.W)
+}
+
+class TriangleMemRefillBackend(
+  val c: TriPeConfig,
+  val numBanks: Int,
+  val idWidth: Int
+) extends Module {
+  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
+  private val bankSelW = math.max(1, log2Ceil(numBanks))
+
+  val io = IO(new Bundle {
+    val req = Flipped(Decoupled(new TriMemBackendReq(c, numBanks, idWidth)))
+    val resp = Decoupled(new TriMemBackendResp(c, idWidth))
+  })
+
+  GlobalConfig.memImplMode match {
+    case 0 =>
+      val mem = Module(new TriangleMemSharedDPI(c, latency = 1, numBanks = numBanks))
+      val idPipe = RegInit(0.U(idWidth.W))
+      val validPipe = RegInit(false.B)
+
+      mem.io.clk := clock
+      mem.io.reset := reset
+      mem.io.bank := io.req.bits.bank
+      mem.io.addr := io.req.bits.addr
+      mem.io.req_valid := io.req.valid
+
+      io.req.ready := mem.io.req_ready
+      when(io.req.fire) {
+        idPipe := io.req.bits.id
+      }
+      validPipe := io.req.fire
+
+      io.resp.valid := validPipe && mem.io.valid
+      io.resp.bits.id := idPipe
+      io.resp.bits.data := mem.io.data
+
+    case 2 =>
+      val mems = Seq.tabulate(numBanks)(b => Module(new TriangleMemDPI(
+        c,
+        latency = 1,
+        bankId = b,
+        numBanks = numBanks,
+        maxEntries = GlobalConfig.triMemBankDepth
+      )))
+      val respArb = Module(new RRArbiter(new TriMemBackendResp(c, idWidth), numBanks))
+      val idPipes = Seq.fill(numBanks)(RegInit(0.U(idWidth.W)))
+      val validPipes = Seq.fill(numBanks)(RegInit(false.B))
+
+      io.req.ready := false.B
+      for (b <- 0 until numBanks) {
+        val hitBank = io.req.bits.bank === b.U(bankSelW.W)
+        mems(b).io.clk := clock
+        mems(b).io.reset := reset
+        mems(b).io.addr := io.req.bits.addr
+        mems(b).io.req_valid := io.req.valid && hitBank
+        mems(b).io.req_mask := Fill(c.numPEs, 1.U(1.W))
+        when(hitBank) {
+          io.req.ready := mems(b).io.req_ready
+        }
+        when(io.req.fire && hitBank) {
+          idPipes(b) := io.req.bits.id
+        }
+        validPipes(b) := io.req.fire && hitBank
+
+        respArb.io.in(b).valid := validPipes(b) && mems(b).io.valid
+        respArb.io.in(b).bits.id := idPipes(b)
+        respArb.io.in(b).bits.data := mems(b).io.data
+      }
+
+      io.resp <> respArb.io.out
+  }
+}
+
 class TriangleMemCachedBank(
   val c: TriPeConfig,
   val srcWidth: Int,
@@ -208,20 +377,23 @@ class TriangleMemCachedBank(
   val numSets: Int = GlobalConfig.triMemCacheSets,
   val ways: Int = GlobalConfig.triMemCacheWays,
   val reqQueueDepth: Int = GlobalConfig.triMemReqQueueDepth,
-  val mergeQueueDepth: Int = GlobalConfig.triMemMergeQueueDepth
+  val mergeQueueDepth: Int = GlobalConfig.triMemMergeQueueDepth,
+  val mshrEntries: Int = GlobalConfig.triMemMshrEntries
 ) extends Module {
   require(ways == 2, s"TriangleMemCachedBank currently supports exactly 2 ways, got $ways")
   require(isPow2(numSets), s"TriangleMemCachedBank requires power-of-two numSets, got $numSets")
   require(reqQueueDepth > 0, "TriangleMemCachedBank reqQueueDepth must be > 0")
   require(mergeQueueDepth > 0, "TriangleMemCachedBank mergeQueueDepth must be > 0")
+  require(mshrEntries > 0, "TriangleMemCachedBank mshrEntries must be > 0")
 
   private val bitsPerTri = 3 * 3 * c.cfg.totalWidth
   private val totalBits = c.numPEs * bitsPerTri
-  private val bankSelW = math.max(1, log2Ceil(numBanks))
   private val setIdxW = math.max(1, log2Ceil(numSets))
   private val tagW = GlobalConfig.triMemAddrWidth - setIdxW
   private val mergeIdxW = math.max(1, log2Ceil(mergeQueueDepth))
   private val mergeCountW = log2Ceil(mergeQueueDepth + 1)
+  private val mshrIdW = math.max(1, log2Ceil(mshrEntries))
+  private val useXpmCache = GlobalConfig.memImplMode == 2
 
   class BankReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
@@ -239,8 +411,10 @@ class TriangleMemCachedBank(
     val req = Flipped(Decoupled(new BankReq))
     val resp = Decoupled(new BankResp)
     val stat = Valid(Bool())
-    val missReq = Decoupled(new TriMemRefillReq(numBanks))
-    val refillResp = Flipped(Decoupled(UInt(totalBits.W)))
+    val allocReq = Decoupled(new TriMemAllocReq(c, numBanks, numSets, mshrIdW))
+    val allocResp = Flipped(Decoupled(new TriMemAllocResp(mshrIdW)))
+    val refillDone = Flipped(Decoupled(new TriMemRefillDone(c, mshrIdW)))
+    val release = Valid(new TriMemRelease(mshrIdW))
   })
 
   private def setIdxOf(addr: UInt): UInt = {
@@ -278,73 +452,73 @@ class TriangleMemCachedBank(
   val reqQ = Module(new Queue(new BankReq, reqQueueDepth))
   reqQ.io.enq <> io.req
 
-  val cacheData = Seq.fill(ways)(SyncReadMem(numSets, UInt(totalBits.W)))
+  val cacheData = Seq.fill(ways)(Module(new TriCacheDataArray(totalBits, numSets, useXpmCache)))
   val cacheValid = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(false.B)))))
   val cacheTag = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(0.U(tagW.W))))))
   val cacheLru = RegInit(VecInit(Seq.fill(numSets)(false.B)))
 
-  val sIdle :: sHitRead :: sHitResp :: sMissReq :: sMissWait :: sEmitMissResp :: Nil = Enum(6)
+  val sIdle :: sHitRead :: sHitResp :: sAllocWait :: sEmitResp :: Nil = Enum(5)
   val state = RegInit(sIdle)
 
-  val activeReq = Reg(new BankReq)
-  val activeAddr = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
-  val activeMask = Reg(UInt(c.numPEs.W))
-  val activeSrc = Reg(UInt(srcWidth.W))
-  val activeTag = Reg(UInt(tagWidth.W))
-
   val hitWayReg = Reg(UInt(1.W))
-  val hitSetReg = Reg(UInt(setIdxW.W))
   val hitMaskReg = Reg(UInt(c.numPEs.W))
   val hitAddrReg = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
   val hitSrcReg = Reg(UInt(srcWidth.W))
   val hitTagReg = Reg(UInt(tagWidth.W))
   val hitDataReg = Reg(UInt(totalBits.W))
+  val allocReqReg = Reg(new BankReq)
+  val allocSetReg = Reg(UInt(setIdxW.W))
+  val allocTagReg = Reg(UInt(tagW.W))
+  val allocVictimWayReg = Reg(UInt(1.W))
+  val resumeAllocAfterEmit = RegInit(false.B)
+
+  val pendingReqs = Reg(Vec(mshrEntries, Vec(mergeQueueDepth, new BankReq)))
+  val pendingCount = RegInit(VecInit(Seq.fill(mshrEntries)(0.U(mergeCountW.W))))
+  val pendingAddr = Reg(Vec(mshrEntries, UInt(GlobalConfig.triMemAddrWidth.W)))
+  val pendingSet = Reg(Vec(mshrEntries, UInt(setIdxW.W)))
+  val pendingTag = Reg(Vec(mshrEntries, UInt(tagW.W)))
+  val pendingVictimWay = Reg(Vec(mshrEntries, UInt(1.W)))
+
+  val emitMshrId = Reg(UInt(mshrIdW.W))
+  val emitIdx = RegInit(0.U(mergeCountW.W))
+  val emitTotal = RegInit(0.U(mergeCountW.W))
+  val emitDataReg = Reg(UInt(totalBits.W))
 
   val way0ReadEn = WireDefault(false.B)
   val way1ReadEn = WireDefault(false.B)
   val readSetIdx = WireDefault(0.U(setIdxW.W))
-  val way0ReadData = cacheData(0).read(readSetIdx, way0ReadEn)
-  val way1ReadData = cacheData(1).read(readSetIdx, way1ReadEn)
+  val way0WriteEn = WireDefault(false.B)
+  val way1WriteEn = WireDefault(false.B)
+  val writeSetIdx = WireDefault(0.U(setIdxW.W))
+  val writeData = WireDefault(0.U(totalBits.W))
 
-  val refillSetReg = Reg(UInt(setIdxW.W))
-  val refillTagReg = Reg(UInt(tagW.W))
-  val refillVictimWay = Reg(UInt(1.W))
-  val refillDataReg = Reg(UInt(totalBits.W))
+  cacheData(0).io.rd_en := way0ReadEn
+  cacheData(0).io.rd_addr := readSetIdx
+  cacheData(0).io.wr_en := way0WriteEn
+  cacheData(0).io.wr_addr := writeSetIdx
+  cacheData(0).io.wr_data := writeData
+  cacheData(1).io.rd_en := way1ReadEn
+  cacheData(1).io.rd_addr := readSetIdx
+  cacheData(1).io.wr_en := way1WriteEn
+  cacheData(1).io.wr_addr := writeSetIdx
+  cacheData(1).io.wr_data := writeData
 
-  val mergedReqs = Reg(Vec(mergeQueueDepth, new BankReq))
-  val mergedCount = RegInit(0.U(mergeCountW.W))
-  val emitIdx = RegInit(0.U(mergeCountW.W))
-  val emitTotal = RegInit(0.U(mergeCountW.W))
-  val missReqWaitCycles = RegInit(0.U(16.W))
-  val missRespWaitCycles = RegInit(0.U(16.W))
+  val way0ReadData = cacheData(0).io.rd_data
+  val way1ReadData = cacheData(1).io.rd_data
   val statsValid = WireDefault(false.B)
   val statsHit = WireDefault(false.B)
   io.stat.valid := statsValid
   io.stat.bits := statsHit
-  io.missReq.valid := false.B
-  io.missReq.bits.bank := bankId.U
-  io.missReq.bits.addr := activeAddr
-  io.refillResp.ready := false.B
-
-  when(state === sMissReq) {
-    missReqWaitCycles := missReqWaitCycles + 1.U
-  }.otherwise {
-    missReqWaitCycles := 0.U
-  }
-  when(state === sMissWait) {
-    missRespWaitCycles := missRespWaitCycles + 1.U
-  }.otherwise {
-    missRespWaitCycles := 0.U
-  }
-
-  assert(
-    missReqWaitCycles < 4096.U,
-    s"TriangleMemCachedBank[$bankId] miss request arbitration timeout"
-  )
-  assert(
-    missRespWaitCycles < 4096.U,
-    s"TriangleMemCachedBank[$bankId] refill response timeout"
-  )
+  io.allocReq.valid := false.B
+  io.allocReq.bits.bank := bankId.U
+  io.allocReq.bits.addr := allocReqReg.addr
+  io.allocReq.bits.set := allocSetReg
+  io.allocReq.bits.tag := allocTagReg
+  io.allocReq.bits.victimWay := allocVictimWayReg
+  io.allocResp.ready := false.B
+  io.refillDone.ready := false.B
+  io.release.valid := false.B
+  io.release.bits.id := emitMshrId
 
   val headReq = reqQ.io.deq.bits
   val headSet = setIdxOf(headReq.addr)
@@ -352,24 +526,48 @@ class TriangleMemCachedBank(
   val headHitWay0 = cacheValid(0)(headSet) && cacheTag(0)(headSet) === headTag
   val headHitWay1 = cacheValid(1)(headSet) && cacheTag(1)(headSet) === headTag
   val headHit = headHitWay0 || headHitWay1
-  val headMissSameLine = (state === sMissReq || state === sMissWait) && headReq.addr === activeAddr
-  val canMergeHead = headMissSameLine && mergedCount =/= mergeQueueDepth.U
-  val mergeHeadNow = reqQ.io.deq.valid && canMergeHead
 
   reqQ.io.deq.ready := false.B
 
-  when(state === sIdle && reqQ.io.deq.valid) {
+  def enqueuePending(mshrId: UInt, req: BankReq, set: UInt, tag: UInt, victimWay: UInt): Unit = {
+    val count = pendingCount(mshrId)
+    assert(count =/= mergeQueueDepth.U, s"TriangleMemCachedBank[$bankId] merge queue overflow")
+    pendingReqs(mshrId)(count(mergeIdxW - 1, 0)) := req
+    pendingCount(mshrId) := count + 1.U
+    when(count === 0.U) {
+      pendingAddr(mshrId) := req.addr
+      pendingSet(mshrId) := set
+      pendingTag(mshrId) := tag
+      pendingVictimWay(mshrId) := victimWay
+    }
+  }
+
+  when((state === sIdle || state === sAllocWait) && io.refillDone.valid) {
+    io.refillDone.ready := true.B
+    val doneId = io.refillDone.bits.id
+    assert(pendingCount(doneId) =/= 0.U, s"TriangleMemCachedBank[$bankId] refill done with no pending waiters")
+    resumeAllocAfterEmit := state === sAllocWait
+    writeSetIdx := pendingSet(doneId)
+    writeData := io.refillDone.bits.data
+    emitMshrId := doneId
+    emitIdx := 0.U
+    emitTotal := pendingCount(doneId)
+    emitDataReg := io.refillDone.bits.data
+    when(pendingVictimWay(doneId) === 0.U) {
+      way0WriteEn := true.B
+    }.otherwise {
+      way1WriteEn := true.B
+    }
+    cacheValid(pendingVictimWay(doneId))(pendingSet(doneId)) := true.B
+    cacheTag(pendingVictimWay(doneId))(pendingSet(doneId)) := pendingTag(doneId)
+    cacheLru(pendingSet(doneId)) := !pendingVictimWay(doneId)
+    state := sEmitResp
+  }.elsewhen(state === sIdle && reqQ.io.deq.valid) {
     reqQ.io.deq.ready := true.B
     statsValid := true.B
     statsHit := headHit
-    activeReq := headReq
-    activeAddr := headReq.addr
-    activeMask := headReq.mask
-    activeSrc := headReq.src
-    activeTag := headReq.tag
     when(headHit) {
       hitWayReg := Mux(headHitWay0, 0.U, 1.U)
-      hitSetReg := headSet
       hitMaskReg := headReq.mask
       hitAddrReg := headReq.addr
       hitSrcReg := headReq.src
@@ -384,69 +582,33 @@ class TriangleMemCachedBank(
         cacheLru(headSet) := false.B
       }
     }.otherwise {
-      refillSetReg := headSet
-      refillTagReg := headTag
-      refillVictimWay := Mux(!cacheValid(0)(headSet), 0.U, Mux(!cacheValid(1)(headSet), 1.U, cacheLru(headSet)))
-      mergedCount := 0.U
-      emitIdx := 0.U
-      emitTotal := 0.U
-      io.missReq.valid := true.B
-      io.missReq.bits.addr := headReq.addr
-      when(io.missReq.ready) {
-        state := sMissWait
-      }.otherwise {
-        state := sMissReq
-      }
+      allocReqReg := headReq
+      allocSetReg := headSet
+      allocTagReg := headTag
+      allocVictimWayReg := Mux(!cacheValid(0)(headSet), 0.U, Mux(!cacheValid(1)(headSet), 1.U, cacheLru(headSet)))
+      state := sAllocWait
     }
   }.elsewhen(state === sHitRead) {
     hitDataReg := Mux(hitWayReg === 0.U, way0ReadData, way1ReadData)
     state := sHitResp
-  }.elsewhen(state === sMissReq) {
-    io.missReq.valid := true.B
-    when(mergeHeadNow) {
-      reqQ.io.deq.ready := true.B
-      statsValid := true.B
-      statsHit := false.B
-      mergedReqs(mergedCount(mergeIdxW - 1, 0)) := headReq
-      mergedCount := mergedCount + 1.U
-    }
-    when(io.missReq.fire) {
-      state := sMissWait
-    }
-  }.elsewhen(state === sMissWait) {
-    io.refillResp.ready := true.B
-    when(mergeHeadNow) {
-      reqQ.io.deq.ready := true.B
-      statsValid := true.B
-      statsHit := false.B
-      mergedReqs(mergedCount(mergeIdxW - 1, 0)) := headReq
-      mergedCount := mergedCount + 1.U
-    }
-
-    when(io.refillResp.fire) {
-      refillDataReg := io.refillResp.bits
-      when(refillVictimWay === 0.U) {
-        cacheData(0).write(refillSetReg, io.refillResp.bits)
-      }.otherwise {
-        cacheData(1).write(refillSetReg, io.refillResp.bits)
-      }
-      cacheValid(refillVictimWay)(refillSetReg) := true.B
-      cacheTag(refillVictimWay)(refillSetReg) := refillTagReg
-      cacheLru(refillSetReg) := !refillVictimWay
-      emitIdx := 0.U
-      emitTotal := mergedCount + 1.U + Mux(mergeHeadNow, 1.U, 0.U)
-      state := sEmitMissResp
+  }.elsewhen(state === sAllocWait) {
+    io.allocReq.valid := true.B
+    io.allocReq.bits.addr := allocReqReg.addr
+    io.allocReq.bits.set := allocSetReg
+    io.allocReq.bits.tag := allocTagReg
+    io.allocReq.bits.victimWay := allocVictimWayReg
+    io.allocResp.ready := true.B
+    when(io.allocResp.fire) {
+      enqueuePending(io.allocResp.bits.id, allocReqReg, allocSetReg, allocTagReg, allocVictimWayReg)
+      resumeAllocAfterEmit := false.B
+      state := sIdle
     }
   }
 
   val hitRespBlock = decodeBlock(hitDataReg, hitAddrReg, hitMaskReg)
-
   val emitReq = Wire(new BankReq)
-  emitReq := activeReq
-  when(emitIdx =/= 0.U) {
-    emitReq := mergedReqs((emitIdx - 1.U)(mergeIdxW - 1, 0))
-  }
-  val missRespBlock = decodeBlock(refillDataReg, activeAddr, emitReq.mask)
+  emitReq := pendingReqs(emitMshrId)(emitIdx(mergeIdxW - 1, 0))
+  val missRespBlock = decodeBlock(emitDataReg, pendingAddr(emitMshrId), emitReq.mask)
 
   io.resp.valid := false.B
   io.resp.bits := 0.U.asTypeOf(new BankResp)
@@ -459,14 +621,20 @@ class TriangleMemCachedBank(
     when(io.resp.ready) {
       state := sIdle
     }
-  }.elsewhen(state === sEmitMissResp) {
+  }.elsewhen(state === sEmitResp) {
     io.resp.valid := true.B
     io.resp.bits.src := emitReq.src
     io.resp.bits.resp.block := missRespBlock
     io.resp.bits.resp.tag := emitReq.tag
     when(io.resp.ready) {
       when(emitIdx + 1.U >= emitTotal) {
-        state := sIdle
+        pendingCount(emitMshrId) := 0.U
+        io.release.valid := true.B
+        when(resumeAllocAfterEmit) {
+          state := sAllocWait
+        }.otherwise {
+          state := sIdle
+        }
       }.otherwise {
         emitIdx := emitIdx + 1.U
       }
@@ -478,7 +646,8 @@ class TriangleMemMultiPort(
   val c: TriPeConfig,
   val numPorts: Int,
   val tagWidth: Int,
-  val numBanks: Int = GlobalConfig.triMemNumBanks
+  val numBanks: Int = GlobalConfig.triMemNumBanks,
+  val mshrEntries: Int = GlobalConfig.triMemMshrEntries
 ) extends Module {
   require(numPorts > 0, "TriangleMemMultiPort needs at least one port")
   require(numBanks > 0, "TriangleMemMultiPort needs at least one bank")
@@ -487,6 +656,7 @@ class TriangleMemMultiPort(
 
   private val srcW = math.max(1, log2Ceil(numPorts))
   private val bankSelW = math.max(1, log2Ceil(numBanks))
+  private val mshrIdW = math.max(1, log2Ceil(mshrEntries))
 
   class BankReq extends Bundle {
     val addr = UInt(GlobalConfig.triMemAddrWidth.W)
@@ -526,17 +696,20 @@ class TriangleMemMultiPort(
   }
 
   GlobalConfig.memImplMode match {
-    case 0 =>
-      val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemCachedBank(c, srcW, tagWidth, b, numBanks)))
+    case 0 | 2 =>
+      val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemCachedBank(c, srcW, tagWidth, b, numBanks, mshrEntries = mshrEntries)))
       val statMons = Seq.fill(numBanks)(Module(new TriCacheStatsMonitor))
       val refillStatMon = Module(new TriCacheRefillStatsMonitor)
       val reqArbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
-      val missArb = Module(new RRArbiter(new TriMemRefillReq(numBanks), numBanks))
-      val sharedRefill = Module(new TriangleMemSharedDPI(c, latency = 1, numBanks = numBanks))
-      val refillBusy = RegInit(false.B)
-      val refillBankReg = Reg(UInt(bankSelW.W))
-      val refillPendingValid = RegInit(VecInit(Seq.fill(numBanks)(false.B)))
-      val refillPendingData = Reg(Vec(numBanks, UInt((c.numPEs * 9 * c.cfg.totalWidth).W)))
+      val allocArb = Module(new RRArbiter(new TriMemAllocReq(c, numBanks, GlobalConfig.triMemCacheSets, mshrIdW), numBanks))
+      val backend = Module(new TriangleMemRefillBackend(c, numBanks, mshrIdW))
+      val mshrValid = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
+      val mshrIssued = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
+      val mshrDone = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
+      val mshrDelivered = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
+      val mshrBank = Reg(Vec(mshrEntries, UInt(bankSelW.W)))
+      val mshrAddr = Reg(Vec(mshrEntries, UInt(GlobalConfig.triMemAddrWidth.W)))
+      val mshrData = Reg(Vec(mshrEntries, UInt((c.numPEs * 9 * c.cfg.totalWidth).W)))
 
       for (b <- 0 until numBanks) {
         statMons(b).io.clk := clock
@@ -544,43 +717,102 @@ class TriangleMemMultiPort(
         statMons(b).io.valid := banks(b).io.stat.valid
         statMons(b).io.hit := banks(b).io.stat.bits
         statMons(b).io.bank := b.U
-        missArb.io.in(b) <> banks(b).io.missReq
-        banks(b).io.refillResp.valid := refillPendingValid(b)
-        banks(b).io.refillResp.bits := refillPendingData(b)
-        when(banks(b).io.refillResp.fire) {
-          refillPendingValid(b) := false.B
+        allocArb.io.in(b) <> banks(b).io.allocReq
+
+        val doneMatches = Wire(Vec(mshrEntries, Bool()))
+        for (i <- 0 until mshrEntries) {
+          doneMatches(i) := mshrValid(i) && mshrDone(i) && !mshrDelivered(i) && mshrBank(i) === b.U
+        }
+        val doneSelOH = PriorityEncoderOH(doneMatches)
+        val doneSel = OHToUInt(doneSelOH)
+        banks(b).io.refillDone.valid := doneMatches.asUInt.orR
+        banks(b).io.refillDone.bits.id := doneSel
+        banks(b).io.refillDone.bits.data := Mux1H(doneSelOH, mshrData)
+        when(banks(b).io.refillDone.fire) {
+          mshrDelivered(doneSel) := true.B
+        }
+
+        val allocMatches = Wire(Vec(mshrEntries, Bool()))
+        for (i <- 0 until mshrEntries) {
+          allocMatches(i) := mshrValid(i) &&
+            mshrBank(i) === allocArb.io.out.bits.bank &&
+            mshrAddr(i) === allocArb.io.out.bits.addr
+        }
+        val allocSelOH = PriorityEncoderOH(allocMatches)
+        val allocSel = OHToUInt(allocSelOH)
+        val freeVec = VecInit((0 until mshrEntries).map(i => !mshrValid(i)))
+        val freeOH = PriorityEncoderOH(freeVec)
+        val freeValid = freeVec.asUInt.orR
+        val freeSel = OHToUInt(freeOH)
+        val bankGranted = allocArb.io.out.valid && allocArb.io.out.bits.bank === b.U
+        val bankMerge = allocMatches.asUInt.orR
+        val bankAllocValid = bankGranted && (bankMerge || freeValid)
+        banks(b).io.allocResp.valid := bankAllocValid
+        banks(b).io.allocResp.bits.id := Mux(bankMerge, allocSel, freeSel)
+        banks(b).io.allocResp.bits.merged := bankMerge
+
+        when(bankGranted && banks(b).io.allocResp.fire && !bankMerge) {
+          mshrValid(freeSel) := true.B
+          mshrIssued(freeSel) := false.B
+          mshrDone(freeSel) := false.B
+          mshrDelivered(freeSel) := false.B
+          mshrBank(freeSel) := b.U
+          mshrAddr(freeSel) := allocArb.io.out.bits.addr
+        }
+
+        when(banks(b).io.release.valid) {
+          val relId = banks(b).io.release.bits.id
+          mshrValid(relId) := false.B
+          mshrIssued(relId) := false.B
+          mshrDone(relId) := false.B
+          mshrDelivered(relId) := false.B
+          mshrAddr(relId) := 0.U
+          mshrData(relId) := 0.U
         }
       }
 
-      val refillFire = missArb.io.out.valid && !refillBusy && sharedRefill.io.req_ready
-      val refillArbStall = missArb.io.out.valid && refillBusy
+      val mergeHits = Wire(Vec(mshrEntries, Bool()))
+      for (i <- 0 until mshrEntries) {
+        mergeHits(i) := mshrValid(i) &&
+          mshrBank(i) === allocArb.io.out.bits.bank &&
+          mshrAddr(i) === allocArb.io.out.bits.addr
+      }
+      val freeVec = VecInit((0 until mshrEntries).map(i => !mshrValid(i)))
+      val freeOH = PriorityEncoderOH(freeVec)
+      val freeExists = freeVec.asUInt.orR
+      val mergeExists = mergeHits.asUInt.orR
+      val allocCanServe = mergeExists || freeExists
+      allocArb.io.out.ready := allocCanServe
+
+      val issueCandidates = Wire(Vec(mshrEntries, Bool()))
+      for (i <- 0 until mshrEntries) {
+        issueCandidates(i) := mshrValid(i) && !mshrIssued(i)
+      }
+      val issueOH = PriorityEncoderOH(issueCandidates)
+      val issueValid = issueCandidates.asUInt.orR
+      val issueSel = OHToUInt(issueOH)
+      backend.io.req.valid := issueValid
+      backend.io.req.bits.bank := Mux(issueValid, mshrBank(issueSel), 0.U)
+      backend.io.req.bits.addr := Mux(issueValid, mshrAddr(issueSel), 0.U)
+      backend.io.req.bits.id := issueSel
+      when(backend.io.req.fire) {
+        mshrIssued(issueSel) := true.B
+      }
+      backend.io.resp.ready := true.B
+      when(backend.io.resp.fire) {
+        val respId = backend.io.resp.bits.id
+        assert(mshrValid(respId), "TriangleMemMultiPort refill response hit invalid MSHR entry")
+        mshrDone(respId) := true.B
+        mshrData(respId) := backend.io.resp.bits.data
+      }
+
+      val refillFire = backend.io.req.fire
+      val refillArbStall = issueValid && !backend.io.req.ready
       refillStatMon.io.clk := clock
       refillStatMon.io.reset := reset
-      refillStatMon.io.busyCycle := refillBusy
+      refillStatMon.io.busyCycle := issueValid
       refillStatMon.io.stallCycle := refillArbStall
       refillStatMon.io.refillFire := refillFire
-
-      sharedRefill.io.clk := clock
-      sharedRefill.io.reset := reset
-      sharedRefill.io.bank := missArb.io.out.bits.bank
-      sharedRefill.io.addr := missArb.io.out.bits.addr
-      sharedRefill.io.req_valid := missArb.io.out.valid && !refillBusy
-      missArb.io.out.ready := !refillBusy && sharedRefill.io.req_ready
-
-      when(refillFire) {
-        refillBusy := true.B
-        refillBankReg := missArb.io.out.bits.bank
-      }
-      when(sharedRefill.io.valid) {
-        refillBusy := false.B
-        refillPendingValid(refillBankReg) := true.B
-        refillPendingData(refillBankReg) := sharedRefill.io.data
-      }
-
-      assert(
-        !(sharedRefill.io.valid && refillPendingValid(refillBankReg)),
-        "TriangleMemMultiPort refill response overwritten before bank consumed it"
-      )
 
       val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
       val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))
