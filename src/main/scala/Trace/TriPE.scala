@@ -170,6 +170,7 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   class PeHit extends Bundle {
     val ctx = UInt(ctxW.W)
+    val epoch = Bool()
     val id = UInt(c.addrWidth.W)
     val t = UInt(c.cfg.totalWidth.W)
   }
@@ -235,16 +236,21 @@ class TriPE(val c: TriPeConfig) extends Module {
     pes(lane).io.in_valid := memRespLive && io.mem_resp.bits.block.mask(lane)
   }
 
-  private val peLatency =
-    c.cfg.faddLatency + (c.cfg.fmulLatency + c.cfg.faddLatency) + (c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
-      math.max(c.cfg.fdivLatency, c.cfg.fmulLatency + c.cfg.faddLatency + c.cfg.faddLatency) +
-      c.cfg.fmulLatency + c.cfg.faddLatency
+  private val peLatency = RayTriangleIntersection.totalLatency(c.cfg)
+  // The triangle intersector is a fixed-latency pipeline. ctx/epoch must advance
+  // every cycle with the same delay; compacting only on memRespLive breaks
+  // alignment as soon as cache misses introduce bubbles between responses.
   private val peCtxOut = PipeUtils.pipeData(memRespCtx, peLatency)
+  private val peEpochOut = PipeUtils.pipeData(memRespEpoch, peLatency)
+  private val peOutLive = VecInit((0 until c.numPEs).map(lane =>
+    pes(lane).io.out_valid && peEpochOut === activeEpoch(peCtxOut)
+  ))
 
   private val hitQs = Seq.fill(c.numPEs)(Module(new Queue(new PeHit, 4)))
   for (lane <- 0 until c.numPEs) {
-    hitQs(lane).io.enq.valid := pes(lane).io.out_valid && pes(lane).io.hit
+    hitQs(lane).io.enq.valid := peOutLive(lane) && pes(lane).io.hit
     hitQs(lane).io.enq.bits.ctx := peCtxOut
+    hitQs(lane).io.enq.bits.epoch := peEpochOut
     hitQs(lane).io.enq.bits.id := pes(lane).io.id
     hitQs(lane).io.enq.bits.t := pes(lane).io.t
     when(hitQs(lane).io.enq.valid) {
@@ -268,7 +274,7 @@ class TriPE(val c: TriPeConfig) extends Module {
   for (ctx <- 0 until ctxCount) {
     val triIssued = Mux(memReqIssued && memReqQ.io.deq.bits.ctx === ctx.U, memReqQ.io.deq.bits.count, 0.U)
     val triRetired = PopCount(VecInit((0 until c.numPEs).map(lane =>
-      pes(lane).io.out_valid && peCtxOut === ctx.U
+      peOutLive(lane) && peCtxOut === ctx.U
     )))
     when(triRetired =/= 0.U && debugMon(ctx)) {
       debugTriRetireCount(ctx) := debugTriRetireCount(ctx) + triRetired
@@ -281,14 +287,16 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   when(hitCmpValid) {
-    when(debugMon(hitCmpBits.ctx)) {
-      debugHitCmpCount(hitCmpBits.ctx) := debugHitCmpCount(hitCmpBits.ctx) + 1.U
-    }
-    hitStop(hitCmpBits.ctx) := true.B
-    when(fcmp.io.lt || !hasHit(hitCmpBits.ctx)) {
-      bestT(hitCmpBits.ctx) := hitCmpBits.t
-      bestId(hitCmpBits.ctx) := hitCmpBits.id
-      hasHit(hitCmpBits.ctx) := true.B
+    when(hitCmpBits.epoch === activeEpoch(hitCmpBits.ctx) && !io.clear_ctx(hitCmpBits.ctx)) {
+      when(debugMon(hitCmpBits.ctx)) {
+        debugHitCmpCount(hitCmpBits.ctx) := debugHitCmpCount(hitCmpBits.ctx) + 1.U
+      }
+      hitStop(hitCmpBits.ctx) := true.B
+      when(fcmp.io.lt || !hasHit(hitCmpBits.ctx)) {
+        bestT(hitCmpBits.ctx) := hitCmpBits.t
+        bestId(hitCmpBits.ctx) := hitCmpBits.id
+        hasHit(hitCmpBits.ctx) := true.B
+      }
     }
   }
 

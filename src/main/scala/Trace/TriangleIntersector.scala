@@ -5,6 +5,14 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 
+object RayTriangleIntersection {
+  def totalLatency(cfg: FloatConfig): Int = {
+    val stageCLatency = cfg.faddLatency + cfg.fcrossLatency + cfg.fdotLatency
+    val stageDAlignLatency = math.max(cfg.fdivLatency, cfg.fdotLatency)
+    stageCLatency + stageDAlignLatency + cfg.fmulLatency + cfg.faddLatency
+  }
+}
+
 class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Module {
   val io = IO(new Bundle {
     val ray      = Input(new Ray(cfg))
@@ -148,7 +156,7 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val preCmpLatency = stageCLatency + stageDAlignLatency + latMUL + latADD
   val det_is_zero_pre_cmp = PipeUtils.pipeData(det_is_zero, preCmpLatency - stageCLatency)
 
-  val totalLatency = preCmpLatency
+  val totalLatency = RayTriangleIntersection.totalLatency(cfg)
   val out_valid_final = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
   io.id:=PipeUtils.pipeData(io.tri.id, totalLatency)
   io.out_valid := out_valid_final

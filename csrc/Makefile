@@ -6,6 +6,10 @@ MODEL_NAME := $(basename $(notdir $(OBJ_PATH)))
 WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
 WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
+SBT_BOOT_DIR ?= /tmp/sbt-boot
+SBT_IVY_HOME ?= /tmp/.ivy2
+SBT_GLOBAL_BASE ?= /tmp/.sbt
+SBT = sbt --batch -Dsbt.server.autostart=false -Dsbt.boot.directory=$(SBT_BOOT_DIR) -Dsbt.ivy.home=$(SBT_IVY_HOME) -Dsbt.global.base=$(SBT_GLOBAL_BASE)
 
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
@@ -135,14 +139,14 @@ VERILOG_TARGET := $(VERILOG_DIR)/FpgaTop.sv
 
 $(VERILOG_TARGET):
 	@echo "Verilog 源文件缺失，自动调用 sbt 生成..."
-	cd $(ROOT_DIR) && sbt "runMain FpgaTopGen"
+	cd $(ROOT_DIR) && $(SBT) "runMain FpgaTopGen"
 
 # 可选：强制重新生成 Verilog
 generate:
 	@echo "============================================"
 	@echo "通过 sbt 重新生成 Verilog 代码..."
 	@echo "============================================"
-	cd $(ROOT_DIR) && sbt "runMain FpgaTopGen"
+	cd $(ROOT_DIR) && $(SBT) "runMain FpgaTopGen"
 
 $(TARGET): $(VERILOG_TARGET) $(CPPS) $(HEADERS)
 	@echo "============================================"

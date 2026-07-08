@@ -47,6 +47,116 @@ class TriCacheStatsMonitor extends BlackBox with HasBlackBoxInline {
   )
 }
 
+class TriCacheRefillStatsMonitor extends BlackBox with HasBlackBoxInline {
+  override def desiredName: String = "TriCacheRefillStatsMonitor"
+
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val busyCycle = Input(Bool())
+    val stallCycle = Input(Bool())
+    val refillFire = Input(Bool())
+  })
+
+  setInline(
+    "TriCacheRefillStatsMonitor.sv",
+    """import "DPI-C" function void tri_cache_refill_stats_record(
+      |  input int busy_cycle,
+      |  input int stall_cycle,
+      |  input int refill_fire
+      |);
+      |
+      |module TriCacheRefillStatsMonitor (
+      |  input clk,
+      |  input reset,
+      |  input busyCycle,
+      |  input stallCycle,
+      |  input refillFire
+      |);
+      |  always @(posedge clk) begin
+      |    if (!reset && (busyCycle || stallCycle || refillFire)) begin
+      |      tri_cache_refill_stats_record({31'b0, busyCycle}, {31'b0, stallCycle}, {31'b0, refillFire});
+      |    end
+      |  end
+      |endmodule
+      |""".stripMargin
+  )
+}
+
+class TriMemRefillReq(numBanks: Int) extends Bundle {
+  val bank = UInt(math.max(1, log2Ceil(numBanks)).W)
+  val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+}
+
+class TriangleMemSharedDPI(
+  val c: TriPeConfig,
+  val latency: Int = 1,
+  val numBanks: Int = GlobalConfig.triMemNumBanks,
+  val maxEntries: Int = GlobalConfig.triMemBankDepth
+) extends BlackBox with HasBlackBoxInline {
+  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
+
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val reset = Input(Reset())
+    val bank = Input(UInt(32.W))
+    val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
+    val req_valid = Input(Bool())
+    val data = Output(UInt(totalBits.W))
+    val valid = Output(Bool())
+    val req_ready = Output(Bool())
+  })
+
+  setInline(
+    "TriangleMemSharedDPI.sv",
+    s"""import "DPI-C" function void tri_mem_read_bank(input int bank, input int addr, output byte data[]);
+       |
+       |module TriangleMemSharedDPI (
+       |  input clk,
+       |  input reset,
+       |  input [31:0] bank,
+       |  input [${GlobalConfig.triMemAddrWidth - 1}:0] addr,
+       |  input req_valid,
+       |  output [${totalBits - 1}:0] data,
+       |  output valid,
+       |  output req_ready
+       |);
+       |  byte raw_buffer[${c.numPEs * 3 * 3 * (c.cfg.totalWidth / 8)}];
+       |  reg [${totalBits - 1}:0] data_pipe[0:${latency - 1}];
+       |  reg [${latency - 1}:0] valid_pipe;
+       |  integer i;
+       |  integer j;
+       |
+       |  assign req_ready = 1'b1;
+       |
+       |  always @(posedge clk) begin
+       |    if (reset) begin
+       |      valid_pipe <= '0;
+       |      for (j = 0; j < ${latency}; j = j + 1) begin
+       |        data_pipe[j] <= '0;
+       |      end
+       |    end else begin
+       |      valid_pipe[0] <= req_valid;
+       |      if (req_valid) begin
+       |        tri_mem_read_bank(bank, addr, raw_buffer);
+       |        for (i = 0; i < ${c.numPEs * 3 * 3 * (c.cfg.totalWidth / 8)}; i = i + 1) begin
+       |          data_pipe[0][i*8 +: 8] <= raw_buffer[i];
+       |        end
+       |      end
+       |      for (j = 1; j < ${latency}; j = j + 1) begin
+       |        valid_pipe[j] <= valid_pipe[j - 1];
+       |        data_pipe[j] <= data_pipe[j - 1];
+       |      end
+       |    end
+       |  end
+       |
+       |  assign data = data_pipe[${latency - 1}];
+       |  assign valid = valid_pipe[${latency - 1}];
+       |endmodule
+       |""".stripMargin
+  )
+}
+
 class TriangleMemWrapper(val c: TriPeConfig) extends Module {
   require(isPow2(c.numPEs), s"TriangleMemWrapper requires numPEs to be power-of-two, got ${c.numPEs}")
 
@@ -129,6 +239,8 @@ class TriangleMemCachedBank(
     val req = Flipped(Decoupled(new BankReq))
     val resp = Decoupled(new BankResp)
     val stat = Valid(Bool())
+    val missReq = Decoupled(new TriMemRefillReq(numBanks))
+    val refillResp = Flipped(Decoupled(UInt(totalBits.W)))
   })
 
   private def setIdxOf(addr: UInt): UInt = {
@@ -171,17 +283,7 @@ class TriangleMemCachedBank(
   val cacheTag = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(0.U(tagW.W))))))
   val cacheLru = RegInit(VecInit(Seq.fill(numSets)(false.B)))
 
-  val ddrFetch = Module(new TriangleMemDPI(
-    c,
-    latency = 1,
-    bankId = bankId,
-    numBanks = numBanks,
-    maxEntries = GlobalConfig.triMemBankDepth
-  ))
-  ddrFetch.io.clk := clock
-  ddrFetch.io.reset := reset
-
-  val sIdle :: sHitRead :: sHitResp :: sMissWait :: sEmitMissResp :: Nil = Enum(5)
+  val sIdle :: sHitRead :: sHitResp :: sMissReq :: sMissWait :: sEmitMissResp :: Nil = Enum(6)
   val state = RegInit(sIdle)
 
   val activeReq = Reg(new BankReq)
@@ -213,14 +315,36 @@ class TriangleMemCachedBank(
   val mergedCount = RegInit(0.U(mergeCountW.W))
   val emitIdx = RegInit(0.U(mergeCountW.W))
   val emitTotal = RegInit(0.U(mergeCountW.W))
+  val missReqWaitCycles = RegInit(0.U(16.W))
+  val missRespWaitCycles = RegInit(0.U(16.W))
   val statsValid = WireDefault(false.B)
   val statsHit = WireDefault(false.B)
-
-  ddrFetch.io.addr := activeAddr
-  ddrFetch.io.req_valid := false.B
-  ddrFetch.io.req_mask := Fill(c.numPEs, 1.U(1.W))
   io.stat.valid := statsValid
   io.stat.bits := statsHit
+  io.missReq.valid := false.B
+  io.missReq.bits.bank := bankId.U
+  io.missReq.bits.addr := activeAddr
+  io.refillResp.ready := false.B
+
+  when(state === sMissReq) {
+    missReqWaitCycles := missReqWaitCycles + 1.U
+  }.otherwise {
+    missReqWaitCycles := 0.U
+  }
+  when(state === sMissWait) {
+    missRespWaitCycles := missRespWaitCycles + 1.U
+  }.otherwise {
+    missRespWaitCycles := 0.U
+  }
+
+  assert(
+    missReqWaitCycles < 4096.U,
+    s"TriangleMemCachedBank[$bankId] miss request arbitration timeout"
+  )
+  assert(
+    missRespWaitCycles < 4096.U,
+    s"TriangleMemCachedBank[$bankId] refill response timeout"
+  )
 
   val headReq = reqQ.io.deq.bits
   val headSet = setIdxOf(headReq.addr)
@@ -228,9 +352,9 @@ class TriangleMemCachedBank(
   val headHitWay0 = cacheValid(0)(headSet) && cacheTag(0)(headSet) === headTag
   val headHitWay1 = cacheValid(1)(headSet) && cacheTag(1)(headSet) === headTag
   val headHit = headHitWay0 || headHitWay1
-  val headMissSameLine = state === sMissWait && headReq.addr === activeAddr
-  val missFetchDone = state === sMissWait && ddrFetch.io.valid
+  val headMissSameLine = (state === sMissReq || state === sMissWait) && headReq.addr === activeAddr
   val canMergeHead = headMissSameLine && mergedCount =/= mergeQueueDepth.U
+  val mergeHeadNow = reqQ.io.deq.valid && canMergeHead
 
   reqQ.io.deq.ready := false.B
 
@@ -266,15 +390,32 @@ class TriangleMemCachedBank(
       mergedCount := 0.U
       emitIdx := 0.U
       emitTotal := 0.U
-      ddrFetch.io.addr := headReq.addr
-      ddrFetch.io.req_valid := true.B
-      state := sMissWait
+      io.missReq.valid := true.B
+      io.missReq.bits.addr := headReq.addr
+      when(io.missReq.ready) {
+        state := sMissWait
+      }.otherwise {
+        state := sMissReq
+      }
     }
   }.elsewhen(state === sHitRead) {
     hitDataReg := Mux(hitWayReg === 0.U, way0ReadData, way1ReadData)
     state := sHitResp
+  }.elsewhen(state === sMissReq) {
+    io.missReq.valid := true.B
+    when(mergeHeadNow) {
+      reqQ.io.deq.ready := true.B
+      statsValid := true.B
+      statsHit := false.B
+      mergedReqs(mergedCount(mergeIdxW - 1, 0)) := headReq
+      mergedCount := mergedCount + 1.U
+    }
+    when(io.missReq.fire) {
+      state := sMissWait
+    }
   }.elsewhen(state === sMissWait) {
-    when(reqQ.io.deq.valid && canMergeHead && !missFetchDone) {
+    io.refillResp.ready := true.B
+    when(mergeHeadNow) {
       reqQ.io.deq.ready := true.B
       statsValid := true.B
       statsHit := false.B
@@ -282,18 +423,18 @@ class TriangleMemCachedBank(
       mergedCount := mergedCount + 1.U
     }
 
-    when(ddrFetch.io.valid) {
-      refillDataReg := ddrFetch.io.data
+    when(io.refillResp.fire) {
+      refillDataReg := io.refillResp.bits
       when(refillVictimWay === 0.U) {
-        cacheData(0).write(refillSetReg, ddrFetch.io.data)
+        cacheData(0).write(refillSetReg, io.refillResp.bits)
       }.otherwise {
-        cacheData(1).write(refillSetReg, ddrFetch.io.data)
+        cacheData(1).write(refillSetReg, io.refillResp.bits)
       }
       cacheValid(refillVictimWay)(refillSetReg) := true.B
       cacheTag(refillVictimWay)(refillSetReg) := refillTagReg
       cacheLru(refillSetReg) := !refillVictimWay
       emitIdx := 0.U
-      emitTotal := mergedCount + 1.U
+      emitTotal := mergedCount + 1.U + Mux(mergeHeadNow, 1.U, 0.U)
       state := sEmitMissResp
     }
   }
@@ -388,7 +529,14 @@ class TriangleMemMultiPort(
     case 0 =>
       val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemCachedBank(c, srcW, tagWidth, b, numBanks)))
       val statMons = Seq.fill(numBanks)(Module(new TriCacheStatsMonitor))
+      val refillStatMon = Module(new TriCacheRefillStatsMonitor)
       val reqArbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
+      val missArb = Module(new RRArbiter(new TriMemRefillReq(numBanks), numBanks))
+      val sharedRefill = Module(new TriangleMemSharedDPI(c, latency = 1, numBanks = numBanks))
+      val refillBusy = RegInit(false.B)
+      val refillBankReg = Reg(UInt(bankSelW.W))
+      val refillPendingValid = RegInit(VecInit(Seq.fill(numBanks)(false.B)))
+      val refillPendingData = Reg(Vec(numBanks, UInt((c.numPEs * 9 * c.cfg.totalWidth).W)))
 
       for (b <- 0 until numBanks) {
         statMons(b).io.clk := clock
@@ -396,7 +544,43 @@ class TriangleMemMultiPort(
         statMons(b).io.valid := banks(b).io.stat.valid
         statMons(b).io.hit := banks(b).io.stat.bits
         statMons(b).io.bank := b.U
+        missArb.io.in(b) <> banks(b).io.missReq
+        banks(b).io.refillResp.valid := refillPendingValid(b)
+        banks(b).io.refillResp.bits := refillPendingData(b)
+        when(banks(b).io.refillResp.fire) {
+          refillPendingValid(b) := false.B
+        }
       }
+
+      val refillFire = missArb.io.out.valid && !refillBusy && sharedRefill.io.req_ready
+      val refillArbStall = missArb.io.out.valid && refillBusy
+      refillStatMon.io.clk := clock
+      refillStatMon.io.reset := reset
+      refillStatMon.io.busyCycle := refillBusy
+      refillStatMon.io.stallCycle := refillArbStall
+      refillStatMon.io.refillFire := refillFire
+
+      sharedRefill.io.clk := clock
+      sharedRefill.io.reset := reset
+      sharedRefill.io.bank := missArb.io.out.bits.bank
+      sharedRefill.io.addr := missArb.io.out.bits.addr
+      sharedRefill.io.req_valid := missArb.io.out.valid && !refillBusy
+      missArb.io.out.ready := !refillBusy && sharedRefill.io.req_ready
+
+      when(refillFire) {
+        refillBusy := true.B
+        refillBankReg := missArb.io.out.bits.bank
+      }
+      when(sharedRefill.io.valid) {
+        refillBusy := false.B
+        refillPendingValid(refillBankReg) := true.B
+        refillPendingData(refillBankReg) := sharedRefill.io.data
+      }
+
+      assert(
+        !(sharedRefill.io.valid && refillPendingValid(refillBankReg)),
+        "TriangleMemMultiPort refill response overwritten before bank consumed it"
+      )
 
       val targetedBank = Wire(Vec(numPorts, UInt(bankSelW.W)))
       val bankLocalAddr = Wire(Vec(numPorts, UInt(GlobalConfig.triMemAddrWidth.W)))

@@ -708,6 +708,9 @@ inline void writeU32LE(uint8_t* dst, uint32_t value) {
 struct TriCacheStats {
     uint64_t totalAccess = 0;
     uint64_t totalHit = 0;
+    uint64_t refillBusyCycles = 0;
+    uint64_t refillStallCycles = 0;
+    uint64_t refillFireCount = 0;
     std::array<uint64_t, 16> bankAccess{};
     std::array<uint64_t, 16> bankHit{};
     bool reportRegistered = false;
@@ -748,6 +751,12 @@ void printTriCacheStats() {
             static_cast<unsigned long long>(stats.bankAccess[bank] - stats.bankHit[bank]),
             bankRate);
     }
+
+    std::printf(
+        "[TriCacheRefill] refill_count=%llu busy_cycles=%llu arb_stall_cycles=%llu\n",
+        static_cast<unsigned long long>(stats.refillFireCount),
+        static_cast<unsigned long long>(stats.refillBusyCycles),
+        static_cast<unsigned long long>(stats.refillStallCycles));
 }
 } // namespace
 
@@ -783,6 +792,24 @@ extern "C" void tri_cache_stats_record(int bank, int hit) {
         if (hit != 0) {
             ++stats.bankHit[static_cast<size_t>(bank)];
         }
+    }
+}
+
+extern "C" void tri_cache_refill_stats_record(int busy_cycle, int stall_cycle, int refill_fire) {
+    auto& stats = triCacheStats();
+    if (!stats.reportRegistered) {
+        std::atexit(printTriCacheStats);
+        stats.reportRegistered = true;
+    }
+
+    if (busy_cycle != 0) {
+        ++stats.refillBusyCycles;
+    }
+    if (stall_cycle != 0) {
+        ++stats.refillStallCycles;
+    }
+    if (refill_fire != 0) {
+        ++stats.refillFireCount;
     }
 }
 
