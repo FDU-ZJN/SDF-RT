@@ -9,7 +9,8 @@ inline constexpr int kHeight = 1080;
 inline constexpr int kMaxWaitCycles = 1000;
 inline constexpr int kTraceNoProgressCycles = 20000;
 inline constexpr int kTriNumPE = 1;
-inline constexpr int kTriNumBanks = 8;
+inline constexpr int kTriCacheLineTriangles = 4;
+inline constexpr int kTriNumBanks = 4;
 inline constexpr int kSDFGlobalRes = 16;
 inline constexpr int kSDFSubRes = 4;
 

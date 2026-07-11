@@ -9,7 +9,8 @@ object GlobalConfig {
   val pixelQueueDepth = 512
   val traceNumWorkers = 4
   val triMemNumPEs = 1
-  val triMemNumBanks = 8
+  val triMemCacheLineTriangles = 4
+  val triMemNumBanks = 4
   val ddaNumWorkers = 2
   val sdfStepNumWorkers = 2
 
@@ -93,9 +94,9 @@ object GlobalConfig {
 
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
-  val triMemDataWidth = triMemNumPEs * 9 * 32
+  val triMemDataWidth = triMemCacheLineTriangles * 9 * 32
   val triMemCacheSets = 256
-  val triMemCacheWays = 2
+  val triMemCacheWays = 1
   val triMemReqQueueDepth = 8
   val triMemMergeQueueDepth = 8
   val triMemMshrEntries = 4
@@ -146,10 +147,10 @@ object GlobalConfig {
 
   private val bramDepthAlign = 512
 
-  def triMemDepthFor(numBanks: Int, numPEs: Int = triMemNumPEs): Int = {
+  def triMemDepthFor(numBanks: Int, lineTriangles: Int = triMemCacheLineTriangles): Int = {
     require(numBanks > 0, s"triMem numBanks must be > 0, got $numBanks")
-    require(numPEs > 0, s"triMem numPEs must be > 0, got $numPEs")
-    val totalDepth = (TriOriginalNum + numPEs - 1) / numPEs
+    require(lineTriangles > 0, s"triMem cache line must contain triangles, got $lineTriangles")
+    val totalDepth = (TriOriginalNum + lineTriangles - 1) / lineTriangles
     alignUp((totalDepth + numBanks - 1) / numBanks, bramDepthAlign)
   }
 
@@ -192,8 +193,12 @@ object FloatConfig {
 
 case class TriPeConfig(
   numPEs: Int = GlobalConfig.triMemNumPEs,
+  cacheLineTriangles: Int = GlobalConfig.triMemCacheLineTriangles,
   cfg: FloatConfig = FloatConfig.FP32
 ) {
+  require(numPEs > 0, s"TriPE intersector count must be > 0, got $numPEs")
+  require(cacheLineTriangles > 0 && (cacheLineTriangles & (cacheLineTriangles - 1)) == 0,
+    s"TriPE cache line must contain a power-of-two number of triangles, got $cacheLineTriangles")
   val addrWidth = GlobalConfig.addrWidth
 }
 

@@ -100,31 +100,41 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
 
 void export_triangle_ddr_binary(const std::string& filename) {
     const auto& tri_store = triangles_compact.empty() ? triangles : triangles_compact;
+    const int triBatchSize = rt::config::kTriCacheLineTriangles;
+    const int bytesPerBlock = triBatchSize * 36;
     std::ofstream out(filename, std::ios::binary);
     if (!out.is_open()) {
         std::cerr << "[MemExport] Failed to open " << filename << std::endl;
         return;
     }
 
-    for (const Triangle& tri : tri_store) {
-        const float values[9] = {
-            tri.v0[0], tri.v0[1], tri.v0[2],
-            tri.v1[0], tri.v1[1], tri.v1[2],
-            tri.v2[0], tri.v2[1], tri.v2[2]
-        };
-        uint8_t line[64] = {};
-        for (int i = 0; i < 9; ++i) {
-            const uint32_t bits = floatToRawU32(values[i]);
-            line[i * 4 + 0] = static_cast<uint8_t>(bits >> 0);
-            line[i * 4 + 1] = static_cast<uint8_t>(bits >> 8);
-            line[i * 4 + 2] = static_cast<uint8_t>(bits >> 16);
-            line[i * 4 + 3] = static_cast<uint8_t>(bits >> 24);
+    const size_t totalBlocks = (tri_store.size() + triBatchSize - 1) / triBatchSize;
+    for (size_t blk = 0; blk < totalBlocks; ++blk) {
+        uint8_t line[256] = {};
+        for (int lane = 0; lane < triBatchSize; ++lane) {
+            const size_t triIdx = blk * static_cast<size_t>(triBatchSize) + static_cast<size_t>(lane);
+            if (triIdx >= tri_store.size()) break;
+            const Triangle& tri = tri_store[triIdx];
+            const float values[9] = {
+                tri.v0[0], tri.v0[1], tri.v0[2],
+                tri.v1[0], tri.v1[1], tri.v1[2],
+                tri.v2[0], tri.v2[1], tri.v2[2]
+            };
+            for (int i = 0; i < 9; ++i) {
+                const uint32_t bits = floatToRawU32(values[i]);
+                const int offset = lane * 36 + i * 4;
+                line[offset + 0] = static_cast<uint8_t>(bits >> 0);
+                line[offset + 1] = static_cast<uint8_t>(bits >> 8);
+                line[offset + 2] = static_cast<uint8_t>(bits >> 16);
+                line[offset + 3] = static_cast<uint8_t>(bits >> 24);
+            }
         }
-        out.write(reinterpret_cast<const char*>(line), sizeof(line));
+        out.write(reinterpret_cast<const char*>(line), bytesPerBlock);
     }
     out.close();
-    std::cout << "[MemExport] Exported " << tri_store.size()
-              << " 64-byte DDR triangle lines to " << filename << std::endl;
+    std::cout << "[MemExport] Exported " << totalBlocks
+              << " " << bytesPerBlock << "-byte DDR triangle blocks ("
+              << tri_store.size() << " triangles, " << triBatchSize << " tri/block) to " << filename << std::endl;
 }
 
 // Export normal memory to .mem file
@@ -577,7 +587,7 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem(
             output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".mem",
-            rt::config::kTriNumPE,
+            rt::config::kTriCacheLineTriangles,
             rt::config::kTriNumBanks,
             bank);
     }
@@ -590,7 +600,7 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem_coe(
             output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".coe",
-            rt::config::kTriNumPE,
+            rt::config::kTriCacheLineTriangles,
             rt::config::kTriNumBanks,
             bank);
     }

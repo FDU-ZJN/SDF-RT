@@ -15,7 +15,7 @@ private class TriangleMemDPICore(
 
   // 计算单个三角形的字节数：3顶点 * 3坐标 * (位宽/8)
   val bytesPerTri = 3 * 3 * (c.cfg.totalWidth / 8)
-  val totalBytes = c.numPEs * bytesPerTri
+  val totalBytes = c.cacheLineTriangles * bytesPerTri
   val totalBits = totalBytes * 8
 
   val io = IO(new Bundle {
@@ -24,10 +24,10 @@ private class TriangleMemDPICore(
     val bank_id = Input(UInt(32.W))
     val addr = Input(UInt(c.addrWidth.W))
     val req_valid = Input(Bool())
-    val req_mask = Input(UInt(c.numPEs.W))
+    val req_mask = Input(UInt(c.cacheLineTriangles.W))
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val valid_mask = Output(UInt(c.numPEs.W))
+    val valid_mask = Output(UInt(c.cacheLineTriangles.W))
     val addr_q = Output(UInt(c.addrWidth.W))
     val req_ready = Output(Bool())  // always ready
   })
@@ -42,10 +42,10 @@ private class TriangleMemDPICore(
        |    input [31:0] bank_id,
        |    input [${c.addrWidth - 1}:0] addr,
        |    input req_valid,
-       |    input [${c.numPEs - 1}:0] req_mask,
+       |    input [${c.cacheLineTriangles - 1}:0] req_mask,
        |    output [${totalBits - 1}:0] data,
        |    output valid,
-       |    output [${c.numPEs - 1}:0] valid_mask,
+       |    output [${c.cacheLineTriangles - 1}:0] valid_mask,
        |    output [${c.addrWidth - 1}:0] addr_q,
        |    output req_ready
        |);
@@ -53,7 +53,7 @@ private class TriangleMemDPICore(
        |    reg [${totalBits - 1}:0] data_pipe[0:${latency - 1}];
        |    reg [${c.addrWidth - 1}:0] addr_pipe[0:${latency - 1}];
        |    reg [${latency - 1}:0] valid_pipe;
-       |    reg [${c.numPEs - 1}:0] mask_pipe [0:${latency - 1}];
+       |    reg [${c.cacheLineTriangles - 1}:0] mask_pipe [0:${latency - 1}];
        |    integer j;
        |
        |    assign req_ready = 1'b1;
@@ -71,7 +71,7 @@ private class TriangleMemDPICore(
        |            if (req_valid) begin
        |                tri_mem_read_bank(bank_id, addr, raw_buffer);
        |                addr_pipe[0] <= addr;
-       |                mask_pipe[0] <= req_mask[${c.numPEs - 1}:0];
+       |                mask_pipe[0] <= req_mask[${c.cacheLineTriangles - 1}:0];
        |                for (int i = 0; i < ${totalBytes}; i = i + 1) begin
        |                    data_pipe[0][i*8 +: 8] <= raw_buffer[i];
        |                end
@@ -106,26 +106,26 @@ private class TriangleMemResourceBB(
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
-        "DATA_WIDTH" -> (c.numPEs * 9 * c.cfg.totalWidth),
+        "DATA_WIDTH" -> (c.cacheLineTriangles * 9 * c.cfg.totalWidth),
         "LATENCY" -> latency,
-        "NUM_PES" -> c.numPEs,
+        "NUM_PES" -> c.cacheLineTriangles,
         "BANK_ID" -> bankId,
         "NUM_BANKS" -> numBanks,
-        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
+        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.cacheLineTriangles)),
         "INIT_FILE" -> StringParam(s"triangle_mem_bank${bankId}.mem")
       )
     )
     with HasBlackBoxResource {
-  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
+  private val totalBits = c.cacheLineTriangles * 9 * c.cfg.totalWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
     val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_valid = Input(Bool())
-    val req_mask = Input(UInt(c.numPEs.W))
+    val req_mask = Input(UInt(c.cacheLineTriangles.W))
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val valid_mask = Output(UInt(c.numPEs.W))
+    val valid_mask = Output(UInt(c.cacheLineTriangles.W))
     val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_ready = Output(Bool())
   })
@@ -141,27 +141,27 @@ private class TriangleMemIpBB(
 ) extends BlackBox(
       Map(
         "ADDR_WIDTH" -> GlobalConfig.triMemAddrWidth,
-        "DATA_WIDTH" -> (c.numPEs * 9 * c.cfg.totalWidth),
+        "DATA_WIDTH" -> (c.cacheLineTriangles * 9 * c.cfg.totalWidth),
         "LATENCY" -> latency,
-        "NUM_PES" -> c.numPEs,
+        "NUM_PES" -> c.cacheLineTriangles,
         "BANK_ID" -> bankId,
         "NUM_BANKS" -> numBanks,
-        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)),
+        "MAX_ENTRIES" -> (if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.cacheLineTriangles)),
         "INIT_FILE" -> StringParam(s"triangle_mem_bank${bankId}.mem")
       )
     )
     with HasBlackBoxResource {
   override def desiredName: String = "TriangleMem"
-  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
+  private val totalBits = c.cacheLineTriangles * 9 * c.cfg.totalWidth
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
     val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_valid = Input(Bool())
-    val req_mask = Input(UInt(c.numPEs.W))
+    val req_mask = Input(UInt(c.cacheLineTriangles.W))
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val valid_mask = Output(UInt(c.numPEs.W))
+    val valid_mask = Output(UInt(c.cacheLineTriangles.W))
     val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_ready = Output(Bool())
   })
@@ -175,17 +175,17 @@ class TriangleMemDPI(
   val numBanks: Int = 1,
   val maxEntries: Int = -1
 ) extends Module {
-  private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
-  private val resolvedMaxEntries = if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.numPEs)
+  private val totalBits = c.cacheLineTriangles * 9 * c.cfg.totalWidth
+  private val resolvedMaxEntries = if (maxEntries > 0) maxEntries else GlobalConfig.triMemDepthFor(numBanks, c.cacheLineTriangles)
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset = Input(Reset())
     val addr = Input(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_valid = Input(Bool())
-    val req_mask = Input(UInt(c.numPEs.W))
+    val req_mask = Input(UInt(c.cacheLineTriangles.W))
     val data = Output(UInt(totalBits.W))
     val valid = Output(Bool())
-    val valid_mask = Output(UInt(c.numPEs.W))
+    val valid_mask = Output(UInt(c.cacheLineTriangles.W))
     val addr_q = Output(UInt(GlobalConfig.triMemAddrWidth.W))
     val req_ready = Output(Bool())
   })

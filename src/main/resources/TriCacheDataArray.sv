@@ -1,4 +1,4 @@
-module TriCacheDataArray #(
+module TriCacheDataArrayBB #(
   parameter int DATA_WIDTH = 288,
   parameter int DEPTH = 256,
   parameter int ADDR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH)

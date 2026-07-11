@@ -7,9 +7,12 @@ import Trace.TriangleMemRefillBackend
 class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "TriangleMemRefillBackend DataMover path"
 
-  private val cfg = TriPeConfig(cfg = FloatConfig.FP32.copy(), numPEs = 1)
+  private val cfg = TriPeConfig(cfg = FloatConfig.FP32.copy(), numPEs = 1, cacheLineTriangles = 4)
+  private val totalBits = cfg.cacheLineTriangles * 9 * 32
+  private val dmaBeats = totalBits / 128
+  private val blockBytes = totalBits / 8
 
-  it should "issue a 64-byte command and return one triangle after data and status" in {
+  it should s"issue a $blockBytes-byte command and return four triangles after data and status" in {
     test(GlobalConfig.withMemImplMode(2)(new TriangleMemRefillBackend(cfg, numBanks = 8, idWidth = 2))) { dut =>
       dut.io.triangleBaseAddress.poke(BigInt("10000000", 16).U)
       dut.io.req.valid.poke(false.B)
@@ -24,25 +27,20 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.req.bits.id.poke(1.U)
       dut.io.req.valid.poke(true.B)
       dut.io.dmaCmd.valid.expect(true.B)
-      val expectedAddress = BigInt("10000000", 16) + ((2 * 8 + 3) * 64)
+      val expectedAddress = BigInt("10000000", 16) + ((2 * 8 + 3) * blockBytes)
       val command = dut.io.dmaCmd.bits.peek().litValue
       assert(((command >> 32) & ((BigInt(1) << 40) - 1)) == expectedAddress)
       assert(((command >> 72) & 0xf) == 1)
       assert(((command >> 30) & 1) == 1)
       assert(((command >> 23) & 1) == 1)
-      assert((command & ((BigInt(1) << 23) - 1)) == 64)
+      assert((command & ((BigInt(1) << 23) - 1)) == blockBytes)
       dut.clock.step()
       dut.io.req.valid.poke(false.B)
 
-      val beats = Seq(
-        BigInt("00112233445566778899aabbccddeeff", 16),
-        BigInt("102132435465768798a9bacbdcedfe0f", 16),
-        BigInt("2031425364758697a8b9cadbecfd0e1f", 16),
-        BigInt("30415263748596a7b8c9daebfc0d1e2f", 16)
-      )
+      val beats = (0 until dmaBeats).map(i => (BigInt(i + 1) << 96) | BigInt("00112233445566778899aabbccddeeff", 16))
       beats.zipWithIndex.foreach { case (data, index) =>
         dut.io.dmaData.bits.data.poke(data.U)
-        dut.io.dmaData.bits.last.poke((index == 3).B)
+        dut.io.dmaData.bits.last.poke((index == dmaBeats - 1).B)
         dut.io.dmaData.valid.poke(true.B)
         dut.io.dmaData.ready.expect(true.B)
         dut.clock.step()
@@ -57,7 +55,7 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.resp.valid.expect(true.B)
       dut.io.resp.bits.id.expect(1.U)
       val line = beats.zipWithIndex.map { case (beat, i) => beat << (128 * i) }.reduce(_ | _)
-      dut.io.resp.bits.data.expect((line & ((BigInt(1) << 288) - 1)).U)
+      dut.io.resp.bits.data.expect((line & ((BigInt(1) << totalBits) - 1)).U)
       dut.clock.step()
       dut.io.issuedCount.expect(1.U)
       dut.io.completedCount.expect(1.U)
@@ -80,9 +78,9 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.req.valid.poke(false.B)
 
-      for (i <- 0 until 4) {
+      for (i <- 0 until dmaBeats) {
         dut.io.dmaData.bits.data.poke((i + 1).U)
-        dut.io.dmaData.bits.last.poke((i == 3).B)
+        dut.io.dmaData.bits.last.poke((i == dmaBeats - 1).B)
         dut.io.dmaData.valid.poke(true.B)
         dut.clock.step()
       }

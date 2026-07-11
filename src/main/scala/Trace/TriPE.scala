@@ -6,13 +6,12 @@ import raytrace_utils._
 import raytrace_utils.fudian._
 
 class TriPE(val c: TriPeConfig) extends Module {
-  require(c.numPEs == 1 || c.numPEs == 2, s"TriPE supports one or two triangle intersectors, got ${c.numPEs}")
-  require(isPow2(c.numPEs), s"TriPE requires numPEs to be power-of-two, got ${c.numPEs}")
+  require(c.numPEs == 1, s"TriPE currently has one triangle intersector per worker, got ${c.numPEs}")
 
   private val ctxCount = 2
   private val ctxW = 1
   private val memTagW = ctxW + 1
-  private val triPeSelW = math.max(1, log2Ceil(c.numPEs))
+  private val lineSelW = math.max(1, log2Ceil(c.cacheLineTriangles))
 
   val io = IO(new Bundle {
     val ray_in = Input(new Ray(c.cfg))
@@ -162,8 +161,8 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   class MemReq extends Bundle {
     val blockAddr = UInt(GlobalConfig.triMemAddrWidth.W)
-    val mask = UInt(c.numPEs.W)
-    val count = UInt(log2Ceil(c.numPEs + 1).W)
+    val mask = UInt(c.cacheLineTriangles.W)
+    val count = UInt(log2Ceil(c.cacheLineTriangles + 1).W)
     val ctx = UInt(ctxW.W)
     val epoch = Bool()
   }
@@ -184,10 +183,10 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val memSel = Wire(UInt(ctxW.W))
   memSel := Mux(memCanEnq(0) && (!memRr || !memCanEnq(1)), 0.U, 1.U)
 
-  private val laneBase = if (c.numPEs == 1) 0.U(1.W) else batchTriIdx(memSel)(triPeSelW - 1, 0)
-  private val blockAddr = if (c.numPEs == 1) batchTriIdx(memSel) else batchTriIdx(memSel) >> triPeSelW
-  private val laneMask = Wire(Vec(c.numPEs, Bool()))
-  for (lane <- 0 until c.numPEs) {
+  private val laneBase = batchTriIdx(memSel)(lineSelW - 1, 0)
+  private val blockAddr = batchTriIdx(memSel) >> lineSelW
+  private val laneMask = Wire(Vec(c.cacheLineTriangles, Bool()))
+  for (lane <- 0 until c.cacheLineTriangles) {
     laneMask(lane) := lane.U >= laneBase && ((lane.U - laneBase) < batchTrisRemaining(memSel))
   }
   private val blockMask = laneMask.asUInt
@@ -222,28 +221,45 @@ class TriPE(val c: TriPeConfig) extends Module {
   io.mem_req.bits.tag := Cat(memReqQ.io.deq.bits.epoch, memReqQ.io.deq.bits.ctx)
   memReqQ.io.deq.ready := memReqStale || (memReqToMemValid && memReqToMemReady)
 
-  io.mem_resp.ready := true.B
-  private val memRespCtx = io.mem_resp.bits.tag(0)
-  private val memRespEpoch = io.mem_resp.bits.tag(1)
-  private val memRespLive = io.mem_resp.fire &&
-    (memRespEpoch === activeEpoch(memRespCtx)) &&
-    !io.clear_ctx(memRespCtx)
-
-  private val pes = Seq.fill(c.numPEs)(Module(new RayTriangleIntersection(c.cfg)))
-  for (lane <- 0 until c.numPEs) {
-    pes(lane).io.ray := rayReg(memRespCtx)
-    pes(lane).io.tri := io.mem_resp.bits.block.tris(lane)
-    pes(lane).io.in_valid := memRespLive && io.mem_resp.bits.block.mask(lane)
+  private val lineValid = RegInit(false.B)
+  private val lineBlock = Reg(new TriangleBlock(c))
+  private val lineCtx = Reg(UInt(ctxW.W))
+  private val lineEpoch = Reg(Bool())
+  private val lineLane = RegInit(0.U(lineSelW.W))
+  private val lineLive = lineValid &&
+    lineEpoch === activeEpoch(lineCtx) &&
+    !io.clear_ctx(lineCtx)
+  io.mem_resp.ready := !lineValid
+  when(io.mem_resp.fire) {
+    lineValid := true.B
+    lineBlock := io.mem_resp.bits.block
+    lineCtx := io.mem_resp.bits.tag(0)
+    lineEpoch := io.mem_resp.bits.tag(1)
+    lineLane := 0.U
+  }.elsewhen(lineValid && !lineLive) {
+    lineValid := false.B
+  }.elsewhen(lineLive) {
+    when(lineLane === (c.cacheLineTriangles - 1).U) {
+      lineValid := false.B
+      lineLane := 0.U
+    }.otherwise {
+      lineLane := lineLane + 1.U
+    }
   }
+
+  private val pes = Seq(Module(new RayTriangleIntersection(c.cfg)))
+  pes.head.io.ray := rayReg(lineCtx)
+  pes.head.io.tri := lineBlock.tris(lineLane)
+  pes.head.io.in_valid := lineLive && lineBlock.mask(lineLane)
 
   private val peLatency = RayTriangleIntersection.totalLatency(c.cfg)
   // The triangle intersector is a fixed-latency pipeline. ctx/epoch must advance
   // every cycle with the same delay; compacting only on memRespLive breaks
   // alignment as soon as cache misses introduce bubbles between responses.
-  private val peCtxOut = PipeUtils.pipeData(memRespCtx, peLatency)
-  private val peEpochOut = PipeUtils.pipeData(memRespEpoch, peLatency)
-  private val peOutLive = VecInit((0 until c.numPEs).map(lane =>
-    pes(lane).io.out_valid && peEpochOut === activeEpoch(peCtxOut)
+  private val peCtxOut = PipeUtils.pipeData(lineCtx, peLatency)
+  private val peEpochOut = PipeUtils.pipeData(lineEpoch, peLatency)
+  private val peOutLive = VecInit(Seq(
+    pes.head.io.out_valid && peEpochOut === activeEpoch(peCtxOut)
   ))
 
   private val hitQs = Seq.fill(c.numPEs)(Module(new Queue(new PeHit, 4)))

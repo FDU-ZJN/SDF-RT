@@ -33,8 +33,8 @@ class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 }
 
 class TriangleBlock(val c: TriPeConfig) extends Bundle {
-  val tris = Vec(c.numPEs, new Triangle(c.cfg)) // 一个块里的多个三角形
-  val mask = Vec(c.numPEs, Bool())                   // 哪些三角形是有效的
+  val tris = Vec(c.cacheLineTriangles, new Triangle(c.cfg))
+  val mask = Vec(c.cacheLineTriangles, Bool())
 }
 class TriBatch(addrWidth: Int) extends Bundle {
   val base_addr = UInt(addrWidth.W)

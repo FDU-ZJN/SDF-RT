@@ -29,6 +29,14 @@ VerilatedVcdC* tfp = nullptr;
 
 namespace {
 
+constexpr size_t kTriangleBytes = 9 * sizeof(uint32_t);
+constexpr size_t kTriangleDmaBlockBytes =
+    static_cast<size_t>(kTriCacheLineTriangles) * kTriangleBytes;
+constexpr int kTriangleDmaBeatBytes = 16;
+static_assert(kTriangleDmaBlockBytes % kTriangleDmaBeatBytes == 0,
+              "Triangle DMA block must be an integer number of 128-bit beats");
+constexpr int kTriangleDmaBeats = kTriangleDmaBlockBytes / kTriangleDmaBeatBytes;
+
 struct TraceResultEntry {
     int  slotId;
     bool hit;
@@ -38,14 +46,14 @@ struct TraceResultEntry {
 queue<TraceResultEntry> traceResultQueue;
 
 struct DmaReadTransaction {
-    std::array<uint8_t, 64> line{};
+    std::array<uint8_t, kTriangleDmaBlockBytes> line{};
     uint8_t tag = 0;
     int beat = 0;
     bool statusPending = false;
 };
 
 // Behavioral model of the MM2S-side AXI DataMover streams.  It consumes the
-// 80-bit command emitted by the RTL and returns four 128-bit beats followed by
+// 80-bit command emitted by the RTL and returns one full cache line followed by
 // an OKAY status carrying the original command tag.
 class TriangleDmaResponder {
 public:
@@ -55,17 +63,17 @@ public:
             throw std::runtime_error("Cannot open triangle DDR image: " + imagePath);
         }
         bytes_ = std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});
-        if (bytes_.empty() || (bytes_.size() % 64) != 0) {
-            throw std::runtime_error("Triangle DDR image must contain complete 64-byte lines: " + imagePath);
+        if (bytes_.empty() || (bytes_.size() % kTriangleDmaBlockBytes) != 0) {
+            throw std::runtime_error("Triangle DDR image must contain complete cache lines: " + imagePath);
         }
-        std::cout << "Loaded " << (bytes_.size() / 64)
+        std::cout << "Loaded " << (bytes_.size() / kTriangleDmaBlockBytes)
                   << " triangle DDR lines for DataMover simulation." << std::endl;
     }
 
     void drive(VFpgaTop* dut) const {
         dut->io_tri_dma_cmd_ready = 1;
-        dut->io_tri_dma_data_valid = !pending_.empty() && pending_.front().beat < 4;
-        dut->io_tri_dma_data_bits_last = dut->io_tri_dma_data_valid && pending_.front().beat == 3;
+        dut->io_tri_dma_data_valid = !pending_.empty() && pending_.front().beat < kTriangleDmaBeats;
+        dut->io_tri_dma_data_bits_last = dut->io_tri_dma_data_valid && pending_.front().beat == kTriangleDmaBeats - 1;
         dut->io_tri_dma_status_valid = !pending_.empty() && pending_.front().statusPending;
         dut->io_tri_dma_status_bits = dut->io_tri_dma_status_valid
             ? static_cast<uint8_t>(0x80U | pending_.front().tag) : 0;
@@ -95,22 +103,25 @@ public:
             const uint64_t address = static_cast<uint64_t>(command[1]) |
                 (static_cast<uint64_t>(command[2] & 0xffU) << 32);
             const uint8_t tag = static_cast<uint8_t>((command[2] >> 8) & 0x0fU);
-            if (btt != 64 || (address & 63U) != 0 || address + 64 > bytes_.size()) {
+            if (btt != kTriangleDmaBlockBytes ||
+                (address % kTriangleDmaBeatBytes) != 0 ||
+                address + kTriangleDmaBlockBytes > bytes_.size()) {
                 throw std::runtime_error("Invalid DataMover triangle read command");
             }
             DmaReadTransaction txn;
             txn.tag = tag;
-            std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(address), 64, txn.line.begin());
+            std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(address),
+                        kTriangleDmaBlockBytes, txn.line.begin());
             pending_.push(txn);
             ++commands_;
         }
         if (dataFire) {
-            if (pending_.empty() || pending_.front().beat >= 4) {
+            if (pending_.empty() || pending_.front().beat >= kTriangleDmaBeats) {
                 throw std::runtime_error("Unexpected DataMover data handshake");
             }
             ++pending_.front().beat;
             ++dataBeats_;
-            if (pending_.front().beat == 4) pending_.front().statusPending = true;
+            if (pending_.front().beat == kTriangleDmaBeats) pending_.front().statusPending = true;
         }
         if (statusFire) {
             if (pending_.empty() || !pending_.front().statusPending) {
@@ -426,7 +437,7 @@ int main(int argc, char** argv) {
         dut->io_tri_axi_outstanding_count != 0 ||
         triangleDma.commands() == 0 ||
         triangleDma.commands() != triangleDma.statuses() ||
-        triangleDma.dataBeats() != 4 * triangleDma.commands()) {
+        triangleDma.dataBeats() != kTriangleDmaBeats * triangleDma.commands()) {
         std::cerr << "Triangle DataMover verification failed: error or incomplete transaction." << std::endl;
         delete dut;
         return 5;
