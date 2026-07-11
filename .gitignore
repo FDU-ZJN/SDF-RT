@@ -39,6 +39,24 @@ ip_repo/
 .codex-home/
 .sbt/
 .sbt-boot/
+.codex_sbt/
+
+# Vivado / FPGA generated projects and reports
+KV260_vivado/
+*.xsa
+*.bit
+*.wcfg
+*.lpr
+*.runs/
+*.sim/
+*.hw/
+*.srcs/
+*.cache/
+*.gen/
+*.ip_user_files/
+*.log
+*.jou
+*.str
 
 # Generated analysis outputs
 csrc/*blackspot*
@@ -48,9 +66,13 @@ csrc/tripe_hit_step_hist.csv
 AGENTS.md
 docs/
 remote.sh
-software_backup/material.mtl
-software_backup/normalize_ww.py
+software_rt/
+Write Workspace/
+待提交论文/
 论文参考/
+software_backup/
+cuda_bvh_fancy
+main.cu
 
 # IDE / tool metadata
 .idea/
