@@ -4,7 +4,7 @@ import raytrace_utils._
 import raytrace_utils.fudian._
 import DDA.DDA
 import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
-import Trace.TraceController
+import Trace.{TraceController, TriMemDmaReadData}
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
@@ -21,6 +21,7 @@ class FpgaTop(
   private val initOutLatency = 4 + c.cfg.fdivLatency + c.cfg.fmulLatency + (4 * c.cfg.fcmpLatency) + 1
   private val rayDirLatency = 4 + c.cfg.fsqrtLatency + c.cfg.fmulLatency
   private val postInitQueueDepth = rayDirLatency + initOutLatency + 32
+  private val triMshrIdWidth = math.max(1, log2Ceil(GlobalConfig.triMemMshrEntries))
   require(postInitQueueDepth > rayDirLatency + initOutLatency + 2,
     "postInitQueueDepth must absorb the non-backpressurable RayDir+Init pipeline tail")
 
@@ -44,6 +45,18 @@ class FpgaTop(
 
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
+
+    val triangle_base_address = Input(UInt(64.W))
+    val tri_dma_cmd = Decoupled(UInt(80.W))
+    val tri_dma_data = Flipped(Decoupled(new TriMemDmaReadData(128)))
+    val tri_dma_status = Flipped(Decoupled(UInt(8.W)))
+    val tri_dma_read_error = Output(Bool())
+    val tri_dma_malformed_line_count = Output(UInt(32.W))
+    val tri_dma_status_error_count = Output(UInt(32.W))
+    val tri_dma_tag_mismatch_count = Output(UInt(32.W))
+    val tri_axi_issued_count = Output(UInt(32.W))
+    val tri_axi_completed_count = Output(UInt(32.W))
+    val tri_axi_outstanding_count = Output(UInt(8.W))
   })
 
   val rayDirCalcs = Seq.tabulate(2)(lane => Module(new RayDirCalc(c.cfg, maxWidth, maxHeight, laneId = lane, numLanes = 2)))
@@ -52,6 +65,17 @@ class FpgaTop(
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, globalRes = sdfCfg.DDAGlobalRes, subRes = sdfCfg.SubRes, maxTraversalSteps = sdfCfg.DDAMaxSteps))
   val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
+  traceController.io.triangleBaseAddress := io.triangle_base_address
+  io.tri_dma_cmd <> traceController.io.triDmaCmd
+  traceController.io.triDmaData <> io.tri_dma_data
+  traceController.io.triDmaStatus <> io.tri_dma_status
+  io.tri_dma_read_error := traceController.io.triDmaReadError
+  io.tri_dma_malformed_line_count := traceController.io.triDmaMalformedLineCount
+  io.tri_dma_status_error_count := traceController.io.triDmaStatusErrorCount
+  io.tri_dma_tag_mismatch_count := traceController.io.triDmaTagMismatchCount
+  io.tri_axi_issued_count := traceController.io.triAxiIssuedCount
+  io.tri_axi_completed_count := traceController.io.triAxiCompletedCount
+  io.tri_axi_outstanding_count := traceController.io.triAxiOutstandingCount
   val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.triBatchQueueDepth))
   val commitQueue = Module(new CommitQueue(c.cfg))
   val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), postHitQueueDepth)))
@@ -438,18 +462,25 @@ object FpgaTopGen {
     }
   }
 
-  def generateFpgaTopVerilog(targetDir: String = "build/fpga",withMemImplMode :Int=0,withUseFloatIP:Boolean=true): Unit = {
+  def generateFpgaTopVerilog(
+    targetDir: String = "build/fpga",
+    withMemImplMode: Int = 0,
+    withUseFloatIP: Boolean = true,
+    withTriangleDmaRefill: Boolean = false
+  ): Unit = {
     println("Generating FPGA_TOP Verilog...")
     GlobalConfig.withMemImplMode(withMemImplMode) {
-      GlobalConfig.withUseFloatIP(withUseFloatIP) {
-        emitVerilog(
-          new FpgaTop(
-            maxWidth = GlobalConfig.frameWidth,
-            maxHeight = GlobalConfig.frameHeight,
-            traceRespQueueDepth = GlobalConfig.pixelQueueDepth
-          ),
-          Array("--target-dir", targetDir)
-        )
+      GlobalConfig.withTriangleDmaRefill(withTriangleDmaRefill) {
+        GlobalConfig.withUseFloatIP(withUseFloatIP) {
+          emitVerilog(
+            new FpgaTop(
+              maxWidth = GlobalConfig.frameWidth,
+              maxHeight = GlobalConfig.frameHeight,
+              traceRespQueueDepth = GlobalConfig.pixelQueueDepth
+            ),
+            Array("--target-dir", targetDir)
+          )
+        }
       }
     }
 
@@ -459,6 +490,8 @@ object FpgaTopGen {
 
   def main(args: Array[String]): Unit = {
     generateFpgaTopVerilog(targetDir = "build/vivado", withMemImplMode = 2)
-    generateFpgaTopVerilog(withUseFloatIP = false)
+    // Keep the Verilator FPGA model on the same DataMover refill path as Vivado,
+    // while retaining DPI models for non-triangle memories.
+    generateFpgaTopVerilog(withUseFloatIP = false, withTriangleDmaRefill = true)
   }
 }

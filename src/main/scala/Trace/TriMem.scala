@@ -269,6 +269,11 @@ class TriMemBackendResp(val c: TriPeConfig, val idWidth: Int) extends Bundle {
   val id = UInt(idWidth.W)
 }
 
+class TriMemDmaReadData(val dataWidth: Int) extends Bundle {
+  val data = UInt(dataWidth.W)
+  val last = Bool()
+}
+
 class TriMemAllocReq(
   val c: TriPeConfig,
   val numBanks: Int,
@@ -303,14 +308,41 @@ class TriangleMemRefillBackend(
 ) extends Module {
   private val totalBits = c.numPEs * 9 * c.cfg.totalWidth
   private val bankSelW = math.max(1, log2Ceil(numBanks))
+  private val dmaAddrWidth = 40
+  private val dmaDataWidth = 128
+  private val dmaLineBits = 512
+  private val dmaTagWidth = 4
 
   val io = IO(new Bundle {
     val req = Flipped(Decoupled(new TriMemBackendReq(c, numBanks, idWidth)))
     val resp = Decoupled(new TriMemBackendResp(c, idWidth))
+    val triangleBaseAddress = Input(UInt(64.W))
+    val dmaCmd = Decoupled(UInt(80.W))
+    val dmaData = Flipped(Decoupled(new TriMemDmaReadData(dmaDataWidth)))
+    val dmaStatus = Flipped(Decoupled(UInt(8.W)))
+    val dmaReadError = Output(Bool())
+    val dmaMalformedLineCount = Output(UInt(32.W))
+    val dmaStatusErrorCount = Output(UInt(32.W))
+    val dmaTagMismatchCount = Output(UInt(32.W))
+    val issuedCount = Output(UInt(32.W))
+    val completedCount = Output(UInt(32.W))
+    val outstandingCount = Output(UInt(8.W))
   })
 
+  io.dmaCmd.valid := false.B
+  io.dmaCmd.bits := 0.U
+  io.dmaData.ready := false.B
+  io.dmaStatus.ready := false.B
+  io.dmaReadError := false.B
+  io.dmaMalformedLineCount := 0.U
+  io.dmaStatusErrorCount := 0.U
+  io.dmaTagMismatchCount := 0.U
+  io.issuedCount := 0.U
+  io.completedCount := 0.U
+  io.outstandingCount := 0.U
+
   GlobalConfig.memImplMode match {
-    case 0 =>
+    case 0 if !GlobalConfig.useTriangleDmaRefill =>
       val mem = Module(new TriangleMemSharedDPI(c, latency = 1, numBanks = numBanks))
       val idPipe = RegInit(0.U(idWidth.W))
       val validPipe = RegInit(false.B)
@@ -331,40 +363,115 @@ class TriangleMemRefillBackend(
       io.resp.bits.id := idPipe
       io.resp.bits.data := mem.io.data
 
-    case 2 =>
-      val mems = Seq.tabulate(numBanks)(b => Module(new TriangleMemDPI(
-        c,
-        latency = 1,
-        bankId = b,
-        numBanks = numBanks,
-        maxEntries = GlobalConfig.triMemBankDepth
-      )))
-      val respArb = Module(new RRArbiter(new TriMemBackendResp(c, idWidth), numBanks))
-      val idPipes = Seq.fill(numBanks)(RegInit(0.U(idWidth.W)))
-      val validPipes = Seq.fill(numBanks)(RegInit(false.B))
+    case 0 | 2 =>
+      require(c.numPEs == 1, "DataMover triangle refill requires one triangle per 64-byte line")
+      require(totalBits <= dmaLineBits, s"DataMover refill line is $dmaLineBits bits, requested $totalBits bits")
+      require(idWidth <= dmaTagWidth, s"DataMover tag is $dmaTagWidth bits, MSHR ID is $idWidth bits")
 
-      io.req.ready := false.B
-      for (b <- 0 until numBanks) {
-        val hitBank = io.req.bits.bank === b.U(bankSelW.W)
-        mems(b).io.clk := clock
-        mems(b).io.reset := reset
-        mems(b).io.addr := io.req.bits.addr
-        mems(b).io.req_valid := io.req.valid && hitBank
-        mems(b).io.req_mask := Fill(c.numPEs, 1.U(1.W))
-        when(hitBank) {
-          io.req.ready := mems(b).io.req_ready
-        }
-        when(io.req.fire && hitBank) {
-          idPipes(b) := io.req.bits.id
-        }
-        validPipes(b) := io.req.fire && hitBank
+      val idCount = 1 << idWidth
+      val beatCount = RegInit(0.U(2.W))
+      val lineBuffer = Reg(Vec(4, UInt(dmaDataWidth.W)))
+      val idBusy = RegInit(VecInit(Seq.fill(idCount)(false.B)))
+      val dataDone = RegInit(VecInit(Seq.fill(idCount)(false.B)))
+      val statusDone = RegInit(VecInit(Seq.fill(idCount)(false.B)))
+      val responseError = RegInit(VecInit(Seq.fill(idCount)(false.B)))
+      val responseData = Reg(Vec(idCount, UInt(totalBits.W)))
+      val issuedCount = RegInit(0.U(32.W))
+      val completedCount = RegInit(0.U(32.W))
+      val errorSticky = RegInit(false.B)
+      val malformedLineCount = RegInit(0.U(32.W))
+      val statusErrorCount = RegInit(0.U(32.W))
+      val tagMismatchCount = RegInit(0.U(32.W))
+      val issuedIds = Module(new Queue(UInt(idWidth.W), entries = idCount))
 
-        respArb.io.in(b).valid := validPipes(b) && mems(b).io.valid
-        respArb.io.in(b).bits.id := idPipes(b)
-        respArb.io.in(b).bits.data := mems(b).io.data
+      val globalTriangle = (io.req.bits.addr << bankSelW) | io.req.bits.bank
+      val byteAddress = io.triangleBaseAddress + (globalTriangle << 6)
+      // PG022 Full command, 40-bit address: RSVD, TAG, SADDR, EOF/DSA/TYPE/BTT.
+      val commandLow = Cat(0.U(1.W), 1.U(1.W), 0.U(6.W), 1.U(1.W), 64.U(23.W))
+      val commandTag = io.req.bits.id.pad(dmaTagWidth)
+
+      io.dmaCmd.valid := io.req.valid && !idBusy(io.req.bits.id) && issuedIds.io.enq.ready
+      io.dmaCmd.bits := Cat(0.U(4.W), commandTag, byteAddress(dmaAddrWidth - 1, 0), commandLow)
+      io.req.ready := io.dmaCmd.ready && !idBusy(io.req.bits.id) && issuedIds.io.enq.ready
+      issuedIds.io.enq.valid := io.req.fire
+      issuedIds.io.enq.bits := io.req.bits.id
+
+      when(io.req.fire) {
+        val reqId = io.req.bits.id
+        idBusy(reqId) := true.B
+        dataDone(reqId) := false.B
+        statusDone(reqId) := false.B
+        responseError(reqId) := false.B
+        issuedCount := issuedCount + 1.U
       }
 
-      io.resp <> respArb.io.out
+      val activeId = issuedIds.io.deq.bits
+      io.dmaData.ready := issuedIds.io.deq.valid && !dataDone(activeId)
+      issuedIds.io.deq.ready := io.dmaData.fire && io.dmaData.bits.last
+      when(io.dmaData.fire) {
+        for (i <- 0 until 4) {
+          when(beatCount === i.U) {
+            lineBuffer(i) := io.dmaData.bits.data
+          }
+        }
+        val malformed = io.dmaData.bits.last =/= (beatCount === 3.U)
+        when(malformed) {
+          malformedLineCount := malformedLineCount + 1.U
+          responseError(activeId) := true.B
+          errorSticky := true.B
+        }
+        assert(!malformed, "DataMover TLAST does not match four-beat triangle line")
+        when(io.dmaData.bits.last) {
+          val completedLine = Cat(io.dmaData.bits.data, lineBuffer(2), lineBuffer(1), lineBuffer(0))
+          responseData(activeId) := completedLine(totalBits - 1, 0)
+          dataDone(activeId) := true.B
+          beatCount := 0.U
+        }.otherwise {
+          beatCount := beatCount + 1.U
+        }
+      }
+
+      val statusTag = io.dmaStatus.bits(3, 0)
+      val statusId = statusTag(idWidth - 1, 0)
+      val statusTagInRange = if (idWidth == dmaTagWidth) true.B else statusTag(dmaTagWidth - 1, idWidth) === 0.U
+      io.dmaStatus.ready := true.B
+      when(io.dmaStatus.fire) {
+        val tagMatches = statusTagInRange && idBusy(statusId) && !statusDone(statusId)
+        val statusError = !io.dmaStatus.bits(7) || io.dmaStatus.bits(6, 4).orR
+        when(tagMatches) {
+          statusDone(statusId) := true.B
+          when(statusError) {
+            responseError(statusId) := true.B
+            statusErrorCount := statusErrorCount + 1.U
+            errorSticky := true.B
+          }
+        }.otherwise {
+          tagMismatchCount := tagMismatchCount + 1.U
+          errorSticky := true.B
+        }
+        assert(tagMatches, "DataMover status tag does not identify an outstanding MSHR")
+      }
+
+      val responseValid = VecInit((0 until idCount).map(i => idBusy(i) && dataDone(i) && statusDone(i)))
+      val responseOH = PriorityEncoderOH(responseValid)
+      val responseId = OHToUInt(responseOH)
+      io.resp.valid := responseValid.asUInt.orR
+      io.resp.bits.id := responseId
+      io.resp.bits.data := Mux(responseError(responseId), 0.U, responseData(responseId))
+      when(io.resp.fire) {
+        idBusy(responseId) := false.B
+        dataDone(responseId) := false.B
+        statusDone(responseId) := false.B
+        completedCount := completedCount + 1.U
+      }
+
+      io.dmaReadError := errorSticky
+      io.dmaMalformedLineCount := malformedLineCount
+      io.dmaStatusErrorCount := statusErrorCount
+      io.dmaTagMismatchCount := tagMismatchCount
+      io.issuedCount := issuedCount
+      io.completedCount := completedCount
+      io.outstandingCount := PopCount(idBusy)
   }
 }
 
@@ -668,7 +775,30 @@ class TriangleMemMultiPort(
   val io = IO(new Bundle {
     val req = Vec(numPorts, Flipped(Decoupled(new TriMemReq(c, tagWidth))))
     val resp = Vec(numPorts, Decoupled(new TriMemResp(c, tagWidth)))
+    val triangleBaseAddress = Input(UInt(64.W))
+    val dmaCmd = Decoupled(UInt(80.W))
+    val dmaData = Flipped(Decoupled(new TriMemDmaReadData(128)))
+    val dmaStatus = Flipped(Decoupled(UInt(8.W)))
+    val dmaReadError = Output(Bool())
+    val dmaMalformedLineCount = Output(UInt(32.W))
+    val dmaStatusErrorCount = Output(UInt(32.W))
+    val dmaTagMismatchCount = Output(UInt(32.W))
+    val axiIssuedCount = Output(UInt(32.W))
+    val axiCompletedCount = Output(UInt(32.W))
+    val axiOutstandingCount = Output(UInt(8.W))
   })
+
+  io.dmaCmd.valid := false.B
+  io.dmaCmd.bits := 0.U
+  io.dmaData.ready := false.B
+  io.dmaStatus.ready := false.B
+  io.dmaReadError := false.B
+  io.dmaMalformedLineCount := 0.U
+  io.dmaStatusErrorCount := 0.U
+  io.dmaTagMismatchCount := 0.U
+  io.axiIssuedCount := 0.U
+  io.axiCompletedCount := 0.U
+  io.axiOutstandingCount := 0.U
 
   private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt, bankId: Int): TriangleBlock = {
     val block = Wire(new TriangleBlock(c))
@@ -710,6 +840,18 @@ class TriangleMemMultiPort(
       val mshrBank = Reg(Vec(mshrEntries, UInt(bankSelW.W)))
       val mshrAddr = Reg(Vec(mshrEntries, UInt(GlobalConfig.triMemAddrWidth.W)))
       val mshrData = Reg(Vec(mshrEntries, UInt((c.numPEs * 9 * c.cfg.totalWidth).W)))
+
+      backend.io.triangleBaseAddress := io.triangleBaseAddress
+      io.dmaCmd <> backend.io.dmaCmd
+      backend.io.dmaData <> io.dmaData
+      backend.io.dmaStatus <> io.dmaStatus
+      io.dmaReadError := backend.io.dmaReadError
+      io.dmaMalformedLineCount := backend.io.dmaMalformedLineCount
+      io.dmaStatusErrorCount := backend.io.dmaStatusErrorCount
+      io.dmaTagMismatchCount := backend.io.dmaTagMismatchCount
+      io.axiIssuedCount := backend.io.issuedCount
+      io.axiCompletedCount := backend.io.completedCount
+      io.axiOutstandingCount := backend.io.outstandingCount
 
       for (b <- 0 until numBanks) {
         statMons(b).io.clk := clock

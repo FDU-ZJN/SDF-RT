@@ -105,6 +105,8 @@ extern "C" void tri_cache_refill_stats_record(int busy_cycle, int stall_cycle, i
 
 // Memory export utilities for Vivado simulation with $readmemh
 void export_triangle_mem(const std::string& filename, int numPEs, int numBanks = 1, int bankId = 0);
+// Export compact triangles in the DDR refill layout: one 64-byte little-endian line per triangle.
+void export_triangle_ddr_binary(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
 void export_sdf_local_mapping(const std::string& filename);

@@ -15,12 +15,24 @@ class TraceController(
   private val traceSlotBits = GlobalConfig.ddaTraceSlotBits
   private val cmdIdxW = math.max(1, log2Ceil(maxCmds))
   private val workerCtxCount = numWorkers * ctxCount
+  private val triMshrIdWidth = math.max(1, log2Ceil(GlobalConfig.triMemMshrEntries))
 
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
     val cmd_write = Vec(2, Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds))))
     val slot_release = Valid(UInt(traceSlotBits.W))
     val result_out = Decoupled(new TraceResult(c.cfg, c.addrWidth))
+    val triangleBaseAddress = Input(UInt(64.W))
+    val triDmaCmd = Decoupled(UInt(80.W))
+    val triDmaData = Flipped(Decoupled(new TriMemDmaReadData(128)))
+    val triDmaStatus = Flipped(Decoupled(UInt(8.W)))
+    val triDmaReadError = Output(Bool())
+    val triDmaMalformedLineCount = Output(UInt(32.W))
+    val triDmaStatusErrorCount = Output(UInt(32.W))
+    val triDmaTagMismatchCount = Output(UInt(32.W))
+    val triAxiIssuedCount = Output(UInt(32.W))
+    val triAxiCompletedCount = Output(UInt(32.W))
+    val triAxiOutstandingCount = Output(UInt(8.W))
   })
 
   require(numWorkers > 0, "TraceController requires at least one worker")
@@ -28,6 +40,17 @@ class TraceController(
   val workers = Seq.fill(numWorkers)(Module(new TriPE(c)))
   val cmdQueues = Seq.fill(slotCount)(Module(new Queue(new TriBatch(c.addrWidth), maxCmds, hasFlush = true)))
   val mem = Module(new TriangleMemMultiPort(c, numWorkers, tagWidth = 2))
+  mem.io.triangleBaseAddress := io.triangleBaseAddress
+  io.triDmaCmd <> mem.io.dmaCmd
+  mem.io.dmaData <> io.triDmaData
+  mem.io.dmaStatus <> io.triDmaStatus
+  io.triDmaReadError := mem.io.dmaReadError
+  io.triDmaMalformedLineCount := mem.io.dmaMalformedLineCount
+  io.triDmaStatusErrorCount := mem.io.dmaStatusErrorCount
+  io.triDmaTagMismatchCount := mem.io.dmaTagMismatchCount
+  io.triAxiIssuedCount := mem.io.axiIssuedCount
+  io.triAxiCompletedCount := mem.io.axiCompletedCount
+  io.triAxiOutstandingCount := mem.io.axiOutstandingCount
 
   val sEmpty :: sIssueRay :: sReadyFirst :: sWaitBatch :: sReadyCont :: sResultPending :: Nil = Enum(6)
   val ctxState = RegInit(VecInit(Seq.fill(numWorkers)(VecInit(Seq.fill(ctxCount)(sEmpty)))))

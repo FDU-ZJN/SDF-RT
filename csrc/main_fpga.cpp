@@ -1,8 +1,11 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -33,6 +36,102 @@ struct TraceResultEntry {
 };
 
 queue<TraceResultEntry> traceResultQueue;
+
+struct DmaReadTransaction {
+    std::array<uint8_t, 64> line{};
+    uint8_t tag = 0;
+    int beat = 0;
+    bool statusPending = false;
+};
+
+// Behavioral model of the MM2S-side AXI DataMover streams.  It consumes the
+// 80-bit command emitted by the RTL and returns four 128-bit beats followed by
+// an OKAY status carrying the original command tag.
+class TriangleDmaResponder {
+public:
+    explicit TriangleDmaResponder(const std::string& imagePath) {
+        std::ifstream input(imagePath, std::ios::binary);
+        if (!input) {
+            throw std::runtime_error("Cannot open triangle DDR image: " + imagePath);
+        }
+        bytes_ = std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});
+        if (bytes_.empty() || (bytes_.size() % 64) != 0) {
+            throw std::runtime_error("Triangle DDR image must contain complete 64-byte lines: " + imagePath);
+        }
+        std::cout << "Loaded " << (bytes_.size() / 64)
+                  << " triangle DDR lines for DataMover simulation." << std::endl;
+    }
+
+    void drive(VFpgaTop* dut) const {
+        dut->io_tri_dma_cmd_ready = 1;
+        dut->io_tri_dma_data_valid = !pending_.empty() && pending_.front().beat < 4;
+        dut->io_tri_dma_data_bits_last = dut->io_tri_dma_data_valid && pending_.front().beat == 3;
+        dut->io_tri_dma_status_valid = !pending_.empty() && pending_.front().statusPending;
+        dut->io_tri_dma_status_bits = dut->io_tri_dma_status_valid
+            ? static_cast<uint8_t>(0x80U | pending_.front().tag) : 0;
+
+        for (int word = 0; word < 4; ++word) {
+            uint32_t value = 0;
+            if (dut->io_tri_dma_data_valid) {
+                const auto& txn = pending_.front();
+                const size_t offset = static_cast<size_t>(txn.beat * 16 + word * 4);
+                value = static_cast<uint32_t>(txn.line[offset + 0]) |
+                        (static_cast<uint32_t>(txn.line[offset + 1]) << 8) |
+                        (static_cast<uint32_t>(txn.line[offset + 2]) << 16) |
+                        (static_cast<uint32_t>(txn.line[offset + 3]) << 24);
+            }
+            dut->io_tri_dma_data_bits_data[word] = value;
+        }
+    }
+
+    void completeCycle(
+        bool cmdFire,
+        const uint32_t* command,
+        bool dataFire,
+        bool statusFire
+    ) {
+        if (cmdFire) {
+            const uint32_t btt = command[0] & 0x7fffffU;
+            const uint64_t address = static_cast<uint64_t>(command[1]) |
+                (static_cast<uint64_t>(command[2] & 0xffU) << 32);
+            const uint8_t tag = static_cast<uint8_t>((command[2] >> 8) & 0x0fU);
+            if (btt != 64 || (address & 63U) != 0 || address + 64 > bytes_.size()) {
+                throw std::runtime_error("Invalid DataMover triangle read command");
+            }
+            DmaReadTransaction txn;
+            txn.tag = tag;
+            std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(address), 64, txn.line.begin());
+            pending_.push(txn);
+            ++commands_;
+        }
+        if (dataFire) {
+            if (pending_.empty() || pending_.front().beat >= 4) {
+                throw std::runtime_error("Unexpected DataMover data handshake");
+            }
+            ++pending_.front().beat;
+            ++dataBeats_;
+            if (pending_.front().beat == 4) pending_.front().statusPending = true;
+        }
+        if (statusFire) {
+            if (pending_.empty() || !pending_.front().statusPending) {
+                throw std::runtime_error("Unexpected DataMover status handshake");
+            }
+            pending_.pop();
+            ++statuses_;
+        }
+    }
+
+    uint64_t commands() const { return commands_; }
+    uint64_t dataBeats() const { return dataBeats_; }
+    uint64_t statuses() const { return statuses_; }
+
+private:
+    std::vector<uint8_t> bytes_;
+    std::queue<DmaReadTransaction> pending_;
+    uint64_t commands_ = 0;
+    uint64_t dataBeats_ = 0;
+    uint64_t statuses_ = 0;
+};
 
 constexpr float kAmbient  = 0.15f;
 constexpr float kLightDirX = 0.57735f;
@@ -78,20 +177,34 @@ void tick(VFpgaTop* dut) {
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
     bool runtimeRebuildSdf = kForceRebuildSdfCacheFpga;
+    int runtimeWidth = kWidth;
+    int runtimeHeight = kHeight;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i] ? argv[i] : "";
         constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
         constexpr const char* kSdfRebuildPrefix = "+SDF_REBUILD=";
+        constexpr const char* kWidthPrefix = "+RT_WIDTH=";
+        constexpr const char* kHeightPrefix = "+RT_HEIGHT=";
         if (arg.rfind(kVcdArgPrefix, 0) == 0) {
             runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
         } else if (arg.rfind(kSdfRebuildPrefix, 0) == 0) {
             const std::string value = arg.substr(std::char_traits<char>::length(kSdfRebuildPrefix));
             runtimeRebuildSdf = (value == "1" || value == "true" || value == "TRUE");
+        } else if (arg.rfind(kWidthPrefix, 0) == 0) {
+            runtimeWidth = std::stoi(arg.substr(std::char_traits<char>::length(kWidthPrefix)));
+        } else if (arg.rfind(kHeightPrefix, 0) == 0) {
+            runtimeHeight = std::stoi(arg.substr(std::char_traits<char>::length(kHeightPrefix)));
         }
     }
 
-    cout << "FPGA_TOP " << kWidth << "x" << kHeight << " frame rendering..." << endl;
+    if (runtimeWidth <= 0 || runtimeHeight <= 0 || runtimeWidth > kWidth || runtimeHeight > kHeight) {
+        std::cerr << "Requested resolution must be within 1.." << kWidth
+                  << " by 1.." << kHeight << std::endl;
+        return 1;
+    }
+
+    cout << "FPGA_TOP " << runtimeWidth << "x" << runtimeHeight << " frame rendering..." << endl;
     Verilated::commandArgs(argc, argv);
 
     printf("Loading model...\n");
@@ -139,8 +252,9 @@ int main(int argc, char** argv) {
     const std::string memExportDir = modelMemDirFromObjPath(kObjPath);
     std::cout << "\nExporting memories to: " << memExportDir << std::endl;
     export_all_mems_for_vivado(memExportDir);
+    TriangleDmaResponder triangleDma(memExportDir + "/triangle_ddr.bin");
 
-    const size_t framePixels = static_cast<size_t>(kWidth) * kHeight;
+    const size_t framePixels = static_cast<size_t>(runtimeWidth) * runtimeHeight;
     vector<uint8_t> image(framePixels * 3, 0);
 
     auto* dut = new VFpgaTop;
@@ -164,10 +278,19 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_x = floatToU32(gridMax[0]);
     dut->io_setup_grid_max_y = floatToU32(gridMax[1]);
     dut->io_setup_grid_max_z = floatToU32(gridMax[2]);
-    dut->io_setup_res_x = kWidth;
-    dut->io_setup_res_y = kHeight;
+    dut->io_setup_res_x = runtimeWidth;
+    dut->io_setup_res_y = runtimeHeight;
     dut->io_frame_start = 0;
     dut->io_trace_resp_ready = 0;
+    dut->io_triangle_base_address = 0;
+    dut->io_tri_dma_cmd_ready = 1;
+    dut->io_tri_dma_data_valid = 0;
+    dut->io_tri_dma_data_bits_last = 0;
+    dut->io_tri_dma_status_valid = 0;
+    dut->io_tri_dma_status_bits = 0;
+    for (int word = 0; word < 4; ++word) {
+        dut->io_tri_dma_data_bits_data[word] = 0;
+    }
 
     for (int i = 0; i < 4; ++i) tick(dut);
     dut->reset = 0;
@@ -205,8 +328,21 @@ int main(int argc, char** argv) {
 
     while (traceResultsReceived < framePixels) {
         dut->io_trace_resp_ready = (traceResultQueue.size() < 64) ? 1 : 0;
-
+        triangleDma.drive(dut);
+        // Sample handshakes while clock is low, then advance both sides of the
+        // ready/valid interface across the same rising edge.
+        dut->clock = 0;
+        dut->eval();
+        const bool cmdFire = dut->io_tri_dma_cmd_valid && dut->io_tri_dma_cmd_ready;
+        const uint32_t command[3] = {
+            dut->io_tri_dma_cmd_bits[0],
+            dut->io_tri_dma_cmd_bits[1],
+            dut->io_tri_dma_cmd_bits[2]
+        };
+        const bool dataFire = dut->io_tri_dma_data_valid && dut->io_tri_dma_data_ready;
+        const bool statusFire = dut->io_tri_dma_status_valid && dut->io_tri_dma_status_ready;
         tick(dut);
+        triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
 
         if (dut->io_trace_resp_valid && dut->io_trace_resp_ready) {
@@ -280,11 +416,26 @@ int main(int argc, char** argv) {
               << traceResultsReceived << " / " << framePixels << std::endl;
     std::cout << "  Hits: " << traceHits << "  Misses: " << traceMisses << std::endl;
     std::cout << "Total simulation cycles: " << (main_time / 2) << std::endl;
+    std::cout << "  DataMover commands: " << triangleDma.commands()
+              << "  data beats: " << triangleDma.dataBeats()
+              << "  statuses: " << triangleDma.statuses() << std::endl;
+    if (dut->io_tri_dma_read_error ||
+        dut->io_tri_dma_malformed_line_count != 0 ||
+        dut->io_tri_dma_status_error_count != 0 ||
+        dut->io_tri_dma_tag_mismatch_count != 0 ||
+        dut->io_tri_axi_outstanding_count != 0 ||
+        triangleDma.commands() == 0 ||
+        triangleDma.commands() != triangleDma.statuses() ||
+        triangleDma.dataBeats() != 4 * triangleDma.commands()) {
+        std::cerr << "Triangle DataMover verification failed: error or incomplete transaction." << std::endl;
+        delete dut;
+        return 5;
+    }
 
     const std::string outputPath =
-        "render_fpga_" + std::to_string(kWidth) + "x" + std::to_string(kHeight) + ".ppm";
+        "render_fpga_" + std::to_string(runtimeWidth) + "x" + std::to_string(runtimeHeight) + ".ppm";
     std::cout << "Phase 4: Saving image to " << outputPath << "..." << std::endl;
-    writePPM(outputPath, image, kWidth, kHeight);
+    writePPM(outputPath, image, runtimeWidth, runtimeHeight);
     std::cout << "Image saved successfully." << std::endl;
 
     if (tfp != nullptr) {

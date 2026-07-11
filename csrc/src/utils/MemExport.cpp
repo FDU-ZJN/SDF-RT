@@ -98,6 +98,35 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
               << bankId << "/" << numBanks << ")" << std::endl;
 }
 
+void export_triangle_ddr_binary(const std::string& filename) {
+    const auto& tri_store = triangles_compact.empty() ? triangles : triangles_compact;
+    std::ofstream out(filename, std::ios::binary);
+    if (!out.is_open()) {
+        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
+        return;
+    }
+
+    for (const Triangle& tri : tri_store) {
+        const float values[9] = {
+            tri.v0[0], tri.v0[1], tri.v0[2],
+            tri.v1[0], tri.v1[1], tri.v1[2],
+            tri.v2[0], tri.v2[1], tri.v2[2]
+        };
+        uint8_t line[64] = {};
+        for (int i = 0; i < 9; ++i) {
+            const uint32_t bits = floatToRawU32(values[i]);
+            line[i * 4 + 0] = static_cast<uint8_t>(bits >> 0);
+            line[i * 4 + 1] = static_cast<uint8_t>(bits >> 8);
+            line[i * 4 + 2] = static_cast<uint8_t>(bits >> 16);
+            line[i * 4 + 3] = static_cast<uint8_t>(bits >> 24);
+        }
+        out.write(reinterpret_cast<const char*>(line), sizeof(line));
+    }
+    out.close();
+    std::cout << "[MemExport] Exported " << tri_store.size()
+              << " 64-byte DDR triangle lines to " << filename << std::endl;
+}
+
 // Export normal memory to .mem file
 void export_normal_mem(const std::string& filename) {
     const auto& normal_store = normals_compact.empty() ? normals : normals_compact;
@@ -543,6 +572,7 @@ void export_subgrid_meta_mem_coe(const std::string& filename) {
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
     std::filesystem::create_directories(output_dir);
+    export_triangle_ddr_binary(output_dir + "/triangle_ddr.bin");
 
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem(

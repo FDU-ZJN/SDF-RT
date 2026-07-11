@@ -33,6 +33,17 @@ object GlobalConfig {
     withMemImplMode(if (value) 1 else 0)(body)
   }
 
+  // The FPGA implementation uses DataMover for triangle-cache refills.  Keep
+  // this independently selectable so Verilator can exercise that path while
+  // retaining DPI models for the much larger SDF and subgrid memories.
+  private var triangleDmaRefillState = false
+  def useTriangleDmaRefill: Boolean = useBlackBoxState == 2 || triangleDmaRefillState
+  def withTriangleDmaRefill[T](value: Boolean)(body: => T): T = {
+    val prev = triangleDmaRefillState
+    triangleDmaRefillState = value
+    try body finally triangleDmaRefillState = prev
+  }
+
   private var useFloatIPState = false
   def useFloatIP: Boolean = useFloatIPState
   def setUseFloatIP(value: Boolean): Unit = { useFloatIPState = value }
