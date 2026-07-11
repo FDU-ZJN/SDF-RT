@@ -20,7 +20,7 @@ class DDA(
     val inv_sub_voxel = Input(new Vec3(cfg))
     val trace_job_out = Decoupled(new DdaTraceJobDesc(cfg, addrWidth, maxTraversalSteps))
     val cmd_write = Vec(numWorkers, Valid(new DdaTraceCmdWrite(addrWidth, maxTraversalSteps)))
-    val slot_release = Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W)))
+    val slot_release = Vec(GlobalConfig.traceNumWorkers, Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W))))
   })
 
   val scheduler = Module(new DdaScheduler(cfg, addrWidth, maxTraversalSteps, numWorkers))

@@ -20,8 +20,8 @@ class TraceController(
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
     val cmd_write = Vec(2, Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds))))
-    val slot_release = Valid(UInt(traceSlotBits.W))
-    val result_out = Decoupled(new TraceResult(c.cfg, c.addrWidth))
+    val slot_release = Vec(numWorkers, Valid(UInt(traceSlotBits.W)))
+    val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
     val triangleBaseAddress = Input(UInt(64.W))
     val triDmaCmd = Decoupled(UInt(80.W))
     val triDmaData = Flipped(Decoupled(new TriMemDmaReadData(128)))
@@ -82,8 +82,10 @@ class TraceController(
   }
 
   jobQ.io.enq <> io.job_in
-  io.slot_release.valid := false.B
-  io.slot_release.bits := 0.U
+  for (w <- 0 until numWorkers) {
+    io.slot_release(w).valid := false.B
+    io.slot_release(w).bits := 0.U
+  }
 
   for (s <- 0 until slotCount) {
     val laneHits = Wire(Vec(2, Bool()))
@@ -284,7 +286,6 @@ class TraceController(
     }
   }
 
-  val resultArb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), workerCtxCount))
   for (a <- 0 until workerCtxCount) {
     val aw = a / ctxCount
     val ac = a % ctxCount
@@ -302,19 +303,19 @@ class TraceController(
     }
   }
 
-  for (idx <- 0 until workerCtxCount) {
-    val w = idx / ctxCount
-    val ctx = idx % ctxCount
-    resultArb.io.in(idx).valid := ctxState(w)(ctx) === sResultPending
-    resultArb.io.in(idx).bits := ctxResult(w)(ctx)
-    when(resultArb.io.in(idx).fire) {
-      ctxState(w)(ctx) := sEmpty
-      io.slot_release.valid := true.B
-      io.slot_release.bits := ctxJob(w)(ctx).traceSlot
+  val resultArbs = Seq.fill(numWorkers)(Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), ctxCount)))
+  for (w <- 0 until numWorkers) {
+    for (ctx <- 0 until ctxCount) {
+      resultArbs(w).io.in(ctx).valid := ctxState(w)(ctx) === sResultPending
+      resultArbs(w).io.in(ctx).bits := ctxResult(w)(ctx)
+      when(resultArbs(w).io.in(ctx).fire) {
+        ctxState(w)(ctx) := sEmpty
+        io.slot_release(w).valid := true.B
+        io.slot_release(w).bits := ctxJob(w)(ctx).traceSlot
+      }
     }
+    io.result_out(w) <> resultArbs(w).io.out
   }
-
-  io.result_out <> resultArb.io.out
 
   for (w <- 0 until numWorkers) {
     when(workers(w).io.out_done) {

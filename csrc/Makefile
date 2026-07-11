@@ -6,10 +6,8 @@ MODEL_NAME := $(basename $(notdir $(OBJ_PATH)))
 WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
 WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
-SBT_BOOT_DIR ?= /tmp/sbt-boot
-SBT_IVY_HOME ?= /tmp/.ivy2
-SBT_GLOBAL_BASE ?= /tmp/.sbt
-SBT = sbt --batch -Dsbt.server.autostart=false -Dsbt.boot.directory=$(SBT_BOOT_DIR) -Dsbt.ivy.home=$(SBT_IVY_HOME) -Dsbt.global.base=$(SBT_GLOBAL_BASE)
+SBT = sbt
+JOBS ?= $(shell nproc)
 
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
@@ -120,7 +118,7 @@ INC_FLAGS = -I$(CSRC_DIR)/include \
             -I$(OBJ_DIR)
 
 # Verilator 生成选项
-V_OPTS = --cc --trace --exe -j $(shell nproc) \
+V_OPTS = --cc --trace --exe -j $(JOBS) \
 		 --top-module $(TOP_MODULE) \
 		 --Mdir $(OBJ_DIR) \
 		 --CFLAGS "$(INC_FLAGS) -O2 -std=c++17" \
@@ -140,6 +138,7 @@ VERILOG_TARGET := $(VERILOG_DIR)/FpgaTop.sv
 $(VERILOG_TARGET):
 	@echo "Verilog 源文件缺失，自动调用 sbt 生成..."
 	cd $(ROOT_DIR) && $(SBT) "runMain FpgaTopGen"
+	@sha256sum $(VERILOG_TARGET)
 
 # 可选：强制重新生成 Verilog
 generate:
@@ -147,6 +146,8 @@ generate:
 	@echo "通过 sbt 重新生成 Verilog 代码..."
 	@echo "============================================"
 	cd $(ROOT_DIR) && $(SBT) "runMain FpgaTopGen"
+	@echo "FpgaTop.sv build marker (SHA-256):"
+	@sha256sum $(VERILOG_TARGET)
 
 $(TARGET): $(VERILOG_TARGET) $(CPPS) $(HEADERS)
 	@echo "============================================"
@@ -154,12 +155,13 @@ $(TARGET): $(VERILOG_TARGET) $(CPPS) $(HEADERS)
 	@echo "  模式: $(MODE)"
 	@echo "  源目录: $(VERILOG_DIR)"
 	@echo "  顶层模块: $(TOP_MODULE)"
+	@echo "  RTL marker: $$(sha256sum $(VERILOG_TARGET) | cut -d' ' -f1)"
 	@echo "============================================"
 	@mkdir -p $(VERILOG_DIR)
 	verilator $(V_OPTS) $(CPPS) $(wildcard $(VERILOG_DIR)/*.sv) -o $(TARGET)
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.fast
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.slow
-	$(MAKE) -C $(OBJ_DIR) -f V$(TOP_MODULE).mk -j $(shell nproc)
+	$(MAKE) -C $(OBJ_DIR) -f V$(TOP_MODULE).mk -j $(JOBS)
 
 run: $(TARGET)
 	@echo "============================================"

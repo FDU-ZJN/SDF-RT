@@ -22,6 +22,18 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     val out_hit = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
   })
 
+  // Keep all request fields together while they cross the fixed-latency
+  // address, memory, compare, and advance paths.  In particular, RayID and
+  // iter must never be delayed independently from the ray they describe.
+  class SdfPipeCtx extends Bundle {
+    val ray = new Ray(c.cfg)
+    val meta = new RayMeta(c.addrWidth)
+    val iter = UInt(16.W)
+    val prevSdf = UInt(c.cfg.totalWidth.W)
+    val inBounds = Bool()
+    val valid = Bool()
+  }
+
   val hitThreshold1 = BigInt(c.threshold1Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold2 = BigInt(c.threshold2Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold3 = BigInt(c.threshold3Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
@@ -84,14 +96,6 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
         )
       )
     )
-  }
-
-  def sampleThenDelay(x: UInt, en: Bool, latency: Int): UInt = {
-    val sampled = Reg(UInt(c.cfg.totalWidth.W))
-    when(en) {
-      sampled := x
-    }
-    if (latency <= 1) sampled else pipeUInt(sampled, latency - 1)
   }
 
   // --------------------
@@ -182,20 +186,18 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   io.in.ready := true.B
   val inFire = io.in.fire
-  val addrValid = pipeBool(inFire, addrLatency)
-
-  val rayOXAtAddr = pipeUInt(io.in.bits.ray.origin.x, addrLatency)
-  val rayOYAtAddr = pipeUInt(io.in.bits.ray.origin.y, addrLatency)
-  val rayOZAtAddr = pipeUInt(io.in.bits.ray.origin.z, addrLatency)
-  val rayDXAtAddr = pipeUInt(io.in.bits.ray.dir.x, addrLatency)
-  val rayDYAtAddr = pipeUInt(io.in.bits.ray.dir.y, addrLatency)
-  val rayDZAtAddr = pipeUInt(io.in.bits.ray.dir.z, addrLatency)
-  val rayDistAtAddr = pipeUInt(io.in.bits.ray.dist, addrLatency)
-  val prevSdfAtAddr = pipeUInt(io.in.bits.prevSdf, addrLatency)
-
-  val iterAtAddr = pipeUInt(io.in.bits.iter, addrLatency)
-
-  val slotIdAtAddr = pipeUInt(io.in.bits.meta.slotId, addrLatency)
+  val inCtx = Wire(new SdfPipeCtx)
+  inCtx.ray := io.in.bits.ray
+  inCtx.meta := io.in.bits.meta
+  inCtx.iter := io.in.bits.iter
+  inCtx.prevSdf := io.in.bits.prevSdf
+  inCtx.inBounds := false.B
+  inCtx.valid := inFire
+  val addrCtxBase = pipeData(inCtx, addrLatency)
+  val addrCtx = Wire(new SdfPipeCtx)
+  addrCtx := addrCtxBase
+  addrCtx.inBounds := addrInBounds
+  val addrValid = addrCtx.valid
 
 
   val sdfMemLatency = GlobalConfig.sdfMemDpiLatency
@@ -206,21 +208,9 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     assert(io.sdf_mem_req.ready, "SdfPE expects sdf_mem_req.ready to stay high in pipeline mode")
   }
 
-  val bValid = pipeBool(addrValid, sdfMemLatency)
-  val bInBounds = pipeBool(addrInBounds, sdfMemLatency)
-
-  val bRayOX = sampleThenDelay(rayOXAtAddr,addrValid, sdfMemLatency)
-  val bRayOY = sampleThenDelay(rayOYAtAddr, addrValid, sdfMemLatency)
-  val bRayOZ = sampleThenDelay(rayOZAtAddr, addrValid, sdfMemLatency)
-  val bRayDX = sampleThenDelay(rayDXAtAddr, addrValid, sdfMemLatency)
-  val bRayDY = sampleThenDelay(rayDYAtAddr, addrValid, sdfMemLatency)
-  val bRayDZ = sampleThenDelay(rayDZAtAddr, addrValid, sdfMemLatency)
-  val bRayDist = sampleThenDelay(rayDistAtAddr, addrValid, sdfMemLatency)
-  val bPrevSdf = sampleThenDelay(prevSdfAtAddr, addrValid, sdfMemLatency)
-
-  val bIter = pipeUInt(iterAtAddr,sdfMemLatency)
-
-  val bSlotId = pipeUInt(slotIdAtAddr,sdfMemLatency)
+  val bCtx = pipeData(addrCtx, sdfMemLatency)
+  val bValid = bCtx.valid
+  val bInBounds = bCtx.inBounds
 
   io.sdf_mem_resp.ready := bValid && bInBounds
   when(bValid && bInBounds) {
@@ -235,9 +225,9 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   // Stage C: one-step march update
   // --------------------
   val currentHitThreshold = Wire(UInt(c.cfg.totalWidth.W))
-  when(bIter < halfStepsU) {
+  when(bCtx.iter < halfStepsU) {
     currentHitThreshold := hitThreshold1
-  }.elsewhen(bIter < threeQuarterStepsU) {
+  }.elsewhen(bCtx.iter < threeQuarterStepsU) {
     currentHitThreshold := hitThreshold2
   }.otherwise {
     currentHitThreshold := hitThreshold3
@@ -249,68 +239,41 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   cmpHit.io.signaling := false.B
 
   val cmpLatency = c.cfg.fcmpLatency
-  val bValidCmp = pipeBool(bValid, cmpLatency)
-  val bInBoundsCmp = pipeBool(bInBounds, cmpLatency)
+  val bCtxCmp = pipeData(bCtx, cmpLatency)
+  val bValidCmp = bCtxCmp.valid
+  val bInBoundsCmp = bCtxCmp.inBounds
   val bHit = bInBoundsCmp && cmpHit.io.lt
-
-  val bIterCmp = pipeUInt(bIter, cmpLatency)
-  val bRayOXCmp = pipeUInt(bRayOX, cmpLatency)
-  val bRayOYCmp = pipeUInt(bRayOY, cmpLatency)
-  val bRayOZCmp = pipeUInt(bRayOZ, cmpLatency)
-  val bRayDXCmp = pipeUInt(bRayDX, cmpLatency)
-  val bRayDYCmp = pipeUInt(bRayDY, cmpLatency)
-  val bRayDZCmp = pipeUInt(bRayDZ, cmpLatency)
-  val bRayDistCmp = pipeUInt(bRayDist, cmpLatency)
-  val bPrevSdfCmp = pipeUInt(bPrevSdf, cmpLatency)
   val bSampleCmp = pipeUInt(bSample, cmpLatency)
-  val bSlotIdCmp = pipeUInt(bSlotId, cmpLatency)
   val bSampleNegCmp = pipeBool(bSampleNeg, cmpLatency)
 
-  val prevSdfHalf = fpHalf(bPrevSdfCmp)
+  val prevSdfHalf = fpHalf(bCtxCmp.prevSdf)
   val negPrevSdfHalf = neg(prevSdfHalf)
   val sampleIsNeg = bSampleNegCmp
 
   val posDistAdd = Module(new FADD(c.cfg))
-  posDistAdd.io.a := bRayDistCmp
+  posDistAdd.io.a := bCtxCmp.ray.dist
   posDistAdd.io.b := bSampleCmp
 
   val negDistAdd = Module(new FADD(c.cfg))
-  negDistAdd.io.a := bRayDistCmp
+  negDistAdd.io.a := bCtxCmp.ray.dist
   negDistAdd.io.b := negPrevSdfHalf
 
   val nextPrevSdfRaw = Mux(sampleIsNeg, prevSdfHalf, bSampleCmp)
+  val advanceCtx = pipeData(bCtxCmp, advanceLatency)
   val sampleIsNegAtOut = pipeBool(sampleIsNeg, advanceLatency)
 
   // Miss-only path uses prevSdf carry-forward with negative-sample backoff.
   val outValid = pipeBool(bValidCmp && !bHit, advanceLatency)
   val outInBounds = pipeBool(bInBoundsCmp && !bHit && bValidCmp, advanceLatency)
-  val outIterRaw = pipeUInt(Mux(bValidCmp, bIterCmp + 1.U, 0.U), advanceLatency)
-  val outIter = Mux(outInBounds, outIterRaw, maxStepsU)
-
-  val outCurrX = pipeUInt(bRayOXCmp, advanceLatency)
-  val outCurrY = pipeUInt(bRayOYCmp, advanceLatency)
-  val outCurrZ = pipeUInt(bRayOZCmp, advanceLatency)
-
-  val outRayDX = pipeUInt(bRayDXCmp, advanceLatency)
-  val outRayDY = pipeUInt(bRayDYCmp, advanceLatency)
-  val outRayDZ = pipeUInt(bRayDZCmp, advanceLatency)
+  val outIter = Mux(outInBounds, advanceCtx.iter + 1.U, maxStepsU)
   val outCurrDist = Mux(sampleIsNegAtOut, negDistAdd.io.res, posDistAdd.io.res)
   val outPrevSdf = pipeUInt(nextPrevSdfRaw, advanceLatency)
-
-  val outSlotId = pipeUInt(bSlotIdCmp, advanceLatency)
 
   val outDist = outCurrDist
 
   val hitOutValid = pipeBool(bValidCmp && bHit, advanceLatency)
-  val hitOutIter = pipeUInt(bIterCmp + 1.U, advanceLatency)
-  val hitOutSlotId = pipeUInt(bSlotIdCmp, advanceLatency)
-  val hitOutOriginX = pipeUInt(bRayOXCmp, advanceLatency)
-  val hitOutOriginY = pipeUInt(bRayOYCmp, advanceLatency)
-  val hitOutOriginZ = pipeUInt(bRayOZCmp, advanceLatency)
-  val hitOutRayDX = pipeUInt(bRayDXCmp, advanceLatency)
-  val hitOutRayDY = pipeUInt(bRayDYCmp, advanceLatency)
-  val hitOutRayDZ = pipeUInt(bRayDZCmp, advanceLatency)
-  val hitStayDist = pipeUInt(bRayDistCmp, advanceLatency)
+  val hitOutIter = advanceCtx.iter + 1.U
+  val hitStayDist = advanceCtx.ray.dist
   val hitOutDist = Mux(sampleIsNegAtOut, negDistAdd.io.res, hitStayDist)
   val hitOutPrevSdf = pipeUInt(nextPrevSdfRaw, advanceLatency)
 
@@ -318,31 +281,23 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   // Stage D: output
   // --------------------
   io.out.valid := outValid
-  io.out.bits.meta.slotId := outSlotId
+  io.out.bits.meta := advanceCtx.meta
   io.out.bits.hit := false.B
   io.out.bits.iter := outIter
   io.out.bits.prevSdf := outPrevSdf
 
-  io.out.bits.ray.origin.x := outCurrX
-  io.out.bits.ray.origin.y := outCurrY
-  io.out.bits.ray.origin.z := outCurrZ
-  io.out.bits.ray.dir.x := outRayDX
-  io.out.bits.ray.dir.y := outRayDY
-  io.out.bits.ray.dir.z := outRayDZ
+  io.out.bits.ray.origin := advanceCtx.ray.origin
+  io.out.bits.ray.dir := advanceCtx.ray.dir
   io.out.bits.ray.dist := outDist
 
   io.out_hit.valid := hitOutValid
-  io.out_hit.bits.meta.slotId := hitOutSlotId
+  io.out_hit.bits.meta := advanceCtx.meta
   io.out_hit.bits.hit := true.B
   io.out_hit.bits.iter := hitOutIter
   io.out_hit.bits.prevSdf := hitOutPrevSdf
 
-  io.out_hit.bits.ray.origin.x := hitOutOriginX
-  io.out_hit.bits.ray.origin.y := hitOutOriginY
-  io.out_hit.bits.ray.origin.z := hitOutOriginZ
-  io.out_hit.bits.ray.dir.x := hitOutRayDX
-  io.out_hit.bits.ray.dir.y := hitOutRayDY
-  io.out_hit.bits.ray.dir.z := hitOutRayDZ
+  io.out_hit.bits.ray.origin := advanceCtx.ray.origin
+  io.out_hit.bits.ray.dir := advanceCtx.ray.dir
   io.out_hit.bits.ray.dist := hitOutDist
 
   when(io.out.valid) {

@@ -6,7 +6,6 @@ import chisel3.util.log2Ceil
 object GlobalConfig {
   val frameWidth =1920
   val frameHeight = 1080
-  val pixelQueueDepth = 512
   val traceNumWorkers = 4
   val triMemNumPEs = 1
   val triMemCacheLineTriangles = 4
@@ -54,18 +53,20 @@ object GlobalConfig {
     try body finally useFloatIPState = prev
   }
 
-  val commitQueueDepth = 128
-  val slotBits = log2Ceil(commitQueueDepth)
-
-  val ddaRetryQueueDepth = 16
+  val ingressFifoDepth = 16
+  val resultArbiterFifoDepth = 2
+  val initPostQueueDepth = 64
+  val ddaInitQueueDepth = 16
+  val ddaCompletionQueueDepth = 8
+  val ddaRetryQueueDepth = 8
+  val traceJobQueueDepth = 8
   val ddaTraceSlotCount = ddaNumWorkers * ddaRetryQueueDepth
-  val triBatchQueueDepth = ddaTraceSlotCount
   val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
 
-  val sdfRetryQueueDepth = 128
-  val sdfFinalQueueDepth = 128
+  val sdfRetryQueueDepth = 64
+  val sdfFinalQueueDepth = 64
+  val sdfPipelineReserve = 32
   val sdfMissWritebackQueueDepth = 4
-  val renderOutputQueueDepth = 32
 
   val normalMemDpiLatency = 3
   val triMemDpiLatency = 3

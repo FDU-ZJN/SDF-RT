@@ -22,7 +22,13 @@ class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 }
 
 class RayMeta(addrWidth: Int = 32) extends Bundle {
-  val slotId = UInt(addrWidth.W)
+  val rayId = UInt(16.W)
+}
+
+class RayIngress(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val origin = new Vec3(cfg)
+  val dir = new Vec3(cfg)
+  val rayId = UInt(16.W)
 }
 
 class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
@@ -57,6 +63,7 @@ class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) ext
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
   val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
   val rgb8 = UInt(24.W)
 }
 

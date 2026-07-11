@@ -16,8 +16,8 @@ class DdaScheduler(
   private val cmdIdxBits = math.max(1, log2Ceil(maxTraversalSteps))
   private val cmdCountW = log2Ceil(maxTraversalSteps + 1)
   private val maxInflight = GlobalConfig.ddaTraceSlotCount
-  private val completionDepth = GlobalConfig.commitQueueDepth
-  private val initOutDepth = GlobalConfig.commitQueueDepth
+  private val completionDepth = GlobalConfig.ddaCompletionQueueDepth
+  private val initOutDepth = GlobalConfig.ddaInitQueueDepth
 
   val io = IO(new Bundle {
     val issue_in = Vec(numWorkers, Flipped(Decoupled(new DdaTraversalReq(cfg, addrWidth))))
@@ -27,7 +27,7 @@ class DdaScheduler(
     val step_out = Vec(numWorkers, Flipped(Decoupled(new DdaStepResult(cfg, addrWidth))))
     val trace_job_out = Decoupled(new DdaTraceJobDesc(cfg, addrWidth, maxTraversalSteps))
     val cmd_write = Vec(numWorkers, Valid(new DdaTraceCmdWrite(addrWidth, maxTraversalSteps)))
-    val slot_release = Flipped(Valid(UInt(traceSlotBits.W)))
+    val slot_release = Vec(GlobalConfig.traceNumWorkers, Flipped(Valid(UInt(traceSlotBits.W))))
   })
 
   val initOutQs = Seq.fill(numWorkers)(Module(new Queue(new DdaContext(cfg, addrWidth), initOutDepth)))
@@ -80,19 +80,14 @@ class DdaScheduler(
     val routeFinal = io.step_out(lane).valid && io.step_out(lane).bits.done
     val routeRetry = io.step_out(lane).valid && !io.step_out(lane).bits.done
 
-    io.step_out(lane).ready := true.B
+    io.step_out(lane).ready := Mux(io.step_out(lane).bits.done,
+      laneCompletionQ(lane).io.enq.ready, laneRetryQ(lane).io.enq.ready)
 
     laneCompletionQ(lane).io.enq.valid := routeFinal
     laneCompletionQ(lane).io.enq.bits := io.step_out(lane).bits.ctx
-    when(laneCompletionQ(lane).io.enq.valid) {
-      assert(laneCompletionQ(lane).io.enq.ready, s"DDA completionQ lane $lane overflow")
-    }
 
     laneRetryQ(lane).io.enq.valid := routeRetry
     laneRetryQ(lane).io.enq.bits := io.step_out(lane).bits.ctx
-    when(laneRetryQ(lane).io.enq.valid) {
-      assert(laneRetryQ(lane).io.enq.ready, s"DDA retryQ lane $lane overflow")
-    }
 
     io.cmd_write(lane).valid := outFire && io.step_out(lane).bits.emitCmd
     io.cmd_write(lane).bits.slotIdx := slotIdx
@@ -148,8 +143,10 @@ class DdaScheduler(
   io.trace_job_out.bits.traceSlot := completionSlot
   completionArb.io.out.ready := io.trace_job_out.ready
 
-  when(io.slot_release.valid) {
-    assert(!freeSlots(io.slot_release.bits), "DdaScheduler duplicate or invalid trace slot release")
-    freeSlots(io.slot_release.bits) := true.B
+  for (release <- io.slot_release) {
+    when(release.valid) {
+      assert(!freeSlots(release.bits), "DdaScheduler duplicate or invalid trace slot release")
+      freeSlots(release.bits) := true.B
+    }
   }
 }

@@ -1,10 +1,13 @@
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <queue>
+#include <cmath>
+#include <deque>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,7 +23,6 @@
 using std::array;
 using std::cout;
 using std::endl;
-using std::queue;
 using std::vector;
 using namespace rt::config;
 
@@ -36,14 +38,6 @@ constexpr int kTriangleDmaBeatBytes = 16;
 static_assert(kTriangleDmaBlockBytes % kTriangleDmaBeatBytes == 0,
               "Triangle DMA block must be an integer number of 128-bit beats");
 constexpr int kTriangleDmaBeats = kTriangleDmaBlockBytes / kTriangleDmaBeatBytes;
-
-struct TraceResultEntry {
-    int  slotId;
-    bool hit;
-    int  hitId;
-};
-
-queue<TraceResultEntry> traceResultQueue;
 
 struct DmaReadTransaction {
     std::array<uint8_t, kTriangleDmaBlockBytes> line{};
@@ -289,10 +283,10 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_x = floatToU32(gridMax[0]);
     dut->io_setup_grid_max_y = floatToU32(gridMax[1]);
     dut->io_setup_grid_max_z = floatToU32(gridMax[2]);
-    dut->io_setup_res_x = runtimeWidth;
-    dut->io_setup_res_y = runtimeHeight;
-    dut->io_frame_start = 0;
-    dut->io_trace_resp_ready = 0;
+    dut->io_ray_in_valid = 0;
+    dut->io_ray_in_mask = 0;
+    dut->io_ray_in_last = 0;
+    dut->io_result_ready = 1;
     dut->io_triangle_base_address = 0;
     dut->io_tri_dma_cmd_ready = 1;
     dut->io_tri_dma_data_valid = 0;
@@ -323,22 +317,48 @@ int main(int argc, char** argv) {
     }
     std::cout << "Setup ready after " << setupWait << " cycles." << std::endl;
 
-    std::cout << "Phase 2: Starting frame rendering..." << std::endl;
-    dut->io_frame_start = 1;
-    tick(dut);
-    dut->io_frame_start = 0;
-
-    std::cout << "Phase 3: Waiting for all trace responses..." << std::endl;
-    size_t traceRendered = 0;
+    std::cout << "Phase 2: Streaming rays and collecting unordered results..." << std::endl;
+    size_t nextRay = 0;
     size_t traceResultsReceived = 0;
     size_t traceHits = 0;
     size_t traceMisses = 0;
+    bool sawResultLast = false;
+    std::deque<uint16_t> freeRayIds;
+    std::vector<int64_t> rayIdToPixel(1U << 16, -1);
+    for (uint32_t rayId = 0; rayId < (1U << 16); ++rayId) {
+        freeRayIds.push_back(static_cast<uint16_t>(rayId));
+    }
+    size_t minFreeRayIds = freeRayIds.size();
     int stallCycles = 0;
     uint64_t totalCycles = 0;
     constexpr uint64_t maxTotalCycles = 100000000ULL;
 
-    while (traceResultsReceived < framePixels) {
-        dut->io_trace_resp_ready = (traceResultQueue.size() < 64) ? 1 : 0;
+    while (traceResultsReceived < framePixels || nextRay < framePixels) {
+        const bool sendRays = nextRay < framePixels && dut->io_ray_in_ready && !freeRayIds.empty();
+        const size_t rayCount = sendRays ? std::min({size_t{4}, framePixels - nextRay, freeRayIds.size()}) : 0;
+        dut->io_ray_in_valid = sendRays ? 1 : 0;
+        dut->io_ray_in_mask = rayCount == 0 ? 0 : ((1U << rayCount) - 1U);
+        dut->io_ray_in_last = sendRays && nextRay + rayCount == framePixels;
+        for (int lane = 0; lane < 4; ++lane) {
+            const size_t id = nextRay + static_cast<size_t>(lane);
+            const int x = id % static_cast<size_t>(runtimeWidth);
+            const int y = id / static_cast<size_t>(runtimeWidth);
+            const float a = static_cast<float>(2 * x - runtimeWidth);
+            const float b = static_cast<float>(runtimeHeight - 2 * y);
+            const float z = -1.8f * static_cast<float>(runtimeHeight);
+            const float invLen = 1.0f / std::sqrt(a * a + b * b + z * z);
+            const uint16_t rayId = lane < static_cast<int>(rayCount) ? freeRayIds[lane] : 0U;
+            uint32_t* originX[] = {&dut->io_ray_in_0_origin_x, &dut->io_ray_in_1_origin_x, &dut->io_ray_in_2_origin_x, &dut->io_ray_in_3_origin_x};
+            uint32_t* originY[] = {&dut->io_ray_in_0_origin_y, &dut->io_ray_in_1_origin_y, &dut->io_ray_in_2_origin_y, &dut->io_ray_in_3_origin_y};
+            uint32_t* originZ[] = {&dut->io_ray_in_0_origin_z, &dut->io_ray_in_1_origin_z, &dut->io_ray_in_2_origin_z, &dut->io_ray_in_3_origin_z};
+            uint32_t* dirX[] = {&dut->io_ray_in_0_dir_x, &dut->io_ray_in_1_dir_x, &dut->io_ray_in_2_dir_x, &dut->io_ray_in_3_dir_x};
+            uint32_t* dirY[] = {&dut->io_ray_in_0_dir_y, &dut->io_ray_in_1_dir_y, &dut->io_ray_in_2_dir_y, &dut->io_ray_in_3_dir_y};
+            uint32_t* dirZ[] = {&dut->io_ray_in_0_dir_z, &dut->io_ray_in_1_dir_z, &dut->io_ray_in_2_dir_z, &dut->io_ray_in_3_dir_z};
+            uint16_t* ids[] = {&dut->io_ray_in_0_rayId, &dut->io_ray_in_1_rayId, &dut->io_ray_in_2_rayId, &dut->io_ray_in_3_rayId};
+            *originX[lane] = floatToU32(setupOrigin[0]); *originY[lane] = floatToU32(setupOrigin[1]); *originZ[lane] = floatToU32(setupOrigin[2]);
+            *dirX[lane] = floatToU32(a * invLen); *dirY[lane] = floatToU32(b * invLen); *dirZ[lane] = floatToU32(z * invLen);
+            *ids[lane] = rayId;
+        }
         triangleDma.drive(dut);
         // Sample handshakes while clock is low, then advance both sides of the
         // ready/valid interface across the same rising edge.
@@ -352,36 +372,48 @@ int main(int argc, char** argv) {
         };
         const bool dataFire = dut->io_tri_dma_data_valid && dut->io_tri_dma_data_ready;
         const bool statusFire = dut->io_tri_dma_status_valid && dut->io_tri_dma_status_ready;
+        const bool inputFire = dut->io_ray_in_valid && dut->io_ray_in_ready;
+        const bool resultFire = dut->io_result_valid && dut->io_result_ready;
+        const uint32_t resultMask = dut->io_result_mask;
+        const bool resultLast = dut->io_result_last;
+        const uint16_t resultIds[2] = {dut->io_result_0_meta_rayId, dut->io_result_1_meta_rayId};
+        const bool resultHits[2] = {dut->io_result_0_hit != 0, dut->io_result_1_hit != 0};
+        const uint32_t resultHitIds[2] = {dut->io_result_0_hitId, dut->io_result_1_hitId};
         tick(dut);
         triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
-
-        if (dut->io_trace_resp_valid && dut->io_trace_resp_ready) {
-            TraceResultEntry entry0;
-            entry0.slotId = static_cast<int>(dut->io_trace_resp_slotId_0);
-            entry0.hit    = dut->io_trace_resp_hit_0 != 0;
-            entry0.hitId  = static_cast<int>(dut->io_trace_resp_hitId_0);
-            traceResultQueue.push(entry0);
-            ++traceResultsReceived;
-            if (entry0.hit) ++traceHits; else ++traceMisses;
-
-            TraceResultEntry entry1;
-            entry1.slotId = static_cast<int>(dut->io_trace_resp_slotId_1);
-            entry1.hit    = dut->io_trace_resp_hit_1 != 0;
-            entry1.hitId  = static_cast<int>(dut->io_trace_resp_hitId_1);
-            traceResultQueue.push(entry1);
-            ++traceResultsReceived;
-            if (entry1.hit) ++traceHits; else ++traceMisses;
+        if (inputFire) {
+            for (size_t lane = 0; lane < rayCount; ++lane) {
+                const uint16_t rayId = freeRayIds.front();
+                if (rayIdToPixel[rayId] != -1) {
+                    std::cerr << "RayID allocator reused an active tag " << rayId << std::endl;
+                    delete dut;
+                    return 4;
+                }
+                rayIdToPixel[rayId] = static_cast<int64_t>(nextRay + lane);
+                freeRayIds.pop_front();
+            }
+            nextRay += rayCount;
+            minFreeRayIds = std::min(minFreeRayIds, freeRayIds.size());
         }
-
-        while (!traceResultQueue.empty()) {
-            auto& entry = traceResultQueue.front();
-            if (traceRendered < framePixels) {
-                const size_t idx = traceRendered * 3;
-                const size_t compactHitId = static_cast<size_t>(entry.hitId);
+        if (resultFire) {
+            for (int lane = 0; lane < 2; ++lane) if (resultMask & (1U << lane)) {
+                const uint16_t rayId = resultIds[lane];
+                const int64_t pixelIndex = rayIdToPixel[rayId];
+                if (pixelIndex < 0) {
+                    std::cerr << "Invalid or duplicate RayID " << rayId
+                              << " (next=" << nextRay << ", received=" << traceResultsReceived
+                              << ", free=" << freeRayIds.size() << ")" << std::endl;
+                    delete dut;
+                    return 4;
+                }
+                rayIdToPixel[rayId] = -1;
+                freeRayIds.push_back(rayId);
+                const size_t idx = static_cast<size_t>(pixelIndex) * 3;
+                const size_t compactHitId = static_cast<size_t>(resultHitIds[lane]);
                 const bool compactIdValid = compactHitId < triangles_compact_src_ids.size();
                 const size_t originalTriId = compactIdValid ? static_cast<size_t>(triangles_compact_src_ids[compactHitId]) : 0U;
-                if (entry.hit && compactIdValid && originalTriId < normals.size()) {
+                if (resultHits[lane] && compactIdValid && originalTriId < normals.size()) {
                     uint8_t r, g, b;
                     shading(normals[originalTriId], r, g, b);
                     image[idx + 0] = r;
@@ -392,23 +424,23 @@ int main(int argc, char** argv) {
                     image[idx + 1] = 0;
                     image[idx + 2] = 0;
                 }
+                ++traceResultsReceived;
+                if (resultHits[lane]) ++traceHits; else ++traceMisses;
             }
-            ++traceRendered;
-            traceResultQueue.pop();
+            if (resultLast) sawResultLast = true;
             stallCycles = 0;
         }
 
         if (totalCycles % 1000000 == 0) {
             std::printf("\r[FPGA] cycle=%lu trace_results=%zu/%zu rendered=%zu",
-                        static_cast<unsigned long>(totalCycles),
-                        traceResultsReceived, framePixels, traceRendered);
+                        static_cast<unsigned long>(totalCycles), traceResultsReceived, framePixels, traceResultsReceived);
             std::fflush(stdout);
         }
 
         if (++stallCycles >= kTraceNoProgressCycles) {
             std::cerr << "\nTimeout: no completed trace response for " << stallCycles << " cycles." << endl;
             std::cerr << "Trace results: " << traceResultsReceived << " / " << framePixels
-                      << "  rendered: " << traceRendered
+                      << "  sent: " << nextRay
                       << endl;
             delete dut;
             return 4;
@@ -425,7 +457,17 @@ int main(int argc, char** argv) {
 
     std::cout << "\nAll trace responses received: "
               << traceResultsReceived << " / " << framePixels << std::endl;
+    if (nextRay != framePixels || traceResultsReceived != framePixels || !sawResultLast ||
+        freeRayIds.size() != (1U << 16)) {
+        std::cerr << "Ray stream completion mismatch (sent=" << nextRay
+                  << ", received=" << traceResultsReceived
+                  << ", last=" << sawResultLast
+                  << ", free_tags=" << freeRayIds.size() << ")." << std::endl;
+        delete dut;
+        return 4;
+    }
     std::cout << "  Hits: " << traceHits << "  Misses: " << traceMisses << std::endl;
+    std::cout << "  RayID pool minimum free: " << minFreeRayIds << std::endl;
     std::cout << "Total simulation cycles: " << (main_time / 2) << std::endl;
     std::cout << "  DataMover commands: " << triangleDma.commands()
               << "  data beats: " << triangleDma.dataBeats()

@@ -10,7 +10,7 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val setup_grid_min = Input(new Vec3(cfg))
     val setup_grid_max = Input(new Vec3(cfg))
 
-    val in = Flipped(Decoupled(new SdfInitReq(cfg, addrWidth)))
+    val in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
     val out = Decoupled(new InitStageResp(cfg, addrWidth))
   })
 
@@ -18,6 +18,9 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
   val aabbLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = 1
+  private val outputQueueDepth = GlobalConfig.initPostQueueDepth
+  private val reservationCapacity = outputQueueDepth
+  private val reservationWidth = log2Ceil(reservationCapacity + 1)
   val entryAdvanceShift = 14
   val fracWidth = cfg.precision - 1
   require(cfg.totalWidth == 32 && cfg.expWidth == 8 && cfg.precision == 24,
@@ -45,34 +48,36 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   }
 
   val rayWire = Wire(new Ray(cfg))
-  rayWire.origin := io.setup_origin
-  rayWire.dir := io.in.bits.rd
+  rayWire.origin := io.in.bits.ray.origin
+  rayWire.dir := io.in.bits.ray.dir
   rayWire.dist := 0.U
 
   aabb.io.ray := rayWire
   aabb.io.aabb.min := io.setup_grid_min
   aabb.io.aabb.max := io.setup_grid_max
 
-  io.in.ready := true.B
+  val outputQ = Module(new Queue(new InitStageResp(cfg, addrWidth), outputQueueDepth))
+  val reservations = RegInit(0.U(reservationWidth.W))
+  io.in.ready := reservations < reservationCapacity.U
   val inFire = io.in.fire
   aabb.io.in_valid := inFire
 
-  val rdXAtAabb = PipeUtils.pipeData(io.in.bits.rd.x, aabbLatency)
-  val rdYAtAabb = PipeUtils.pipeData(io.in.bits.rd.y, aabbLatency)
-  val rdZAtAabb = PipeUtils.pipeData(io.in.bits.rd.z, aabbLatency)
+  val rdXAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.x, aabbLatency)
+  val rdYAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.y, aabbLatency)
+  val rdZAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.z, aabbLatency)
 
-  val roXAtAabb = PipeUtils.pipeData(io.setup_origin.x, aabbLatency)
-  val roYAtAabb = PipeUtils.pipeData(io.setup_origin.y, aabbLatency)
-  val roZAtAabb = PipeUtils.pipeData(io.setup_origin.z, aabbLatency)
+  val roXAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.x, aabbLatency)
+  val roYAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.y, aabbLatency)
+  val roZAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.z, aabbLatency)
 
-  val slotAtAabb = PipeUtils.pipeData(io.in.bits.meta.slotId, aabbLatency)
+  val rayIdAtAabb = PipeUtils.pipeData(io.in.bits.meta.rayId, aabbLatency)
 
   val tEntry = RegNext(entryAdvanceApprox(aabb.io.tNear))
 
   val outAlignLatency = entryLatency
   val outValid = PipeUtils.pipeBool(aabb.io.out_valid, outAlignLatency, false.B)
   val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
-  val outSlot = PipeUtils.pipeData(slotAtAabb, entryLatency)
+  val outRayId = PipeUtils.pipeData(rayIdAtAabb, entryLatency)
   val outRoX = PipeUtils.pipeData(roXAtAabb, entryLatency)
   val outRoY = PipeUtils.pipeData(roYAtAabb, entryLatency)
   val outRoZ = PipeUtils.pipeData(roZAtAabb, entryLatency)
@@ -80,18 +85,22 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   val outRdY = PipeUtils.pipeData(rdYAtAabb, entryLatency)
   val outRdZ = PipeUtils.pipeData(rdZAtAabb, entryLatency)
 
-  io.out.valid := outValid
-  io.out.bits.hit := outHit
-  io.out.bits.ray.origin.x := outRoX
-  io.out.bits.ray.origin.y := outRoY
-  io.out.bits.ray.origin.z := outRoZ
-  io.out.bits.ray.dir.x := outRdX
-  io.out.bits.ray.dir.y := outRdY
-  io.out.bits.ray.dir.z := outRdZ
-  io.out.bits.ray.dist := tEntry
-  io.out.bits.meta.slotId := outSlot
+  outputQ.io.enq.valid := outValid
+  outputQ.io.enq.bits.hit := outHit
+  outputQ.io.enq.bits.ray.origin.x := outRoX
+  outputQ.io.enq.bits.ray.origin.y := outRoY
+  outputQ.io.enq.bits.ray.origin.z := outRoZ
+  outputQ.io.enq.bits.ray.dir.x := outRdX
+  outputQ.io.enq.bits.ray.dir.y := outRdY
+  outputQ.io.enq.bits.ray.dir.z := outRdZ
+  outputQ.io.enq.bits.ray.dist := tEntry
+  outputQ.io.enq.bits.meta.rayId := outRayId
+  assert(!outValid || outputQ.io.enq.ready, "InitStage reservation overflow")
+  io.out <> outputQ.io.deq
 
-  when(io.out.valid) {
-    assert(io.out.ready, "InitStage expects out.ready to stay high")
+  val outFire = io.out.fire
+  when(inFire || outFire) {
+    reservations := reservations + inFire.asUInt - outFire.asUInt
   }
+  assert(reservations <= reservationCapacity.U, "InitStage reservation counter overflow")
 }
