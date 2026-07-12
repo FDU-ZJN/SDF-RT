@@ -34,12 +34,12 @@ module TriCacheDataArrayBB #(
     .SIM_ASSERT_CHK     (0),
     .USE_MEM_INIT       (0),
     .WAKEUP_TIME        ("disable_sleep"),
-    .RST_MODE_A         ("SYNC"),
+    .RST_MODE_A         ("no_reset"),
     .READ_RESET_VALUE_A ("0")
   ) cache_bram_inst (
     .sleep          (1'b0),
     .clka           (clk),
-    .rsta           (reset),
+    .rsta           (1'b0),
     .ena            (mem_en),
     .regcea         (1'b1),
     .addra          (mem_addr),

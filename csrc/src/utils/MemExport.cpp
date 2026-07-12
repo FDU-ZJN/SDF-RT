@@ -101,7 +101,9 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
 void export_triangle_ddr_binary(const std::string& filename) {
     const auto& tri_store = triangles_compact.empty() ? triangles : triangles_compact;
     const int triBatchSize = rt::config::kTriCacheLineTriangles;
-    const int bytesPerBlock = triBatchSize * 36;
+    const int rawBytesPerBlock = triBatchSize * 36;
+    const int dmaBeatBytes = 16;
+    const int bytesPerBlock = ((rawBytesPerBlock + dmaBeatBytes - 1) / dmaBeatBytes) * dmaBeatBytes;
     std::ofstream out(filename, std::ios::binary);
     if (!out.is_open()) {
         std::cerr << "[MemExport] Failed to open " << filename << std::endl;

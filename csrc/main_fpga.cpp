@@ -32,9 +32,11 @@ VerilatedVcdC* tfp = nullptr;
 namespace {
 
 constexpr size_t kTriangleBytes = 9 * sizeof(uint32_t);
-constexpr size_t kTriangleDmaBlockBytes =
+constexpr size_t kRawBlockBytes =
     static_cast<size_t>(kTriCacheLineTriangles) * kTriangleBytes;
 constexpr int kTriangleDmaBeatBytes = 16;
+constexpr size_t kTriangleDmaBlockBytes =
+    ((kRawBlockBytes + kTriangleDmaBeatBytes - 1) / kTriangleDmaBeatBytes) * kTriangleDmaBeatBytes;
 static_assert(kTriangleDmaBlockBytes % kTriangleDmaBeatBytes == 0,
               "Triangle DMA block must be an integer number of 128-bit beats");
 constexpr int kTriangleDmaBeats = kTriangleDmaBlockBytes / kTriangleDmaBeatBytes;

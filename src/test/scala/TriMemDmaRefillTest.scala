@@ -12,7 +12,7 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
   private val dmaBeats = totalBits / 128
   private val blockBytes = totalBits / 8
 
-  it should s"issue a $blockBytes-byte command and return four triangles after data and status" in {
+  it should s"issue a $blockBytes-byte command, write the refill line, and complete after status" in {
     test(GlobalConfig.withMemImplMode(2)(new TriangleMemRefillBackend(cfg, numBanks = 8, idWidth = 2))) { dut =>
       dut.io.triangleBaseAddress.poke(BigInt("10000000", 16).U)
       dut.io.req.valid.poke(false.B)
@@ -38,11 +38,17 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.req.valid.poke(false.B)
 
       val beats = (0 until dmaBeats).map(i => (BigInt(i + 1) << 96) | BigInt("00112233445566778899aabbccddeeff", 16))
+      var writtenLine = BigInt(0)
       beats.zipWithIndex.foreach { case (data, index) =>
         dut.io.dmaData.bits.data.poke(data.U)
         dut.io.dmaData.bits.last.poke((index == dmaBeats - 1).B)
         dut.io.dmaData.valid.poke(true.B)
         dut.io.dmaData.ready.expect(true.B)
+        if (index == dmaBeats - 1) {
+          dut.io.refillWrite.valid.expect(true.B)
+          dut.io.refillWrite.bits.id.expect(1.U)
+          writtenLine = dut.io.refillWrite.bits.data.peek().litValue
+        }
         dut.clock.step()
       }
       dut.io.dmaData.valid.poke(false.B)
@@ -55,7 +61,8 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.resp.valid.expect(true.B)
       dut.io.resp.bits.id.expect(1.U)
       val line = beats.zipWithIndex.map { case (beat, i) => beat << (128 * i) }.reduce(_ | _)
-      dut.io.resp.bits.data.expect((line & ((BigInt(1) << totalBits) - 1)).U)
+      assert(writtenLine == (line & ((BigInt(1) << totalBits) - 1)))
+      dut.io.resp.bits.error.expect(false.B)
       dut.clock.step()
       dut.io.issuedCount.expect(1.U)
       dut.io.completedCount.expect(1.U)
@@ -64,7 +71,7 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "complete with zero data and record a DataMover status error" in {
+  it should "complete with an error flag and record a DataMover status error" in {
     test(GlobalConfig.withMemImplMode(2)(new TriangleMemRefillBackend(cfg, numBanks = 8, idWidth = 2))) { dut =>
       dut.io.triangleBaseAddress.poke(0.U)
       dut.io.resp.ready.poke(true.B)
@@ -92,7 +99,7 @@ class TriMemDmaRefillTest extends AnyFlatSpec with ChiselScalatestTester {
 
       dut.io.resp.valid.expect(true.B)
       dut.io.resp.bits.id.expect(2.U)
-      dut.io.resp.bits.data.expect(0.U)
+      dut.io.resp.bits.error.expect(true.B)
       dut.io.dmaReadError.expect(true.B)
       dut.io.dmaStatusErrorCount.expect(1.U)
     }
