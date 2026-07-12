@@ -1,19 +1,20 @@
 import chisel3._
 import chiseltest._
+import chisel3.util._
 import org.scalatest.flatspec.AnyFlatSpec
-import Trace.{TriCacheRespQueue, TriMemRefillLineArray}
+import Trace.TriMemRefillLineArray
 
 class TriCacheStorageTest extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "Triangle cache BRAM storage models"
 
-  it should "preserve ordering across a full 16-entry response queue" in {
-    test(new TriCacheRespQueue(UInt(16.W), depth = 16, useXpm = false)) { dut =>
+  it should "preserve ordering across a full 4-entry response queue" in {
+    test(new Queue(UInt(16.W), entries = 4, useSyncReadMem = true)) { dut =>
       dut.io.enq.valid.poke(false.B)
       dut.io.deq.ready.poke(false.B)
       dut.clock.step(2)
       dut.io.deq.valid.expect(false.B)
 
-      for (value <- 0 until 16) {
+      for (value <- 0 until 4) {
         dut.io.enq.bits.poke(value.U)
         dut.io.enq.valid.poke(true.B)
         dut.io.enq.ready.expect(true.B)
@@ -21,9 +22,9 @@ class TriCacheStorageTest extends AnyFlatSpec with ChiselScalatestTester {
       }
       dut.io.enq.valid.poke(false.B)
       dut.io.enq.ready.expect(false.B)
-      dut.io.count.expect(16.U)
+      dut.io.count.expect(4.U)
 
-      for (value <- 0 until 16) {
+      for (value <- 0 until 4) {
         dut.io.deq.valid.expect(true.B)
         dut.io.deq.bits.expect(value.U)
         dut.io.deq.ready.poke(true.B)

@@ -23,8 +23,8 @@ class FpgaTop extends Module {
     val setup_ready = Output(Bool())
 
     val ray_in_valid = Input(Bool())
-    val ray_in = Input(Vec(4, new RayIngress(c.cfg)))
-    val ray_in_mask = Input(UInt(4.W))
+    val ray_in = Input(Vec(2, new RayIngress(c.cfg)))
+    val ray_in_mask = Input(UInt(2.W))
     val ray_in_last = Input(Bool())
     val ray_in_ready = Output(Bool())
 
@@ -51,7 +51,6 @@ class FpgaTop extends Module {
   })
 
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
-  val inputQ = Module(new FourToTwoArbiter(new RayIssue(c.cfg, c.addrWidth), GlobalConfig.ingressFifoDepth))
   val initStages = Seq.fill(2)(Module(new InitStage(c.cfg, c.addrWidth)))
   val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), GlobalConfig.initPostQueueDepth)))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
@@ -96,8 +95,8 @@ class FpgaTop extends Module {
   val emittedCount = RegInit(0.U(32.W))
   val protocolError = RegInit(false.B)
   val inputMaskCount = PopCount(io.ray_in_mask)
-  val inputFifoReady = (0 until 4).map(lane => !io.ray_in_mask(lane) || inputQ.io.enq(lane).ready).reduce(_ && _)
-  val inputCanAccept = inputFifoReady && !batchClosed && setupUnit.io.setup_finish
+  val inputStageReady = (0 until 2).map(lane => !io.ray_in_mask(lane) || initStages(lane).io.in.ready).reduce(_ && _)
+  val inputCanAccept = inputStageReady && !batchClosed && setupUnit.io.setup_finish
   io.ray_in_ready := inputCanAccept
   val inputFire = io.ray_in_valid && io.ray_in_ready
   when(io.ray_in_valid && io.ray_in_mask === 0.U) { protocolError := true.B }
@@ -106,18 +105,12 @@ class FpgaTop extends Module {
     acceptedCount := acceptedCount + inputMaskCount
     when(io.ray_in_last) { batchClosed := true.B }
   }
-  for (lane <- 0 until 4) {
-    inputQ.io.enq(lane).valid := io.ray_in_valid && io.ray_in_mask(lane) && inputCanAccept
-    inputQ.io.enq(lane).bits.ray.origin := io.ray_in(lane).origin
-    inputQ.io.enq(lane).bits.ray.dir := io.ray_in(lane).dir
-    inputQ.io.enq(lane).bits.ray.dist := 0.U
-    inputQ.io.enq(lane).bits.meta.rayId := io.ray_in(lane).rayId
-  }
-  inputQ.io.deq.ready := initStages.map(_.io.in.ready).reduce(_ && _)
-  val initDispatch = inputQ.io.deq.valid && inputQ.io.deq.ready
   for (lane <- 0 until 2) {
-    initStages(lane).io.in.valid := initDispatch && inputQ.io.deq.bits.validMask(lane)
-    initStages(lane).io.in.bits := inputQ.io.deq.bits.bits(lane)
+    initStages(lane).io.in.valid := io.ray_in_valid && io.ray_in_mask(lane) && inputCanAccept
+    initStages(lane).io.in.bits.ray.origin := io.ray_in(lane).origin
+    initStages(lane).io.in.bits.ray.dir := io.ray_in(lane).dir
+    initStages(lane).io.in.bits.ray.dist := 0.U
+    initStages(lane).io.in.bits.meta.rayId := io.ray_in(lane).rayId
   }
 
   def missResult(rayId: UInt): RenderResult = {

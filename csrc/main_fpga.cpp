@@ -337,11 +337,11 @@ int main(int argc, char** argv) {
 
     while (traceResultsReceived < framePixels || nextRay < framePixels) {
         const bool sendRays = nextRay < framePixels && dut->io_ray_in_ready && !freeRayIds.empty();
-        const size_t rayCount = sendRays ? std::min({size_t{4}, framePixels - nextRay, freeRayIds.size()}) : 0;
+        const size_t rayCount = sendRays ? std::min({size_t{2}, framePixels - nextRay, freeRayIds.size()}) : 0;
         dut->io_ray_in_valid = sendRays ? 1 : 0;
         dut->io_ray_in_mask = rayCount == 0 ? 0 : ((1U << rayCount) - 1U);
         dut->io_ray_in_last = sendRays && nextRay + rayCount == framePixels;
-        for (int lane = 0; lane < 4; ++lane) {
+        for (int lane = 0; lane < 2; ++lane) {
             const size_t id = nextRay + static_cast<size_t>(lane);
             const int x = id % static_cast<size_t>(runtimeWidth);
             const int y = id / static_cast<size_t>(runtimeWidth);
@@ -350,13 +350,13 @@ int main(int argc, char** argv) {
             const float z = -1.8f * static_cast<float>(runtimeHeight);
             const float invLen = 1.0f / std::sqrt(a * a + b * b + z * z);
             const uint16_t rayId = lane < static_cast<int>(rayCount) ? freeRayIds[lane] : 0U;
-            uint32_t* originX[] = {&dut->io_ray_in_0_origin_x, &dut->io_ray_in_1_origin_x, &dut->io_ray_in_2_origin_x, &dut->io_ray_in_3_origin_x};
-            uint32_t* originY[] = {&dut->io_ray_in_0_origin_y, &dut->io_ray_in_1_origin_y, &dut->io_ray_in_2_origin_y, &dut->io_ray_in_3_origin_y};
-            uint32_t* originZ[] = {&dut->io_ray_in_0_origin_z, &dut->io_ray_in_1_origin_z, &dut->io_ray_in_2_origin_z, &dut->io_ray_in_3_origin_z};
-            uint32_t* dirX[] = {&dut->io_ray_in_0_dir_x, &dut->io_ray_in_1_dir_x, &dut->io_ray_in_2_dir_x, &dut->io_ray_in_3_dir_x};
-            uint32_t* dirY[] = {&dut->io_ray_in_0_dir_y, &dut->io_ray_in_1_dir_y, &dut->io_ray_in_2_dir_y, &dut->io_ray_in_3_dir_y};
-            uint32_t* dirZ[] = {&dut->io_ray_in_0_dir_z, &dut->io_ray_in_1_dir_z, &dut->io_ray_in_2_dir_z, &dut->io_ray_in_3_dir_z};
-            uint16_t* ids[] = {&dut->io_ray_in_0_rayId, &dut->io_ray_in_1_rayId, &dut->io_ray_in_2_rayId, &dut->io_ray_in_3_rayId};
+            uint32_t* originX[] = {&dut->io_ray_in_0_origin_x, &dut->io_ray_in_1_origin_x};
+            uint32_t* originY[] = {&dut->io_ray_in_0_origin_y, &dut->io_ray_in_1_origin_y};
+            uint32_t* originZ[] = {&dut->io_ray_in_0_origin_z, &dut->io_ray_in_1_origin_z};
+            uint32_t* dirX[] = {&dut->io_ray_in_0_dir_x, &dut->io_ray_in_1_dir_x};
+            uint32_t* dirY[] = {&dut->io_ray_in_0_dir_y, &dut->io_ray_in_1_dir_y};
+            uint32_t* dirZ[] = {&dut->io_ray_in_0_dir_z, &dut->io_ray_in_1_dir_z};
+            uint16_t* ids[] = {&dut->io_ray_in_0_rayId, &dut->io_ray_in_1_rayId};
             *originX[lane] = floatToU32(setupOrigin[0]); *originY[lane] = floatToU32(setupOrigin[1]); *originZ[lane] = floatToU32(setupOrigin[2]);
             *dirX[lane] = floatToU32(a * invLen); *dirY[lane] = floatToU32(b * invLen); *dirZ[lane] = floatToU32(z * invLen);
             *ids[lane] = rayId;

@@ -359,56 +359,6 @@ class TriMemRefillDone(val c: TriPeConfig, val idWidth: Int) extends Bundle {
   val data = UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W)
 }
 
-class TriCacheRespQueueBB(val dataWidth: Int, val depth: Int) extends BlackBox(
-      Map(
-        "DATA_WIDTH" -> dataWidth,
-        "DEPTH" -> depth,
-        "COUNT_WIDTH" -> log2Ceil(depth + 1)
-      )
-    )
-    with HasBlackBoxResource {
-  val countWidth = log2Ceil(depth + 1)
-  val io = IO(new Bundle {
-    val clk = Input(Clock())
-    val reset = Input(Reset())
-    val enq_valid = Input(Bool())
-    val enq_ready = Output(Bool())
-    val enq_bits = Input(UInt(dataWidth.W))
-    val deq_valid = Output(Bool())
-    val deq_ready = Input(Bool())
-    val deq_bits = Output(UInt(dataWidth.W))
-    val count = Output(UInt(countWidth.W))
-  })
-  addResource("/TriCacheRespQueue.sv")
-}
-
-class TriCacheRespQueue[T <: Data](gen: T, val depth: Int, val useXpm: Boolean) extends Module {
-  val countWidth = log2Ceil(depth + 1)
-  val io = IO(new Bundle {
-    val enq = Flipped(Decoupled(gen))
-    val deq = Decoupled(gen)
-    val count = Output(UInt(countWidth.W))
-  })
-
-  if (useXpm) {
-    val fifo = Module(new TriCacheRespQueueBB(gen.getWidth, depth))
-    fifo.io.clk := clock
-    fifo.io.reset := reset
-    fifo.io.enq_valid := io.enq.valid
-    fifo.io.enq_bits := io.enq.bits.asUInt
-    io.enq.ready := fifo.io.enq_ready
-    io.deq.valid := fifo.io.deq_valid
-    io.deq.bits := fifo.io.deq_bits.asTypeOf(gen)
-    fifo.io.deq_ready := io.deq.ready
-    io.count := fifo.io.count
-  } else {
-    val fifo = Module(new Queue(gen, depth, useSyncReadMem = true))
-    fifo.io.enq <> io.enq
-    io.deq <> fifo.io.deq
-    io.count := fifo.io.count
-  }
-}
-
 class TriMemRefillLineArrayBB(val dataWidth: Int, val depth: Int) extends BlackBox(
       Map(
         "DATA_WIDTH" -> dataWidth,
@@ -769,7 +719,7 @@ class TriangleMemCachedBank(
   val dataPipeReq = Reg(Vec(dataReadLatency, new BankReq))
   val dataPipeWay = Reg(Vec(dataReadLatency, UInt(math.max(1, log2Ceil(ways)).W)))
   val missQ = Module(new Queue(new BankReq, reqQueueDepth, useSyncReadMem = true))
-  val respQ = Module(new TriCacheRespQueue(new BankResp, respQueueDepth, useXpmCache))
+  val respQ = Module(new Queue(new BankResp, respQueueDepth, useSyncReadMem = true))
 
   val wayReadEn = Wire(Vec(ways, Bool()))
   val wayWriteEn = Wire(Vec(ways, Bool()))

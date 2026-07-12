@@ -1,8 +1,8 @@
 module RayAxisAdapter (
   input  wire         clk,
   input  wire         rst,
-  input  wire [1023:0] s_axis_ray_tdata,
-  input  wire [127:0]  s_axis_ray_tkeep,
+  input  wire [511:0]  s_axis_ray_tdata,
+  input  wire [63:0]   s_axis_ray_tkeep,
   input  wire          s_axis_ray_tlast,
   input  wire          s_axis_ray_tvalid,
   output wire          s_axis_ray_tready,
@@ -21,21 +21,7 @@ module RayAxisAdapter (
   output wire [31:0]   core_ray_in_1_dir_y,
   output wire [31:0]   core_ray_in_1_dir_z,
   output wire [15:0]   core_ray_in_1_rayId,
-  output wire [31:0]   core_ray_in_2_origin_x,
-  output wire [31:0]   core_ray_in_2_origin_y,
-  output wire [31:0]   core_ray_in_2_origin_z,
-  output wire [31:0]   core_ray_in_2_dir_x,
-  output wire [31:0]   core_ray_in_2_dir_y,
-  output wire [31:0]   core_ray_in_2_dir_z,
-  output wire [15:0]   core_ray_in_2_rayId,
-  output wire [31:0]   core_ray_in_3_origin_x,
-  output wire [31:0]   core_ray_in_3_origin_y,
-  output wire [31:0]   core_ray_in_3_origin_z,
-  output wire [31:0]   core_ray_in_3_dir_x,
-  output wire [31:0]   core_ray_in_3_dir_y,
-  output wire [31:0]   core_ray_in_3_dir_z,
-  output wire [15:0]   core_ray_in_3_rayId,
-  output wire [3:0]    core_ray_in_mask,
+  output wire [1:0]    core_ray_in_mask,
   output wire          core_ray_in_last,
   input  wire          core_ray_in_ready,
   input  wire          core_result_valid,
@@ -55,12 +41,8 @@ module RayAxisAdapter (
   output wire          m_axis_ray_result_tvalid,
   input  wire          m_axis_ray_result_tready
 );
-  wire [3:0] valid_records = {
-    &s_axis_ray_tkeep[127:96], &s_axis_ray_tkeep[95:64],
-    &s_axis_ray_tkeep[63:32], &s_axis_ray_tkeep[31:0]
-  };
-  wire keep_is_contiguous = (valid_records == 4'b0001) || (valid_records == 4'b0011) ||
-                            (valid_records == 4'b0111) || (valid_records == 4'b1111);
+  wire [1:0] valid_records = {&s_axis_ray_tkeep[63:32], &s_axis_ray_tkeep[31:0]};
+  wire keep_is_contiguous = (valid_records == 2'b01) || (valid_records == 2'b11);
   assign s_axis_ray_tready = core_ray_in_ready && keep_is_contiguous;
   assign core_ray_in_valid = s_axis_ray_tvalid && keep_is_contiguous;
   assign core_ray_in_mask = valid_records;
@@ -71,10 +53,6 @@ module RayAxisAdapter (
           core_ray_in_0_dir_x, core_ray_in_0_dir_y, core_ray_in_0_dir_z, core_ray_in_0_rayId} = s_axis_ray_tdata[207:0];
   assign {core_ray_in_1_origin_x, core_ray_in_1_origin_y, core_ray_in_1_origin_z,
           core_ray_in_1_dir_x, core_ray_in_1_dir_y, core_ray_in_1_dir_z, core_ray_in_1_rayId} = s_axis_ray_tdata[463:256];
-  assign {core_ray_in_2_origin_x, core_ray_in_2_origin_y, core_ray_in_2_origin_z,
-          core_ray_in_2_dir_x, core_ray_in_2_dir_y, core_ray_in_2_dir_z, core_ray_in_2_rayId} = s_axis_ray_tdata[719:512];
-  assign {core_ray_in_3_origin_x, core_ray_in_3_origin_y, core_ray_in_3_origin_z,
-          core_ray_in_3_dir_x, core_ray_in_3_dir_y, core_ray_in_3_dir_z, core_ray_in_3_rayId} = s_axis_ray_tdata[975:768];
 
   assign m_axis_ray_result_tvalid = core_result_valid;
   assign m_axis_ray_result_tlast = core_result_last;
