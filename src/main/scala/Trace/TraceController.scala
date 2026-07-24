@@ -19,7 +19,7 @@ class TraceController(
 
   val io = IO(new Bundle {
     val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
-    val cmd_write = Vec(2, Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds))))
+    val cmd_write = Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds)))
     val slot_release = Vec(numWorkers, Valid(UInt(traceSlotBits.W)))
     val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
     val triangleBaseAddress = Input(UInt(64.W))
@@ -66,15 +66,13 @@ class TraceController(
   val cmdQueueReady = Wire(Vec(slotCount, Bool()))
   val cmdQueueValid = Wire(Vec(slotCount, Bool()))
   val cmdQueueBits = Wire(Vec(slotCount, new TriBatch(c.addrWidth)))
-  val cmdWriteReady = Wire(Vec(2, Bool()))
+  val cmdWriteReady = Wire(Bool())
   val clearCtx = Wire(Vec(numWorkers, Vec(ctxCount, Bool())))
 
   for (s <- 0 until slotCount) {
     cmdQueueReady(s) := false.B
   }
-  for (lane <- 0 until 2) {
-    cmdWriteReady(lane) := false.B
-  }
+  cmdWriteReady := false.B
   for (w <- 0 until numWorkers) {
     for (ctx <- 0 until ctxCount) {
       clearCtx(w)(ctx) := false.B
@@ -88,21 +86,15 @@ class TraceController(
   }
 
   for (s <- 0 until slotCount) {
-    val laneHits = Wire(Vec(2, Bool()))
-    for (lane <- 0 until 2) {
-      laneHits(lane) := io.cmd_write(lane).valid && (io.cmd_write(lane).bits.slotIdx === s.U)
-    }
-    assert(PopCount(laneHits) <= 1.U, s"TraceController does not allow same-slot dual cmd writes for slot $s")
-    cmdQueues(s).io.enq.valid := laneHits.asUInt.orR
-    cmdQueues(s).io.enq.bits := Mux(laneHits(0), io.cmd_write(0).bits.tri, io.cmd_write(1).bits.tri)
+    val slotHit = io.cmd_write.valid && (io.cmd_write.bits.slotIdx === s.U)
+    cmdQueues(s).io.enq.valid := slotHit
+    cmdQueues(s).io.enq.bits := io.cmd_write.bits.tri
     cmdQueues(s).io.flush.get := slotFlushPending(s)
     cmdQueues(s).io.deq.ready := cmdQueueReady(s)
     cmdQueueValid(s) := slotCmdCount(s) =/= 0.U
     cmdQueueBits(s) := cmdQueues(s).io.deq.bits
-    for (lane <- 0 until 2) {
-      when(laneHits(lane)) {
-        cmdWriteReady(lane) := cmdQueues(s).io.enq.ready
-      }
+    when(slotHit) {
+      cmdWriteReady := cmdQueues(s).io.enq.ready
     }
 
     val cmdEnqFire = cmdQueues(s).io.enq.fire
@@ -118,10 +110,8 @@ class TraceController(
     }
   }
 
-  for (lane <- 0 until 2) {
-    when(io.cmd_write(lane).valid) {
-      assert(cmdWriteReady(lane), s"TraceController cmd queue overflow on lane $lane")
-    }
+  when(io.cmd_write.valid) {
+    assert(cmdWriteReady, "TraceController cmd queue overflow")
   }
 
   for (w <- 0 until numWorkers) {

@@ -55,6 +55,7 @@ class FpgaTop extends Module {
   val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), GlobalConfig.initPostQueueDepth)))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
+  val sdfDdaArb = Module(new RRArbiter(new DdaTraversalReq(c.cfg, c.addrWidth), 2))
   val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
   val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.traceJobQueueDepth))
   val earlyQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
@@ -135,16 +136,16 @@ class FpgaTop extends Module {
     val sdfOut = sdfStage.io.out(lane)
     earlyQ.io.enq(lane + 2).valid := sdfOut.valid && !sdfOut.bits.hit
     earlyQ.io.enq(lane + 2).bits := missResult(sdfOut.bits.meta.rayId)
-    ddaStage.io.in(lane).valid := sdfOut.valid && sdfOut.bits.hit
-    ddaStage.io.in(lane).bits.ray := sdfOut.bits.ray
-    ddaStage.io.in(lane).bits.meta := sdfOut.bits.meta
-    ddaStage.io.in(lane).bits.traceSlot := 0.U
-    sdfOut.ready := Mux(sdfOut.bits.hit, ddaStage.io.in(lane).ready, earlyQ.io.enq(lane + 2).ready)
+    sdfDdaArb.io.in(lane).valid := sdfOut.valid && sdfOut.bits.hit
+    sdfDdaArb.io.in(lane).bits.ray := sdfOut.bits.ray
+    sdfDdaArb.io.in(lane).bits.meta := sdfOut.bits.meta
+    sdfDdaArb.io.in(lane).bits.traceSlot := 0.U
+    sdfOut.ready := Mux(sdfOut.bits.hit, sdfDdaArb.io.in(lane).ready, earlyQ.io.enq(lane + 2).ready)
   }
 
-  for (lane <- 0 until 2) {
-    traceController.io.cmd_write(lane) := ddaStage.io.cmd_write(lane)
-  }
+  ddaStage.io.in <> sdfDdaArb.io.out
+
+  traceController.io.cmd_write := ddaStage.io.cmd_write
   ddaStage.io.slot_release := traceController.io.slot_release
   traceJobQueue.io.enq <> ddaStage.io.trace_job_out
   traceController.io.job_in <> traceJobQueue.io.deq

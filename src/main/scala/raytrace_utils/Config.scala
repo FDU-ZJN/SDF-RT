@@ -10,7 +10,7 @@ object GlobalConfig {
   val triMemNumPEs = 1
   val triMemCacheLineTriangles = 4
   val triMemNumBanks = 4
-  val ddaNumWorkers = 2
+  val ddaNumWorkers = 1
   val sdfStepNumWorkers = 2
 
   private var useBlackBoxState = 0
@@ -60,7 +60,7 @@ object GlobalConfig {
   val ddaCompletionQueueDepth = 8
   val ddaRetryQueueDepth = 8
   val traceJobQueueDepth = 8
-  val ddaTraceSlotCount = ddaNumWorkers * ddaRetryQueueDepth
+  val ddaTraceSlotCount = 16
   val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
 
   val sdfRetryQueueDepth = 64
