@@ -7,7 +7,7 @@ WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
 WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
 SBT = sbt
-JOBS ?= $(shell nproc)
+JOBS ?= 1
 
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
@@ -98,6 +98,7 @@ VCD2WLF = /opt/intelFPGA/20.1/modelsim_ase/bin/vcd2wlf
 # FPGA模式排除DebugHooks等不需要的文件
 ifeq ($(MODE),fpga)
 CPPS = $(CSRC_DIR)/$(CPP_MAIN) \
+       $(wildcard $(CSRC_DIR)/src/utils/HostRenderer.cpp) \
        $(wildcard $(CSRC_DIR)/src/utils/Mem.cpp) \
        $(wildcard $(CSRC_DIR)/src/utils/MemExport.cpp) \
        $(wildcard $(CSRC_DIR)/src/utils/SimUtils.cpp) \
@@ -128,9 +129,55 @@ V_OPTS = --cc --trace --exe -j $(JOBS) \
 # 目标程序路径（放在各自模式文件夹内）
 TARGET = $(VERILOG_DIR)/test_runner
 
-.PHONY: all clean run sim wave generate convert_vcd
+.PHONY: all clean run sim wave generate convert_vcd host-renderer-test sdf-cmodel sdf-cmodel-test sdf-sweep
 
 all: $(TARGET)
+
+HOST_RENDERER_TEST := $(ROOT_DIR)/build/host_renderer_test
+
+host-renderer-test: $(HOST_RENDERER_TEST)
+	$(HOST_RENDERER_TEST)
+
+$(HOST_RENDERER_TEST): $(CSRC_DIR)/tests/HostRendererTest.cpp \
+                       $(CSRC_DIR)/src/utils/HostRenderer.cpp \
+                       $(CSRC_DIR)/include/HostRenderer.h \
+                       $(CSRC_DIR)/include/Mem.h
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -std=c++17 -I$(CSRC_DIR)/include \
+		$(CSRC_DIR)/tests/HostRendererTest.cpp \
+		$(CSRC_DIR)/src/utils/HostRenderer.cpp -o $@
+
+SDF_CMODEL := $(ROOT_DIR)/build/sdf_config_explorer
+SDF_CMODEL_TEST := $(ROOT_DIR)/build/sdf_cmodel_test
+SDF_CMODEL_COMMON := $(CSRC_DIR)/src/utils/SdfCModel.cpp \
+                     $(CSRC_DIR)/src/utils/HostRenderer.cpp \
+                     $(CSRC_DIR)/src/utils/Mem.cpp \
+                     $(CSRC_DIR)/src/utils/SimUtils.cpp \
+                     $(CSRC_DIR)/src/utils/golden_model.cpp
+
+sdf-cmodel: $(SDF_CMODEL)
+
+$(SDF_CMODEL): $(CSRC_DIR)/tools/sdf_config_explorer.cpp \
+               $(SDF_CMODEL_COMMON) \
+               $(CSRC_DIR)/include/SdfCModel.h
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -std=c++17 -pthread -I$(CSRC_DIR)/include \
+		$(CSRC_DIR)/tools/sdf_config_explorer.cpp $(SDF_CMODEL_COMMON) \
+		-lcnpy -lz -ljpeg -o $@
+
+sdf-sweep: $(SDF_CMODEL)
+	$(SDF_CMODEL) --output-dir $(ROOT_DIR)/build/sdf_sweep
+
+sdf-cmodel-test: $(SDF_CMODEL_TEST)
+	$(SDF_CMODEL_TEST)
+
+$(SDF_CMODEL_TEST): $(CSRC_DIR)/tests/SdfCModelTest.cpp \
+                    $(SDF_CMODEL_COMMON) \
+                    $(CSRC_DIR)/include/SdfCModel.h
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -std=c++17 -pthread -I$(CSRC_DIR)/include \
+		$(CSRC_DIR)/tests/SdfCModelTest.cpp $(SDF_CMODEL_COMMON) \
+		-lcnpy -lz -ljpeg -o $@
 
 # Verilog 输出文件（作为 prerequisite 目标触发 sbt 生成）
 VERILOG_TARGET := $(VERILOG_DIR)/FpgaTop.sv

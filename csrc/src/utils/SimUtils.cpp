@@ -65,9 +65,16 @@ std::array<float, 6> computeScaledBoundsFromTriangles(
         update(tri.v2);
     }
 
+    const float centerX = 0.5f * (minX + maxX);
+    const float centerY = 0.5f * (minY + maxY);
+    const float centerZ = 0.5f * (minZ + maxZ);
+    const float halfX = 0.5f * (maxX - minX) * scale;
+    const float halfY = 0.5f * (maxY - minY) * scale;
+    const float halfZ = 0.5f * (maxZ - minZ) * scale;
+
     return {
-        minX * scale, minY * scale, minZ * scale,
-        maxX * scale, maxY * scale, maxZ * scale
+        centerX - halfX, centerY - halfY, centerZ - halfZ,
+        centerX + halfX, centerY + halfY, centerZ + halfZ
     };
 }
 

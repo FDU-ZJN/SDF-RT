@@ -18,7 +18,7 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
 
   val aabbLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = 1
-  private val outputQueueDepth = GlobalConfig.initPostQueueDepth
+  private val outputQueueDepth = GlobalConfig.initOutputQueueDepth
   private val reservationCapacity = outputQueueDepth
   private val reservationWidth = log2Ceil(reservationCapacity + 1)
   val entryAdvanceShift = 14

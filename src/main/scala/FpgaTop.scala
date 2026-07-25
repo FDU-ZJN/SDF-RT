@@ -52,12 +52,9 @@ class FpgaTop extends Module {
 
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val initStages = Seq.fill(2)(Module(new InitStage(c.cfg, c.addrWidth)))
-  val postHitQs = Seq.fill(2)(Module(new Queue(new RayIssue(c.cfg, c.addrWidth), GlobalConfig.initPostQueueDepth)))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
   val ddaStage = Module(new DDA(c.cfg, c.addrWidth, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
-  val sdfDdaArb = Module(new RRArbiter(new DdaTraversalReq(c.cfg, c.addrWidth), 2))
-  val traceController = Module(new TraceController(c, sdfCfg.DDAMaxSteps))
-  val traceJobQueue = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, sdfCfg.DDAMaxSteps), GlobalConfig.traceJobQueueDepth))
+  val traceController = Module(new TraceController(c))
   val earlyQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
   val traceQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
   val resultQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
@@ -87,9 +84,8 @@ class FpgaTop extends Module {
   }
   sdfStage.io.grid_min := setupUnit.io.gridMin
   sdfStage.io.inv_voxel := setupUnit.io.invVoxel
+  sdfStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
   sdfStage.io.sdf_mem_wr <> io.sdf_mem_wr
-  ddaStage.io.grid_min := setupUnit.io.gridMin
-  ddaStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
 
   val batchClosed = RegInit(false.B)
   val acceptedCount = RegInit(0.U(32.W))
@@ -127,28 +123,29 @@ class FpgaTop extends Module {
     val initOut = initStages(lane).io.out
     earlyQ.io.enq(lane).valid := initOut.valid && !initOut.bits.hit
     earlyQ.io.enq(lane).bits := missResult(initOut.bits.meta.rayId)
-    postHitQs(lane).io.enq.valid := initOut.valid && initOut.bits.hit
-    postHitQs(lane).io.enq.bits.ray := initOut.bits.ray
-    postHitQs(lane).io.enq.bits.meta := initOut.bits.meta
-    initOut.ready := Mux(initOut.bits.hit, postHitQs(lane).io.enq.ready, earlyQ.io.enq(lane).ready)
-    sdfStage.io.issue_in(lane) <> postHitQs(lane).io.deq
+    sdfStage.io.issue_in(lane).valid := initOut.valid && initOut.bits.hit
+    sdfStage.io.issue_in(lane).bits.ray := initOut.bits.ray
+    sdfStage.io.issue_in(lane).bits.meta := initOut.bits.meta
+    initOut.ready := Mux(initOut.bits.hit, sdfStage.io.issue_in(lane).ready, earlyQ.io.enq(lane).ready)
 
-    val sdfOut = sdfStage.io.out(lane)
-    earlyQ.io.enq(lane + 2).valid := sdfOut.valid && !sdfOut.bits.hit
+    val sdfOut = sdfStage.io.miss_out(lane)
+    earlyQ.io.enq(lane + 2).valid := sdfOut.valid
     earlyQ.io.enq(lane + 2).bits := missResult(sdfOut.bits.meta.rayId)
-    sdfDdaArb.io.in(lane).valid := sdfOut.valid && sdfOut.bits.hit
-    sdfDdaArb.io.in(lane).bits.ray := sdfOut.bits.ray
-    sdfDdaArb.io.in(lane).bits.meta := sdfOut.bits.meta
-    sdfDdaArb.io.in(lane).bits.traceSlot := 0.U
-    sdfOut.ready := Mux(sdfOut.bits.hit, sdfDdaArb.io.in(lane).ready, earlyQ.io.enq(lane + 2).ready)
+    sdfOut.ready := earlyQ.io.enq(lane + 2).ready
   }
 
-  ddaStage.io.in <> sdfDdaArb.io.out
+  sdfStage.io.dda_context_id <> ddaStage.io.init_alloc
+  ddaStage.io.context_in <> sdfStage.io.dda_context_out
 
-  traceController.io.cmd_write := ddaStage.io.cmd_write
-  ddaStage.io.slot_release := traceController.io.slot_release
-  traceJobQueue.io.enq <> ddaStage.io.trace_job_out
-  traceController.io.job_in <> traceJobQueue.io.deq
+  traceController.io.trace_claim <> ddaStage.io.trace_claim
+  ddaStage.io.trace_cmd_context := traceController.io.trace_cmd_context
+  ddaStage.io.trace_cmd_active := traceController.io.trace_cmd_active
+  for (lane <- 0 until GlobalConfig.traceNumWorkers * 2) {
+    traceController.io.trace_cmd(lane) <> ddaStage.io.trace_cmd(lane)
+  }
+  traceController.io.trace_dda_done := ddaStage.io.trace_dda_done
+  ddaStage.io.trace_stop := traceController.io.trace_stop
+  ddaStage.io.trace_release := traceController.io.trace_release
   traceController.io.triangleBaseAddress := io.triangle_base_address
   io.tri_dma_cmd <> traceController.io.triDmaCmd
   traceController.io.triDmaData <> io.tri_dma_data
@@ -201,7 +198,7 @@ class FpgaTop extends Module {
     }
   }
   io.batch_done := donePulse
-  io.protocol_error := protocolError
+  io.protocol_error := protocolError || ddaStage.io.watchdog_error
 }
 
 object FpgaTopGen {

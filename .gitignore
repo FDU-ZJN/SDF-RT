@@ -10,6 +10,7 @@
 *.coe
 *.ppm
 *.obj
+!csrc/killeroo_gold.obj
 *.tar
 *.tar.gz
 *.zip

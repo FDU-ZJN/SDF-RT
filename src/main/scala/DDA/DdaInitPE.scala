@@ -22,7 +22,8 @@ class DdaInitPE(
   private val distSelectLatency = mapLatency + cfg.faddLatency + cfg.faddLatency
   private val deltaLatency = cfg.fmulLatency + cfg.fdivLatency
   private val tMaxInputLatency = math.max(distSelectLatency, deltaLatency)
-  private val totalInitLatency = tMaxInputLatency + cfg.fmulLatency
+  private val relativeTMaxLatency = tMaxInputLatency + cfg.fmulLatency
+  private val totalInitLatency = relativeTMaxLatency + cfg.faddLatency
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
 
   private def alignToTarget(x: UInt, pathLatency: Int, targetLatency: Int): UInt =
@@ -171,6 +172,20 @@ class DdaInitPE(
   tMaxMulZ.io.a := distToMulZ
   tMaxMulZ.io.b := deltaToMulZ
 
+  // Triangle intersections report t from the original ray origin. Convert the
+  // cell-boundary distances, which are computed from the SDF hit position, to
+  // that same absolute coordinate before DDA traversal starts.
+  val rayBaseT = pipeUInt(io.in.bits.ray.dist, relativeTMaxLatency)
+  val tMaxAbsX = Module(new FADD(cfg))
+  val tMaxAbsY = Module(new FADD(cfg))
+  val tMaxAbsZ = Module(new FADD(cfg))
+  tMaxAbsX.io.a := tMaxMulX.io.result
+  tMaxAbsX.io.b := rayBaseT
+  tMaxAbsY.io.a := tMaxMulY.io.result
+  tMaxAbsY.io.b := rayBaseT
+  tMaxAbsZ.io.a := tMaxMulZ.io.result
+  tMaxAbsZ.io.b := rayBaseT
+
   val tDeltaCapX = alignToTarget(deltaDivX.io.result, deltaLatency, totalInitLatency)
   val tDeltaCapY = alignToTarget(deltaDivY.io.result, deltaLatency, totalInitLatency)
   val tDeltaCapZ = alignToTarget(deltaDivZ.io.result, deltaLatency, totalInitLatency)
@@ -192,9 +207,9 @@ class DdaInitPE(
   io.out.bits.subY := Mux(subYNegOut, (-1).S((addrWidth + 1).W), subYIdxOut.zext)
   io.out.bits.subZ := Mux(subZNegOut, (-1).S((addrWidth + 1).W), subZIdxOut.zext)
   io.out.bits.iter := 0.U
-  io.out.bits.tMaxX := tMaxMulX.io.result
-  io.out.bits.tMaxY := tMaxMulY.io.result
-  io.out.bits.tMaxZ := tMaxMulZ.io.result
+  io.out.bits.tMaxX := tMaxAbsX.io.res
+  io.out.bits.tMaxY := tMaxAbsY.io.res
+  io.out.bits.tMaxZ := tMaxAbsZ.io.res
   io.out.bits.tDeltaX := tDeltaCapX
   io.out.bits.tDeltaY := tDeltaCapY
   io.out.bits.tDeltaZ := tDeltaCapZ

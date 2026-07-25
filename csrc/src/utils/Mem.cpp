@@ -44,9 +44,11 @@ inline std::array<float, 3> sub3_local(const std::array<float, 3>& a, const std:
 std::vector<uint32_t> reorder_triangles_by_subgrid_bank_dispersion(
     std::vector<Triangle>& tris,
     std::vector<std::array<float, 3>>& triNormals,
+    std::vector<TriangleVertexNormals>& triVertexNormals,
     std::vector<std::pair<uint64_t, uint32_t>>& refs,
     int numBanks) {
-    if (tris.empty() || triNormals.size() != tris.size() || numBanks <= 1) {
+    if (tris.empty() || triNormals.size() != tris.size() ||
+        triVertexNormals.size() != tris.size() || numBanks <= 1) {
         return {};
     }
 
@@ -178,16 +180,20 @@ std::vector<uint32_t> reorder_triangles_by_subgrid_bank_dispersion(
 
     std::vector<Triangle> reorderedTris;
     std::vector<std::array<float, 3>> reorderedNormals;
+    std::vector<TriangleVertexNormals> reorderedVertexNormals;
     reorderedTris.reserve(triCount);
     reorderedNormals.reserve(triCount);
+    reorderedVertexNormals.reserve(triCount);
 
     for (uint32_t oldIdx : newToOld) {
         reorderedTris.push_back(tris[oldIdx]);
         reorderedNormals.push_back(triNormals[oldIdx]);
+        reorderedVertexNormals.push_back(triVertexNormals[oldIdx]);
     }
 
     tris.swap(reorderedTris);
     triNormals.swap(reorderedNormals);
+    triVertexNormals.swap(reorderedVertexNormals);
 
     uint64_t totalConflictSameBank = 0;
     for (size_t triId = 0; triId < triCount; ++triId) {
@@ -612,6 +618,7 @@ int get_cell_index(int i, int j, int k) {
 
 std::vector<Triangle> triangles;
 std::vector<std::array<float,3>> normals;
+std::vector<TriangleVertexNormals> triangle_vertex_normals;
 
 // Subgrid layout variables (accessible from other translation units)
 bool subgrid_layout_ready = false;
@@ -888,56 +895,33 @@ void loadModelFromObj(
     std::vector<Triangle>& triangles,
     std::vector<std::array<float, 3>>& normals) 
 {
+    triangles.clear();
+    normals.clear();
+    triangle_vertex_normals.clear();
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    // LoadObj 函数会自动处理文件解析和三角化
     bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename.c_str());
-    float minX = 1e9f, maxX = -1e9f;
-float minY = 1e9f, maxY = -1e9f;
-float minZ = 1e9f, maxZ = -1e9f;
-
-// 遍历解析出的所有顶点
-for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-    minX = std::min(minX, attrib.vertices[i]);
-    maxX = std::max(maxX, attrib.vertices[i]);
-    minY = std::min(minY, attrib.vertices[i+1]);
-    maxY = std::max(maxY, attrib.vertices[i+1]);
-    minZ = std::min(minZ, attrib.vertices[i+2]);
-    maxZ = std::max(maxZ, attrib.vertices[i+2]);
-}
-
-float centerX = (minX + maxX) * 0.5f;
-float centerY = (minY + maxY) * 0.5f;
-float centerZ = (minZ + maxZ) * 0.5f;
-
-printf("Model center: %f, %f, %f\n", centerX, centerY, centerZ);
+    if (!warn.empty()) { std::cerr << "Warn: " << warn << std::endl; }
     if (!err.empty()) { std::cerr << "Err: " << err << std::endl; }
     if (!ret) { return; }
-    // 遍历所有 shape
+
     for (const auto& shape : shapes) {
         size_t index_offset = 0;
-        // 遍历 shape 中的每个面 (face)
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
             size_t fv = size_t(shape.mesh.num_face_vertices[f]);
-            Triangle tri;
-            int normal_idx = shape.mesh.indices[index_offset].normal_index;
-            if(normal_idx < 0) {
-                std::cerr << "Warning: Face " << f << " has no normal index. Skipping.\n";
+            if (fv != 3) {
+                std::cerr << "OBJ loader returned a non-triangle face at " << f << std::endl;
                 index_offset += fv;
                 continue;
             }
-            std::array<float, 3> tri_normal = {
-                attrib.normals[3 * normal_idx + 0],
-                attrib.normals[3 * normal_idx + 1],
-                attrib.normals[3 * normal_idx + 2]
-            };
-            
+            Triangle tri;
+            TriangleVertexNormals vertexNormals{};
+            bool hasAllVertexNormals = true;
             for (size_t v = 0; v < fv; v++) {
                 tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
-                // 获取坐标
                 float vx = attrib.vertices[3 * idx.vertex_index + 0];
                 float vy = attrib.vertices[3 * idx.vertex_index + 1];
                 float vz = attrib.vertices[3 * idx.vertex_index + 2];
@@ -945,10 +929,39 @@ printf("Model center: %f, %f, %f\n", centerX, centerY, centerZ);
                 if (v == 0) tri.v0 = {vx, vy, vz};
                 else if (v == 1) tri.v1 = {vx, vy, vz};
                 else if (v == 2) tri.v2 = {vx, vy, vz};
+                if (idx.normal_index >= 0) {
+                    vertexNormals[v] = {
+                        attrib.normals[3 * idx.normal_index + 0],
+                        attrib.normals[3 * idx.normal_index + 1],
+                        attrib.normals[3 * idx.normal_index + 2]
+                    };
+                } else {
+                    hasAllVertexNormals = false;
+                }
             }
-            
+
+            const auto edge1 = sub3_local(tri.v1, tri.v0);
+            const auto edge2 = sub3_local(tri.v2, tri.v0);
+            std::array<float, 3> tri_normal = {
+                edge1[1] * edge2[2] - edge1[2] * edge2[1],
+                edge1[2] * edge2[0] - edge1[0] * edge2[2],
+                edge1[0] * edge2[1] - edge1[1] * edge2[0]
+            };
+            const float normalLength = std::sqrt(len2_local(tri_normal));
+            if (normalLength > EPSILON) {
+                tri_normal = mul3_local(tri_normal, 1.0f / normalLength);
+            } else if (hasAllVertexNormals) {
+                tri_normal = vertexNormals[0];
+            } else {
+                tri_normal = {0.0f, 0.0f, 1.0f};
+            }
+            if (!hasAllVertexNormals) {
+                vertexNormals = {tri_normal, tri_normal, tri_normal};
+            }
+
             triangles.push_back(tri);
             normals.push_back(tri_normal);
+            triangle_vertex_normals.push_back(vertexNormals);
             
             index_offset += fv;
         }
@@ -1062,7 +1075,8 @@ void build_subgrid_triangle_index(
      }
 
     const std::vector<uint32_t> oldToNewTriId =
-        reorder_triangles_by_subgrid_bank_dispersion(triangles, normals, refs, rt::config::kTriNumBanks);
+        reorder_triangles_by_subgrid_bank_dispersion(
+            triangles, normals, triangle_vertex_normals, refs, rt::config::kTriNumBanks);
 
     if (!oldToNewTriId.empty()) {
         for (auto& ref : refs) {
@@ -1095,8 +1109,13 @@ void build_subgrid_triangle_index(
         }
 
         const size_t span = j - i;
+        if (span > 0x3FFu) {
+            throw std::runtime_error(
+                "subgrid triangle count exceeds the 10-bit hardware limit: " +
+                std::to_string(span));
+        }
         const uint16_t count = static_cast<uint16_t>(
-            std::min<size_t>(span, 0x3FFu));
+            span);
         subgrid_tri_meta[key] = SubgridTriMeta{start, count};
         if (count > subgrid_max_tri_per_cell) {
             subgrid_max_tri_per_cell = count;

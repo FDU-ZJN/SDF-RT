@@ -17,6 +17,7 @@
 #include "verilated_vcd_c.h"
 
 #include <GlobalConfig.h>
+#include <HostRenderer.h>
 #include <Mem.h>
 #include <SimUtils.h>
 
@@ -140,24 +141,6 @@ private:
     uint64_t statuses_ = 0;
 };
 
-constexpr float kAmbient  = 0.15f;
-constexpr float kLightDirX = 0.57735f;
-constexpr float kLightDirY = 0.57735f;
-constexpr float kLightDirZ = 0.57735f;
-
-void shading(const std::array<float, 3>& normal, uint8_t& r, uint8_t& g, uint8_t& b) {
-    float dot = normal[0] * kLightDirX + normal[1] * kLightDirY + normal[2] * kLightDirZ;
-    if (dot < 0.0f) dot = 0.0f;
-
-    float brightness = kAmbient + dot;
-    if (brightness > 1.0f) brightness = 1.0f;
-
-    uint8_t c = static_cast<uint8_t>(brightness * 255.0f + 0.5f);
-    r = c;
-    g = c;
-    b = c;
-}
-
 std::string modelMemDirFromObjPath(const std::string& objPath) {
     return (std::filesystem::path("./vivado_mem") /
             ("mem_" + std::filesystem::path(objPath).stem().string())).string();
@@ -213,6 +196,7 @@ int main(int argc, char** argv) {
 
     cout << "FPGA_TOP " << runtimeWidth << "x" << runtimeHeight << " frame rendering..." << endl;
     Verilated::commandArgs(argc, argv);
+    host_renderer::HostRenderer renderer(runtimeWidth, runtimeHeight);
 
     printf("Loading model...\n");
     loadModelFromObj(kObjPath, triangles, normals);
@@ -222,7 +206,7 @@ int main(int argc, char** argv) {
     }
 
     const auto bounds = computeScaledBoundsFromTriangles(triangles);
-    const array<float, 3> setupOrigin = {0.0f, 0.4f, 2.8f};
+    const array<float, 3> setupOrigin = renderer.cameraOrigin();
     const array<float, 3> gridMin = {bounds[0], bounds[1], bounds[2]};
     const array<float, 3> gridMax = {bounds[3], bounds[4], bounds[5]};
 
@@ -249,11 +233,20 @@ int main(int argc, char** argv) {
         std::cerr << "SDF cache is empty." << endl;
         return 2;
     }
+    if (num_cells > 2048) {
+        std::cerr << "Active SDF cell count " << num_cells
+                  << " exceeds the 2048-entry hardware limit." << std::endl;
+        return 2;
+    }
 
     build_subgrid_triangle_index(
         gridMin, gridMax,
         kDdaGlobalRes, kDdaGlobalRes, kDdaGlobalRes,
         kDdaSubRes, kDdaSubRes, kDdaSubRes);
+    if (get_compact_max_tri_per_subgrid() > 1023) {
+        std::cerr << "Subgrid triangle count exceeds the 10-bit hardware limit." << std::endl;
+        return 2;
+    }
     writeSubgridTriCountHistogramPPM("subgrid_tricount_hist_fpga.ppm", kDdaGlobalRes, kDdaSubRes);
 
     const std::string memExportDir = modelMemDirFromObjPath(kObjPath);
@@ -345,10 +338,7 @@ int main(int argc, char** argv) {
             const size_t id = nextRay + static_cast<size_t>(lane);
             const int x = id % static_cast<size_t>(runtimeWidth);
             const int y = id / static_cast<size_t>(runtimeWidth);
-            const float a = static_cast<float>(2 * x - runtimeWidth);
-            const float b = static_cast<float>(runtimeHeight - 2 * y);
-            const float z = -1.8f * static_cast<float>(runtimeHeight);
-            const float invLen = 1.0f / std::sqrt(a * a + b * b + z * z);
+            const host_renderer::Ray ray = renderer.makeCameraRay(x, y);
             const uint16_t rayId = lane < static_cast<int>(rayCount) ? freeRayIds[lane] : 0U;
             uint32_t* originX[] = {&dut->io_ray_in_0_origin_x, &dut->io_ray_in_1_origin_x};
             uint32_t* originY[] = {&dut->io_ray_in_0_origin_y, &dut->io_ray_in_1_origin_y};
@@ -357,8 +347,8 @@ int main(int argc, char** argv) {
             uint32_t* dirY[] = {&dut->io_ray_in_0_dir_y, &dut->io_ray_in_1_dir_y};
             uint32_t* dirZ[] = {&dut->io_ray_in_0_dir_z, &dut->io_ray_in_1_dir_z};
             uint16_t* ids[] = {&dut->io_ray_in_0_rayId, &dut->io_ray_in_1_rayId};
-            *originX[lane] = floatToU32(setupOrigin[0]); *originY[lane] = floatToU32(setupOrigin[1]); *originZ[lane] = floatToU32(setupOrigin[2]);
-            *dirX[lane] = floatToU32(a * invLen); *dirY[lane] = floatToU32(b * invLen); *dirZ[lane] = floatToU32(z * invLen);
+            *originX[lane] = floatToU32(ray.origin[0]); *originY[lane] = floatToU32(ray.origin[1]); *originZ[lane] = floatToU32(ray.origin[2]);
+            *dirX[lane] = floatToU32(ray.direction[0]); *dirY[lane] = floatToU32(ray.direction[1]); *dirZ[lane] = floatToU32(ray.direction[2]);
             *ids[lane] = rayId;
         }
         triangleDma.drive(dut);
@@ -381,6 +371,7 @@ int main(int argc, char** argv) {
         const uint16_t resultIds[2] = {dut->io_result_0_meta_rayId, dut->io_result_1_meta_rayId};
         const bool resultHits[2] = {dut->io_result_0_hit != 0, dut->io_result_1_hit != 0};
         const uint32_t resultHitIds[2] = {dut->io_result_0_hitId, dut->io_result_1_hitId};
+        const uint32_t resultHitTs[2] = {dut->io_result_0_hitT, dut->io_result_1_hitT};
         tick(dut);
         triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
@@ -415,17 +406,29 @@ int main(int argc, char** argv) {
                 const size_t compactHitId = static_cast<size_t>(resultHitIds[lane]);
                 const bool compactIdValid = compactHitId < triangles_compact_src_ids.size();
                 const size_t originalTriId = compactIdValid ? static_cast<size_t>(triangles_compact_src_ids[compactHitId]) : 0U;
-                if (resultHits[lane] && compactIdValid && originalTriId < normals.size()) {
-                    uint8_t r, g, b;
-                    shading(normals[originalTriId], r, g, b);
-                    image[idx + 0] = r;
-                    image[idx + 1] = g;
-                    image[idx + 2] = b;
+                const int pixelX = static_cast<int>(pixelIndex % runtimeWidth);
+                const int pixelY = static_cast<int>(pixelIndex / runtimeWidth);
+                const host_renderer::Ray ray = renderer.makeCameraRay(pixelX, pixelY);
+                std::array<uint8_t, 3> encoded{};
+                if (resultHits[lane]) {
+                    const float hitT = u32ToFloat(resultHitTs[lane]);
+                    if (!compactIdValid || originalTriId >= triangles.size() ||
+                        originalTriId >= triangle_vertex_normals.size() ||
+                        !std::isfinite(hitT) || hitT < 0.0f) {
+                        std::cerr << "Invalid hardware hit: compact_id=" << compactHitId
+                                  << " original_id=" << originalTriId
+                                  << " hitT=" << hitT << std::endl;
+                        delete dut;
+                        return 4;
+                    }
+                    encoded = renderer.encode(renderer.shadeHit(
+                        ray, hitT, triangles[originalTriId], triangle_vertex_normals[originalTriId]));
                 } else {
-                    image[idx + 0] = 0;
-                    image[idx + 1] = 0;
-                    image[idx + 2] = 0;
+                    encoded = renderer.encode(renderer.sampleEnvironment(ray.direction));
                 }
+                image[idx + 0] = encoded[0];
+                image[idx + 1] = encoded[1];
+                image[idx + 2] = encoded[2];
                 ++traceResultsReceived;
                 if (resultHits[lane]) ++traceHits; else ++traceMisses;
             }
@@ -444,11 +447,22 @@ int main(int argc, char** argv) {
             std::cerr << "Trace results: " << traceResultsReceived << " / " << framePixels
                       << "  sent: " << nextRay
                       << endl;
+            for (size_t rayId = 0; rayId < rayIdToPixel.size(); ++rayId) {
+                if (rayIdToPixel[rayId] >= 0) {
+                    const size_t pixel = static_cast<size_t>(rayIdToPixel[rayId]);
+                    std::cerr << "Outstanding RayID " << rayId
+                              << " pixel=" << pixel
+                              << " xy=(" << pixel % static_cast<size_t>(runtimeWidth)
+                              << "," << pixel / static_cast<size_t>(runtimeWidth) << ")"
+                              << endl;
+                }
+            }
             delete dut;
             return 4;
         }
 
-        if (kEnableProgressPrint && traceResultsReceived > 0 && traceResultsReceived % 1000 == 0) {
+        if (kEnableProgressPrint && resultFire &&
+            traceResultsReceived > 0 && traceResultsReceived % 1000 == 0) {
             std::printf("\rTrace results: %zu / %zu (%.1f%%) | Cycles: %lu",
                         traceResultsReceived, framePixels,
                         100.0 * static_cast<double>(traceResultsReceived) / static_cast<double>(framePixels),
@@ -474,6 +488,11 @@ int main(int argc, char** argv) {
     std::cout << "  DataMover commands: " << triangleDma.commands()
               << "  data beats: " << triangleDma.dataBeats()
               << "  statuses: " << triangleDma.statuses() << std::endl;
+    if (dut->io_protocol_error) {
+        std::cerr << "FPGA backend protocol error (including DDA traversal watchdog)." << std::endl;
+        delete dut;
+        return 5;
+    }
     if (dut->io_tri_dma_read_error ||
         dut->io_tri_dma_malformed_line_count != 0 ||
         dut->io_tri_dma_status_error_count != 0 ||
@@ -484,7 +503,7 @@ int main(int argc, char** argv) {
         triangleDma.dataBeats() != kTriangleDmaBeats * triangleDma.commands()) {
         std::cerr << "Triangle DataMover verification failed: error or incomplete transaction." << std::endl;
         delete dut;
-        return 5;
+        return 6;
     }
 
     const std::string outputPath =

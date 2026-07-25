@@ -688,6 +688,14 @@ class TriangleMemCachedBank(
   val cacheData = Seq.fill(ways)(Module(new TriCacheDataArray(totalBits, numSets, useXpmCache)))
   val cacheTag = Seq.fill(ways)(Module(new TriCacheTagArray(tagW, numSets, useXpmCache)))
   val cacheValid = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(false.B)))))
+  // Authoritative current tag metadata for validating a pipelined SRAM tag
+  // snapshot against the data line that is installed now.  This closes every
+  // refill window in which an old lookup could otherwise read a newer line
+  // from the same direct-mapped set.
+  val cacheTagShadow = Reg(Vec(ways, Vec(numSets, UInt(tagW.W))))
+  // Version each cache line so a tag snapshot can never be paired with data
+  // installed by a later refill of the same direct-mapped set.
+  val cacheGeneration = RegInit(VecInit(Seq.fill(ways)(VecInit(Seq.fill(numSets)(false.B)))))
   val cacheLru = if (ways > 1) Some(RegInit(VecInit(Seq.fill(numSets)(false.B)))) else None
 
   val pendingReqs = Reg(Vec(mshrEntries, Vec(mergeQueueDepth, new BankReq)))
@@ -711,16 +719,18 @@ class TriangleMemCachedBank(
   private val respQueueDepth = 16
   val tagReqValid = RegInit(false.B)
   val tagReq = Reg(new BankReq)
+  val tagReqGeneration = Reg(Vec(ways, Bool()))
+  val tagReqWayValid = Reg(Vec(ways, Bool()))
   val tagPipeValid = RegInit(false.B)
   val tagPipeReq = Reg(new BankReq)
   val tagPipeData = Reg(Vec(ways, UInt(tagW.W)))
   val tagPipeWayValid = Reg(Vec(ways, Bool()))
+  val tagPipeGeneration = Reg(Vec(ways, Bool()))
   val dataPipeValid = RegInit(VecInit(Seq.fill(dataReadLatency)(false.B)))
   val dataPipeReq = Reg(Vec(dataReadLatency, new BankReq))
   val dataPipeWay = Reg(Vec(dataReadLatency, UInt(math.max(1, log2Ceil(ways)).W)))
   val missQ = Module(new Queue(new BankReq, reqQueueDepth, useSyncReadMem = true))
   val respQ = Module(new Queue(new BankResp, respQueueDepth, useSyncReadMem = true))
-
   val wayReadEn = Wire(Vec(ways, Bool()))
   val wayWriteEn = Wire(Vec(ways, Bool()))
   val tagReadEn = Wire(Vec(ways, Bool()))
@@ -769,7 +779,12 @@ class TriangleMemCachedBank(
   val headSet = setIdxOf(headReq.addr)
   val lookupSet = setIdxOf(tagPipeReq.addr)
   val lookupTag = tagOf(tagPipeReq.addr)
-  val lookupHitWayOH = VecInit((0 until ways).map(w => tagPipeWayValid(w) && tagPipeData(w) === lookupTag))
+  val lookupHitWayOH = VecInit((0 until ways).map(w =>
+    tagPipeWayValid(w) &&
+      tagPipeData(w) === lookupTag &&
+      cacheTagShadow(w)(lookupSet) === lookupTag &&
+      tagPipeGeneration(w) === cacheGeneration(w)(lookupSet)
+  ))
   val lookupHit = lookupHitWayOH.asUInt.orR
   val lookupHitWayIdx = OHToUInt(lookupHitWayOH)
   private val victimWayForMiss =
@@ -812,16 +827,36 @@ class TriangleMemCachedBank(
     when(tagReqValid) {
       tagPipeReq := tagReq
       for (w <- 0 until ways) {
-        val bypassHit = refillTagBypassValid &&
+        val priorRefillBypass = refillTagBypassValid &&
           refillTagBypassSet === setIdxOf(tagReq.addr) &&
           refillTagBypassWay === w.U
-        tagPipeData(w) := Mux(bypassHit, refillTagBypassData, wayTagData(w))
-        tagPipeWayValid(w) := Mux(bypassHit, true.B, cacheValid(w)(setIdxOf(tagReq.addr)))
+        // A tag SRAM read launched before this refill still returns the old
+        // tag on the refill cycle.  Bypass the tag being written now as well
+        // as the registered one-cycle refill bypass.
+        val currentRefillBypass = refillAccept &&
+          pendingSet(io.refillDone.bits.id) === setIdxOf(tagReq.addr) &&
+          pendingVictimWay(io.refillDone.bits.id) === w.U
+        tagPipeData(w) := Mux(currentRefillBypass, pendingTag(io.refillDone.bits.id),
+          Mux(priorRefillBypass, refillTagBypassData, wayTagData(w)))
+        tagPipeWayValid(w) := Mux(currentRefillBypass || priorRefillBypass,
+          true.B, tagReqWayValid(w))
+        // The default version is captured when the tag SRAM read is launched,
+        // not when its result is consumed.  Otherwise a refill between those
+        // events can pair the old SRAM tag with the new cache generation.
+        tagPipeGeneration(w) := Mux(currentRefillBypass,
+          !cacheGeneration(w)(setIdxOf(tagReq.addr)),
+          Mux(priorRefillBypass,
+            cacheGeneration(w)(setIdxOf(tagReq.addr)),
+            tagReqGeneration(w)))
       }
     }
     tagReqValid := reqFire
     when(reqFire) {
       tagReq := headReq
+      for (w <- 0 until ways) {
+        tagReqGeneration(w) := cacheGeneration(w)(headSet)
+        tagReqWayValid(w) := cacheValid(w)(headSet)
+      }
     }
   }
 
@@ -895,6 +930,8 @@ class TriangleMemCachedBank(
         wayWriteEn(w) := true.B
         tagWriteEn(w) := true.B
         cacheValid(w)(pendingSet(doneId)) := true.B
+        cacheTagShadow(w)(pendingSet(doneId)) := pendingTag(doneId)
+        cacheGeneration(w)(pendingSet(doneId)) := !cacheGeneration(w)(pendingSet(doneId))
       }
     }
     tagWriteData := pendingTag(doneId)
@@ -902,6 +939,24 @@ class TriangleMemCachedBank(
     refillTagBypassSet := pendingSet(doneId)
     refillTagBypassWay := pendingVictimWay(doneId)
     refillTagBypassData := pendingTag(doneId)
+    // A tag lookup can already be parked in tagPipe while a refill overwrites
+    // the same direct-mapped set.  Update the parked lookup's tag snapshot as
+    // part of the refill; otherwise it may retain a stale hit decision and,
+    // after the refill stall clears, read the newly written data under the old
+    // request address.
+    // Only rewrite the snapshot when the current lookup remains parked.  If
+    // it advances this cycle, the block above has already loaded tagPipe for
+    // tagReq (including the current-refill bypass).  Applying the old
+    // lookupSet here would corrupt that next request's tag snapshot.
+    when(tagPipeValid && !tagPipeCanAdvance && lookupSet === pendingSet(doneId)) {
+      for (w <- 0 until ways) {
+        when(pendingVictimWay(doneId) === w.U) {
+          tagPipeData(w) := pendingTag(doneId)
+          tagPipeWayValid(w) := true.B
+          tagPipeGeneration(w) := !cacheGeneration(w)(pendingSet(doneId))
+        }
+      }
+    }
     if (ways > 1) {
       cacheLru.get(pendingSet(doneId)) := !pendingVictimWay(doneId)
     }
@@ -1026,9 +1081,13 @@ class TriangleMemMultiPort(
       val mshrError = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
       val mshrBank = Reg(Vec(mshrEntries, UInt(bankSelW.W)))
       val mshrAddr = Reg(Vec(mshrEntries, UInt(GlobalConfig.triMemAddrWidth.W)))
-      val refillLines = Module(new TriMemRefillLineArray(
-        c.cacheLineTriangles * 9 * c.cfg.totalWidth, mshrEntries, GlobalConfig.memImplMode == 2
-      ))
+      // Keep the small number of completed DMA lines in registers.  A
+      // synchronous refill RAM adds a second, implicit read-latency contract
+      // between mshrDone and refillReadValid; under reordered status/data
+      // completion that can expose the RAM's stale output to a bank refill.
+      // Four 1152-bit lines are small enough to make the ownership explicit.
+      val refillLines = Reg(Vec(mshrEntries,
+        UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W)))
       val refillReadValid = RegInit(false.B)
       val refillReadId = Reg(UInt(mshrIdW.W))
 
@@ -1061,7 +1120,7 @@ class TriangleMemMultiPort(
         val doneSel = OHToUInt(doneSelOH)
         banks(b).io.refillDone.valid := doneMatches.asUInt.orR
         banks(b).io.refillDone.bits.id := doneSel
-        banks(b).io.refillDone.bits.data := Mux(mshrError(doneSel), 0.U, refillLines.io.rd_data)
+        banks(b).io.refillDone.bits.data := Mux(mshrError(doneSel), 0.U, refillLines(doneSel))
         when(banks(b).io.refillDone.fire) {
           mshrDelivered(doneSel) := true.B
         }
@@ -1141,15 +1200,13 @@ class TriangleMemMultiPort(
         mshrError(respId) := backend.io.resp.bits.error
       }
 
-      refillLines.io.wr_en := backend.io.refillWrite.valid
-      refillLines.io.wr_addr := backend.io.refillWrite.bits.id
-      refillLines.io.wr_data := backend.io.refillWrite.bits.data
+      when(backend.io.refillWrite.valid) {
+        refillLines(backend.io.refillWrite.bits.id) := backend.io.refillWrite.bits.data
+      }
       val refillReadyVec = VecInit((0 until mshrEntries).map(i =>
         mshrValid(i) && mshrDone(i) && !mshrDelivered(i)
       ))
       val refillReadReq = !refillReadValid && refillReadyVec.asUInt.orR
-      refillLines.io.rd_en := refillReadReq
-      refillLines.io.rd_addr := OHToUInt(PriorityEncoderOH(refillReadyVec))
       when(refillReadReq) {
         refillReadId := OHToUInt(PriorityEncoderOH(refillReadyVec))
         refillReadValid := true.B

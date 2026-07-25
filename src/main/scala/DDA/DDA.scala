@@ -12,30 +12,37 @@ class DDA(
   maxTraversalSteps: Int = 1024
 ) extends Module {
   val io = IO(new Bundle {
-    val in = Flipped(Decoupled(new DdaTraversalReq(cfg, addrWidth)))
-    val grid_min = Input(new Vec3(cfg))
-    val inv_sub_voxel = Input(new Vec3(cfg))
-    val trace_job_out = Decoupled(new DdaTraceJobDesc(cfg, addrWidth, maxTraversalSteps))
-    val cmd_write = Valid(new DdaTraceCmdWrite(addrWidth, maxTraversalSteps))
-    val slot_release = Vec(GlobalConfig.traceNumWorkers, Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W))))
+    val init_alloc = Decoupled(UInt(GlobalConfig.ddaTraceSlotBits.W))
+    val context_in = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
+    val trace_claim = Decoupled(new TraceContextDesc(cfg, addrWidth))
+    val trace_cmd_context = Input(Vec(GlobalConfig.traceNumWorkers * 2, UInt(GlobalConfig.ddaTraceSlotBits.W)))
+    val trace_cmd_active = Input(Vec(GlobalConfig.traceNumWorkers * 2, Bool()))
+    val trace_cmd = Vec(GlobalConfig.traceNumWorkers * 2, Decoupled(new TraceCellCmd(cfg, addrWidth)))
+    val trace_dda_done = Output(Vec(GlobalConfig.traceNumWorkers * 2, Bool()))
+    val trace_stop = Vec(GlobalConfig.traceNumWorkers, Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W))))
+    val trace_release = Vec(GlobalConfig.traceNumWorkers, Flipped(Valid(UInt(GlobalConfig.ddaTraceSlotBits.W))))
+    val watchdog_error = Output(Bool())
   })
 
   val scheduler = Module(new DdaScheduler(cfg, addrWidth, maxTraversalSteps))
-  val initPE = Module(new DdaInitPE(cfg, addrWidth))
   val stepPE = Module(new DdaStepPipelinePE(cfg, addrWidth, globalRes, subRes, maxTraversalSteps))
   val subgridMem = Module(new SubgridMetaMemDPI(addrWidth, latency = GlobalConfig.subgridMemDpiLatency))
 
-  scheduler.io.issue_in <> io.in
-  scheduler.io.trace_job_out <> io.trace_job_out
-  scheduler.io.slot_release := io.slot_release
-  io.cmd_write := scheduler.io.cmd_write
+  io.init_alloc <> scheduler.io.init_alloc
+  scheduler.io.context_in <> io.context_in
+  io.trace_claim <> scheduler.io.trace_claim
+  scheduler.io.trace_cmd_context := io.trace_cmd_context
+  scheduler.io.trace_cmd_active := io.trace_cmd_active
+  for (lane <- 0 until GlobalConfig.traceNumWorkers * 2) {
+    io.trace_cmd(lane) <> scheduler.io.trace_cmd(lane)
+  }
+  io.trace_dda_done := scheduler.io.trace_dda_done
+  scheduler.io.trace_stop := io.trace_stop
+  scheduler.io.trace_release := io.trace_release
+  io.watchdog_error := scheduler.io.watchdog_error
 
-  scheduler.io.init_in <> initPE.io.in
-  scheduler.io.init_out <> initPE.io.out
   scheduler.io.step_in <> stepPE.io.in
   scheduler.io.step_out <> stepPE.io.out
-  initPE.io.grid_min := io.grid_min
-  initPE.io.inv_sub_voxel := io.inv_sub_voxel
 
   subgridMem.io.clk := clock
   subgridMem.io.reset := reset

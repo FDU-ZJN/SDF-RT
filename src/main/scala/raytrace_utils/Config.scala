@@ -10,7 +10,6 @@ object GlobalConfig {
   val triMemNumPEs = 1
   val triMemCacheLineTriangles = 4
   val triMemNumBanks = 4
-  val ddaNumWorkers = 1
   val sdfStepNumWorkers = 2
 
   private var useBlackBoxState = 0
@@ -53,22 +52,14 @@ object GlobalConfig {
     try body finally useFloatIPState = prev
   }
 
-  val ingressFifoDepth = 16
   val resultArbiterFifoDepth = 2
-  val initPostQueueDepth = 64
-  val ddaInitQueueDepth = 16
-  val ddaCompletionQueueDepth = 8
-  val ddaRetryQueueDepth = 8
-  val traceJobQueueDepth = 8
-  val ddaTraceSlotCount = 16
+  val initOutputQueueDepth = 64
+  val ddaTraceSlotCount = 32
   val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
+  val ddaTraceCmdDepth = 8
 
   val sdfRetryQueueDepth = 64
   val sdfFinalQueueDepth = 64
-  val sdfPipelineReserve = 32
-  val sdfMissWritebackQueueDepth = 4
-
-  val normalMemDpiLatency = 3
   val triMemDpiLatency = 3
   val triMemCacheHitLatency = 1
   val triMemMissPenalty = 60
@@ -86,11 +77,11 @@ object GlobalConfig {
   val TriOriginalNum = 16000
 
   val GlobalSdfRes = 16
-  val LocalSdfRes = 4
+  val LocalSdfRes = 8
   val LocalCell = 2048
 
   val GlobalDdaRes = 16
-  val SubDdaRes = 1
+  val SubDdaRes = 2
   val DdaRes= GlobalDdaRes*SubDdaRes
 
   val triMemAddrWidth = 32
@@ -130,16 +121,15 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 64
-  val sdfThreshold1 = 0.01f
-  val sdfThreshold2 = 0.02f
-  val sdfThreshold3 = 0.04f
+  // Conservative handoff to DDA: the scene sweep shows full coverage with no
+  // surface overshoot at this threshold for all three SDF hierarchy levels.
+  val sdfThreshold1 = 0.32f
+  val sdfThreshold2 = 0.32f
+  val sdfThreshold3 = 0.32f
   val sdfStepScale = 0.6f
-  val sdfMinStep = -0.500f
-  val sdfHitAdvance = 1e-3f
-  val sdfHitBackoffN = 1
 
 
-  val ddaMaxSteps =10
+  val ddaMaxSteps = 3 * DdaRes
 
   private def alignUp(value: Int, quantum: Int): Int = {
     require(quantum > 0, s"alignment quantum must be > 0, got $quantum")
@@ -218,20 +208,13 @@ case class SdfPeConfig(
   threshold3: Float = GlobalConfig.sdfThreshold3,
   threshold2: Float = GlobalConfig.sdfThreshold2,
   threshold1: Float = GlobalConfig.sdfThreshold1,
-  StepScale: Float = GlobalConfig.sdfStepScale,
-  minStep: Float = GlobalConfig.sdfMinStep,
-  hitAdvance: Float = GlobalConfig.sdfHitAdvance,
-  hitBackoffN: Int = GlobalConfig.sdfHitBackoffN
+  StepScale: Float = GlobalConfig.sdfStepScale
 ) {
   val addrWidth = GlobalConfig.addrWidth
-  require(hitBackoffN >= 1, s"hitBackoffN must be >= 1, got $hitBackoffN")
   require(StepScale > 0.0f, s"StepScale must be > 0, got $StepScale")
   val threshold1Bits = java.lang.Float.floatToRawIntBits(threshold1)
   val threshold2Bits = java.lang.Float.floatToRawIntBits(threshold2)
   val threshold3Bits = java.lang.Float.floatToRawIntBits(threshold3)
   val thresholdBits = threshold1Bits
   val stepScaleBits = java.lang.Float.floatToRawIntBits(StepScale)
-  val minStepBits = java.lang.Float.floatToRawIntBits(minStep)
-  val hitAdvanceBits = java.lang.Float.floatToRawIntBits(hitAdvance)
-  val hitBackoffBits = java.lang.Float.floatToRawIntBits(hitAdvance * hitBackoffN.toFloat)
 }

@@ -72,12 +72,6 @@ class RayIssue(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends
   val meta = new RayMeta(addrWidth)
 }
 
-class TraceHitUpdate(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val hit = Bool()
-  val hitId = UInt(addrWidth.W)
-  val hitT = UInt(cfg.totalWidth.W)
-}
-
 class SdfRayReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
@@ -96,25 +90,6 @@ class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
 class SdfMemReq(addrWidth: Int = 32) extends Bundle {
   val globalIdx = UInt(addrWidth.W)
   val localIdx = UInt(addrWidth.W)
-}
-
-class NormalMemReq(addrWidth: Int = 16, tagWidth: Int = 2) extends Bundle {
-  val addr = UInt(addrWidth.W)
-  val tag = UInt(tagWidth.W)
-}
-
-class NormalMemResp(tagWidth: Int = 2) extends Bundle {
-  val data = UInt(GlobalConfig.normalMemDataWidth.W)
-  val tag = UInt(tagWidth.W)
-}
-
-class SdfInitReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val rd = new Vec3(cfg)
-  val meta = new RayMeta(addrWidth)
-}
-
-class SdfBypassResp(addrWidth: Int = 32) extends Bundle {
-  val meta = new RayMeta(addrWidth)
 }
 
 class InitStageResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
@@ -161,58 +136,22 @@ class DdaSubgridMetaResp extends Bundle {
   val triCount = UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)
 }
 
-class DdaTraversalResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val meta = new RayMeta(addrWidth)
-  val hit = Bool()
-  val hitId = UInt(addrWidth.W)
-  val hitT = UInt(cfg.totalWidth.W)
-}
-
-class DdaTraceCmd(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val tri = new TriBatch(addrWidth)
-  val subX = SInt((addrWidth + 1).W)
-  val subY = SInt((addrWidth + 1).W)
-  val subZ = SInt((addrWidth + 1).W)
-  val iter = UInt(16.W)
-}
-
-class DdaTraceJob(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val cmdCount = UInt(log2Ceil(maxCmds + 1).W)
-  val cmds = Vec(maxCmds, new TriBatch(addrWidth))
-}
-
-class DdaTraceJobDesc(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val cmdCount = UInt(log2Ceil(maxCmds + 1).W)
-  val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
-}
-
 class DdaStepResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val ctx = new DdaContext(cfg, addrWidth)
   val done = Bool()
+  val watchdog = Bool()
   val emitCmd = Bool()
   val tri = new TriBatch(addrWidth)
+  val cellExitT = UInt(cfg.totalWidth.W)
 }
 
-class DdaTraceCmdWrite(addrWidth: Int = 32, maxCmds: Int = 1024) extends Bundle {
-  val slotIdx = UInt(GlobalConfig.ddaTraceSlotBits.W)
-  val cmdIdx = UInt(math.max(1, log2Ceil(maxCmds)).W)
+class TraceCellCmd(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val tri = new TriBatch(addrWidth)
+  val cellExitT = UInt(cfg.totalWidth.W)
 }
 
-class DdaTraceRsp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+class TraceContextDesc(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val contextId = UInt(GlobalConfig.ddaTraceSlotBits.W)
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
-  val hit = Bool()
-  val hitId = UInt(addrWidth.W)
-  val hitT = UInt(cfg.totalWidth.W)
-  val subX = SInt((addrWidth + 1).W)
-  val subY = SInt((addrWidth + 1).W)
-  val subZ = SInt((addrWidth + 1).W)
-  val iter = UInt(16.W)
 }

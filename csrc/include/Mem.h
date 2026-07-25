@@ -33,6 +33,8 @@ struct Triangle {
     std::array<float,3> v2;
 };
 
+using TriangleVertexNormals = std::array<std::array<float, 3>, 3>;
+
 void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,
@@ -82,6 +84,7 @@ bool get_compact_triangle_by_addr(
 
 extern std::vector<Triangle> triangles;
 extern std::vector<std::array<float,3>> normals;
+extern std::vector<TriangleVertexNormals> triangle_vertex_normals;
 extern std::vector<float> global_sdf_flat;
 extern std::vector<float> local_sdf_flat;
 

@@ -4,24 +4,23 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 
-class TraceController(
-  c: TriPeConfig = TriPeConfig(),
-  maxCmds: Int = GlobalConfig.ddaMaxSteps
-) extends Module {
+class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   private val numWorkers = GlobalConfig.traceNumWorkers
   private val ctxCount = 2
-  private val ctxW = 1
-  private val slotCount = GlobalConfig.ddaTraceSlotCount
-  private val traceSlotBits = GlobalConfig.ddaTraceSlotBits
-  private val cmdIdxW = math.max(1, log2Ceil(maxCmds))
-  private val workerCtxCount = numWorkers * ctxCount
-  private val triMshrIdWidth = math.max(1, log2Ceil(GlobalConfig.triMemMshrEntries))
+  private val traceLanes = numWorkers * ctxCount
+  private val traceLaneBits = log2Ceil(traceLanes)
+  private val contextBits = GlobalConfig.ddaTraceSlotBits
 
   val io = IO(new Bundle {
-    val job_in = Flipped(Decoupled(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds)))
-    val cmd_write = Flipped(Valid(new DdaTraceCmdWrite(c.addrWidth, maxCmds)))
-    val slot_release = Vec(numWorkers, Valid(UInt(traceSlotBits.W)))
+    val trace_claim = Flipped(Decoupled(new TraceContextDesc(c.cfg, c.addrWidth)))
+    val trace_cmd_context = Output(Vec(traceLanes, UInt(contextBits.W)))
+    val trace_cmd_active = Output(Vec(traceLanes, Bool()))
+    val trace_cmd = Flipped(Vec(traceLanes, Decoupled(new TraceCellCmd(c.cfg, c.addrWidth))))
+    val trace_dda_done = Input(Vec(traceLanes, Bool()))
+    val trace_stop = Vec(numWorkers, Valid(UInt(contextBits.W)))
+    val trace_release = Vec(numWorkers, Valid(UInt(contextBits.W)))
     val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
+
     val triangleBaseAddress = Input(UInt(64.W))
     val triDmaCmd = Decoupled(UInt(80.W))
     val triDmaData = Flipped(Decoupled(new TriMemDmaReadData(128)))
@@ -35,10 +34,7 @@ class TraceController(
     val triAxiOutstandingCount = Output(UInt(8.W))
   })
 
-  require(numWorkers > 0, "TraceController requires at least one worker")
-
   val workers = Seq.fill(numWorkers)(Module(new TriPE(c)))
-  val cmdQueues = Seq.fill(slotCount)(Module(new Queue(new TriBatch(c.addrWidth), maxCmds, hasFlush = true)))
   val mem = Module(new TriangleMemMultiPort(c, numWorkers, tagWidth = 2))
   mem.io.triangleBaseAddress := io.triangleBaseAddress
   io.triDmaCmd <> mem.io.dmaCmd
@@ -52,268 +48,124 @@ class TraceController(
   io.triAxiCompletedCount := mem.io.axiCompletedCount
   io.triAxiOutstandingCount := mem.io.axiOutstandingCount
 
-  val sEmpty :: sIssueRay :: sReadyFirst :: sWaitBatch :: sReadyCont :: sResultPending :: Nil = Enum(6)
-  val ctxState = RegInit(VecInit(Seq.fill(numWorkers)(VecInit(Seq.fill(ctxCount)(sEmpty)))))
-  val ctxJob = Reg(Vec(numWorkers, Vec(ctxCount, new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds))))
-  val ctxCmdIdx = RegInit(VecInit(Seq.fill(numWorkers)(VecInit(Seq.fill(ctxCount)(0.U(cmdIdxW.W))))))
-  val ctxResult = Reg(Vec(numWorkers, Vec(ctxCount, new TraceResult(c.cfg, c.addrWidth))))
-  val slotFlushPending = RegInit(VecInit(Seq.fill(slotCount)(false.B)))
-  val jobQ = Module(new Queue(new DdaTraceJobDesc(c.cfg, c.addrWidth, maxCmds), 2, pipe = true))
+  val laneBound = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
+  val laneStarted = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
+  val laneFinished = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
+  val laneContext = Reg(Vec(traceLanes, UInt(contextBits.W)))
+  val laneRay = Reg(Vec(traceLanes, new Ray(c.cfg)))
+  val laneMeta = Reg(Vec(traceLanes, new RayMeta(c.addrWidth)))
+  val laneResult = Reg(Vec(traceLanes, new TraceResult(c.cfg, c.addrWidth)))
+  val laneResultValid = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
 
-  val missT = "h7F7FFFFF".U(c.cfg.totalWidth.W)
-  val slotCmdCountW = log2Ceil(maxCmds + 1)
-  val slotCmdCount = RegInit(VecInit(Seq.fill(slotCount)(0.U(slotCmdCountW.W))))
-  val cmdQueueReady = Wire(Vec(slotCount, Bool()))
-  val cmdQueueValid = Wire(Vec(slotCount, Bool()))
-  val cmdQueueBits = Wire(Vec(slotCount, new TriBatch(c.addrWidth)))
-  val cmdWriteReady = Wire(Bool())
-  val clearCtx = Wire(Vec(numWorkers, Vec(ctxCount, Bool())))
-
-  for (s <- 0 until slotCount) {
-    cmdQueueReady(s) := false.B
+  val claimRr = RegInit(0.U(traceLaneBits.W))
+  val freeRotated = Wire(Vec(traceLanes, Bool()))
+  for (offset <- 0 until traceLanes) {
+    val lane = (claimRr + offset.U)(traceLaneBits - 1, 0)
+    freeRotated(offset) := !laneBound(lane)
   }
-  cmdWriteReady := false.B
+  val claimOH = PriorityEncoderOH(freeRotated)
+  val claimValid = freeRotated.asUInt.orR
+  val claimLane = (OHToUInt(claimOH) + claimRr)(traceLaneBits - 1, 0)
+  io.trace_claim.ready := claimValid
+  when(io.trace_claim.fire) {
+    laneBound(claimLane) := true.B
+    laneStarted(claimLane) := false.B
+    laneFinished(claimLane) := false.B
+    laneContext(claimLane) := io.trace_claim.bits.contextId
+    laneRay(claimLane) := io.trace_claim.bits.ray
+    laneMeta(claimLane) := io.trace_claim.bits.meta
+    claimRr := claimLane + 1.U
+  }
+
+  for (lane <- 0 until traceLanes) {
+    io.trace_cmd_context(lane) := laneContext(lane)
+    io.trace_cmd_active(lane) := laneBound(lane) && laneStarted(lane) && !laneFinished(lane)
+    io.trace_cmd(lane).ready := false.B
+  }
+
+  val batchRr = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
   for (w <- 0 until numWorkers) {
+    val lane0 = w * ctxCount
+    val lane1 = lane0 + 1
+    val worker = workers(w)
+
+    worker.io.ray_in := 0.U.asTypeOf(new Ray(c.cfg))
+    worker.io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+    worker.io.ray_ctx := 0.U
+    worker.io.ray_valid := false.B
+    worker.io.tri_batch_in := 0.U.asTypeOf(new TraceCellCmd(c.cfg, c.addrWidth))
+    worker.io.tri_batch_ctx := 0.U
+    worker.io.tri_batch_valid := false.B
+    worker.io.clear_ctx := VecInit(Seq.fill(ctxCount)(false.B))
     for (ctx <- 0 until ctxCount) {
-      clearCtx(w)(ctx) := false.B
-    }
-  }
-
-  jobQ.io.enq <> io.job_in
-  for (w <- 0 until numWorkers) {
-    io.slot_release(w).valid := false.B
-    io.slot_release(w).bits := 0.U
-  }
-
-  for (s <- 0 until slotCount) {
-    val slotHit = io.cmd_write.valid && (io.cmd_write.bits.slotIdx === s.U)
-    cmdQueues(s).io.enq.valid := slotHit
-    cmdQueues(s).io.enq.bits := io.cmd_write.bits.tri
-    cmdQueues(s).io.flush.get := slotFlushPending(s)
-    cmdQueues(s).io.deq.ready := cmdQueueReady(s)
-    cmdQueueValid(s) := slotCmdCount(s) =/= 0.U
-    cmdQueueBits(s) := cmdQueues(s).io.deq.bits
-    when(slotHit) {
-      cmdWriteReady := cmdQueues(s).io.enq.ready
+      val lane = lane0 + ctx
+      worker.io.dda_done(ctx) := laneBound(lane) && laneStarted(lane) &&
+        !laneFinished(lane) && io.trace_dda_done(lane)
     }
 
-    val cmdEnqFire = cmdQueues(s).io.enq.fire
-    val cmdDeqFire = cmdQueues(s).io.deq.fire
-    when(slotFlushPending(s)) {
-      slotCmdCount(s) := 0.U
-    }.elsewhen(cmdEnqFire || cmdDeqFire) {
-      slotCmdCount(s) := slotCmdCount(s) + cmdEnqFire.asUInt - cmdDeqFire.asUInt
+    val issue0 = laneBound(lane0) && !laneStarted(lane0) && worker.io.start_ready(0)
+    val issue1 = laneBound(lane1) && !laneStarted(lane1) && worker.io.start_ready(1)
+    when(issue0 || issue1) {
+      val local = Mux(issue0, 0.U, 1.U)
+      val lane = Mux(issue0, lane0.U(traceLaneBits.W), lane1.U(traceLaneBits.W))
+      worker.io.ray_in := laneRay(lane)
+      worker.io.ray_meta := laneMeta(lane)
+      worker.io.ray_ctx := local
+      worker.io.ray_valid := true.B
+      laneStarted(lane) := true.B
     }
 
-    when(cmdQueueReady(s) && cmdQueueValid(s)) {
-      assert(cmdQueues(s).io.deq.valid, "TraceController cmd slot count/queue valid mismatch")
-    }
-  }
-
-  when(io.cmd_write.valid) {
-    assert(cmdWriteReady, "TraceController cmd queue overflow")
-  }
-
-  for (w <- 0 until numWorkers) {
-    workers(w).io.ray_in := 0.U.asTypeOf(new Ray(c.cfg))
-    workers(w).io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth))
-    workers(w).io.ray_ctx := 0.U
-    workers(w).io.ray_valid := false.B
-    workers(w).io.tri_batch_in := 0.U.asTypeOf(new TriBatch(c.addrWidth))
-    workers(w).io.tri_batch_ctx := 0.U
-    workers(w).io.tri_batch_valid := false.B
-    workers(w).io.end_exec := false.B
-    workers(w).io.clear_ctx := clearCtx(w)
-
-    mem.io.req(w) <> workers(w).io.mem_req
-    workers(w).io.mem_resp <> mem.io.resp(w)
-  }
-
-  val allocFree = Wire(Vec(workerCtxCount, Bool()))
-  for (idx <- 0 until workerCtxCount) {
-    val w = idx / ctxCount
-    val ctx = idx % ctxCount
-    allocFree(idx) := ctxState(w)(ctx) === sEmpty && workers(w).io.start_ready(ctx)
-  }
-  val allocOH = PriorityEncoderOH(allocFree)
-  jobQ.io.deq.ready := allocFree.asUInt.orR
-
-  when(jobQ.io.deq.fire) {
-    for (idx <- 0 until workerCtxCount) {
-      val w = idx / ctxCount
-      val ctx = idx % ctxCount
-      when(allocOH(idx)) {
-        ctxJob(w)(ctx) := jobQ.io.deq.bits
-        ctxCmdIdx(w)(ctx) := 0.U
-        when(jobQ.io.deq.bits.cmdCount === 0.U) {
-          ctxResult(w)(ctx).meta := jobQ.io.deq.bits.meta
-          ctxResult(w)(ctx).hit := false.B
-          ctxResult(w)(ctx).hitId := 0.U
-          ctxResult(w)(ctx).hitT := missT
-          ctxState(w)(ctx) := sResultPending
-        }.otherwise {
-          ctxState(w)(ctx) := sIssueRay
-        }
-      }
-    }
-  }
-
-  val issueRr = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
-  val issueGrantValid = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
-  val issueGrantCtx = Reg(Vec(numWorkers, UInt(ctxW.W)))
-  val issueGrantSlot = Reg(Vec(numWorkers, UInt(traceSlotBits.W)))
-  val issueGrantEnd = Reg(Vec(numWorkers, Bool()))
-  val batchIssueValid = RegInit(VecInit(Seq.fill(numWorkers)(false.B)))
-  val batchIssueBits = Reg(Vec(numWorkers, new TriBatch(c.addrWidth)))
-  val batchIssueCtx = Reg(Vec(numWorkers, UInt(ctxW.W)))
-  val batchIssueEnd = Reg(Vec(numWorkers, Bool()))
-  for (w <- 0 until numWorkers) {
-    val issueRay0 = ctxState(w)(0) === sIssueRay && workers(w).io.start_ready(0)
-    val issueRay1 = ctxState(w)(1) === sIssueRay && workers(w).io.start_ready(1)
-    val issueRayCtx = Mux(issueRay0, 0.U(ctxW.W), 1.U(ctxW.W))
-    when(issueRay0 || issueRay1) {
-      workers(w).io.ray_in := ctxJob(w)(issueRayCtx).ray
-      workers(w).io.ray_meta := ctxJob(w)(issueRayCtx).meta
-      workers(w).io.ray_ctx := issueRayCtx
-      workers(w).io.ray_valid := true.B
-      ctxState(w)(issueRayCtx) := sReadyFirst
+    val cmd0 = io.trace_cmd(lane0).valid && io.trace_cmd_active(lane0) && worker.io.output_ready(0)
+    val cmd1 = io.trace_cmd(lane1).valid && io.trace_cmd_active(lane1) && worker.io.output_ready(1)
+    val choose0 = cmd0 && (!batchRr(w) || !cmd1)
+    val choose1 = cmd1 && (batchRr(w) || !cmd0)
+    when(choose0 || choose1) {
+      val local = Mux(choose0, 0.U, 1.U)
+      val lane = Mux(choose0, lane0.U(traceLaneBits.W), lane1.U(traceLaneBits.W))
+      worker.io.tri_batch_in := io.trace_cmd(lane).bits
+      worker.io.tri_batch_ctx := local
+      worker.io.tri_batch_valid := true.B
+      io.trace_cmd(lane).ready := true.B
+      batchRr(w) := !local(0)
     }
 
-    val firstReady = Wire(Vec(ctxCount, Bool()))
-    val contReady = Wire(Vec(ctxCount, Bool()))
+    mem.io.req(w) <> worker.io.mem_req
+    worker.io.mem_resp <> mem.io.resp(w)
+
+    io.trace_stop(w).valid := false.B
+    io.trace_stop(w).bits := 0.U
+    when(worker.io.out_done) {
+      val local = worker.io.out_ctx
+      val lane = Cat(w.U(log2Ceil(numWorkers).W), local)
+      assert(laneBound(lane) && laneStarted(lane) && !laneFinished(lane),
+        "TriPE completed an inactive Trace lane")
+      assert(!laneResultValid(lane), "TriPE overwrote a pending result")
+      laneResult(lane).meta := worker.io.out_meta
+      laneResult(lane).hit := worker.io.out_best_hit
+      laneResult(lane).hitId := worker.io.hit_id
+      laneResult(lane).hitT := worker.io.t_best
+      laneResultValid(lane) := true.B
+      laneFinished(lane) := true.B
+      worker.io.clear_ctx(local) := true.B
+      io.trace_stop(w).valid := worker.io.out_early_stop
+      io.trace_stop(w).bits := laneContext(lane)
+    }
+
+    val resultArb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), ctxCount))
     for (ctx <- 0 until ctxCount) {
-      val slot = ctxJob(w)(ctx).traceSlot
-      firstReady(ctx) := ctxState(w)(ctx) === sReadyFirst &&
-        workers(w).io.output_ready(ctx) &&
-        cmdQueueValid(slot) &&
-        !issueGrantValid(w) &&
-        !batchIssueValid(w)
-      contReady(ctx) := ctxState(w)(ctx) === sReadyCont &&
-        workers(w).io.output_ready(ctx) &&
-        cmdQueueValid(slot) &&
-        !issueGrantValid(w) &&
-        !batchIssueValid(w)
-    }
-
-    val useFirst = firstReady.asUInt.orR
-    val issue0 = Mux(useFirst, firstReady(0) && (!issueRr(w) || !firstReady(1)), contReady(0) && (!issueRr(w) || !contReady(1)))
-    val issue1 = Mux(useFirst, firstReady(1) && (issueRr(w) || !firstReady(0)), contReady(1) && (issueRr(w) || !contReady(0)))
-    val planBatch = issue0 || issue1
-    val planCtx = Mux(issue0, 0.U(ctxW.W), 1.U(ctxW.W))
-    val planSlot = ctxJob(w)(planCtx).traceSlot
-    val cmdDeqToIssue = issueGrantValid(w) &&
-      !batchIssueValid(w) &&
-      workers(w).io.output_ready(issueGrantCtx(w)) &&
-      cmdQueueValid(issueGrantSlot(w))
-
-    when(planBatch) {
-      issueGrantValid(w) := true.B
-      issueGrantCtx(w) := planCtx
-      issueGrantSlot(w) := planSlot
-      issueGrantEnd(w) := ctxCmdIdx(w)(planCtx) === (ctxJob(w)(planCtx).cmdCount - 1.U)
-      ctxState(w)(planCtx) := sWaitBatch
-      issueRr(w) := !planCtx(0)
-    }
-
-    when(issueGrantValid(w)) {
-      cmdQueueReady(issueGrantSlot(w)) := !batchIssueValid(w) &&
-        workers(w).io.output_ready(issueGrantCtx(w))
-      when(cmdDeqToIssue) {
-        batchIssueValid(w) := true.B
-        batchIssueBits(w) := cmdQueueBits(issueGrantSlot(w))
-        batchIssueCtx(w) := issueGrantCtx(w)
-        batchIssueEnd(w) := issueGrantEnd(w)
-        issueGrantValid(w) := false.B
+      val lane = lane0 + ctx
+      resultArb.io.in(ctx).valid := laneResultValid(lane)
+      resultArb.io.in(ctx).bits := laneResult(lane)
+      when(resultArb.io.in(ctx).fire) {
+        laneResultValid(lane) := false.B
+        laneBound(lane) := false.B
+        laneStarted(lane) := false.B
+        laneFinished(lane) := false.B
       }
     }
-
-    when(batchIssueValid(w)) {
-      workers(w).io.tri_batch_in := batchIssueBits(w)
-      workers(w).io.tri_batch_ctx := batchIssueCtx(w)
-      workers(w).io.tri_batch_valid := workers(w).io.output_ready(batchIssueCtx(w))
-      workers(w).io.end_exec := batchIssueEnd(w)
-      when(workers(w).io.output_ready(batchIssueCtx(w))) {
-        batchIssueValid(w) := false.B
-        when(batchIssueEnd(w)) {
-          ctxState(w)(batchIssueCtx(w)) := sWaitBatch
-        }.otherwise {
-          ctxCmdIdx(w)(batchIssueCtx(w)) := ctxCmdIdx(w)(batchIssueCtx(w)) + 1.U
-          ctxState(w)(batchIssueCtx(w)) := sReadyCont
-        }
-      }
-    }
-
-    when(workers(w).io.out_done) {
-      val outCtx = workers(w).io.out_ctx
-      when(issueGrantValid(w) && issueGrantCtx(w) === outCtx) {
-        issueGrantValid(w) := false.B
-      }
-      when(batchIssueValid(w) && batchIssueCtx(w) === outCtx) {
-        batchIssueValid(w) := false.B
-      }
-      when(workers(w).io.out_best_hit) {
-        ctxResult(w)(outCtx).meta := workers(w).io.out_meta
-        ctxResult(w)(outCtx).hit := true.B
-        ctxResult(w)(outCtx).hitId := workers(w).io.hit_id
-        ctxResult(w)(outCtx).hitT := workers(w).io.t_best
-        ctxState(w)(outCtx) := sResultPending
-        slotFlushPending(ctxJob(w)(outCtx).traceSlot) := true.B
-        clearCtx(w)(outCtx) := true.B
-      }.otherwise {
-        ctxResult(w)(outCtx).meta := ctxJob(w)(outCtx).meta
-        ctxResult(w)(outCtx).hit := false.B
-        ctxResult(w)(outCtx).hitId := 0.U
-        ctxResult(w)(outCtx).hitT := missT
-        ctxState(w)(outCtx) := sResultPending
-        clearCtx(w)(outCtx) := true.B
-      }
-    }
-  }
-
-  for (s <- 0 until slotCount) {
-    when(slotFlushPending(s)) {
-      slotFlushPending(s) := false.B
-    }
-  }
-
-  for (a <- 0 until workerCtxCount) {
-    val aw = a / ctxCount
-    val ac = a % ctxCount
-    val aLive = ctxState(aw)(ac) =/= sEmpty
-    for (b <- (a + 1) until workerCtxCount) {
-      val bw = b / ctxCount
-      val bc = b % ctxCount
-      val bLive = ctxState(bw)(bc) =/= sEmpty
-      when(aLive && bLive) {
-        assert(
-          ctxJob(aw)(ac).traceSlot =/= ctxJob(bw)(bc).traceSlot,
-          "TraceController duplicate live traceSlot across contexts"
-        )
-      }
-    }
-  }
-
-  val resultArbs = Seq.fill(numWorkers)(Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), ctxCount)))
-  for (w <- 0 until numWorkers) {
-    for (ctx <- 0 until ctxCount) {
-      resultArbs(w).io.in(ctx).valid := ctxState(w)(ctx) === sResultPending
-      resultArbs(w).io.in(ctx).bits := ctxResult(w)(ctx)
-      when(resultArbs(w).io.in(ctx).fire) {
-        ctxState(w)(ctx) := sEmpty
-        io.slot_release(w).valid := true.B
-        io.slot_release(w).bits := ctxJob(w)(ctx).traceSlot
-      }
-    }
-    io.result_out(w) <> resultArbs(w).io.out
-  }
-
-  for (w <- 0 until numWorkers) {
-    when(workers(w).io.out_done) {
-      val outCtx = workers(w).io.out_ctx
-      assert(
-        ctxState(w)(outCtx) === sWaitBatch || ctxState(w)(outCtx) === sReadyCont,
-        "TraceController got TriPE out_done for a context that is not waiting for a batch"
-      )
-    }
+    io.result_out(w) <> resultArb.io.out
+    io.trace_release(w).valid := resultArb.io.out.fire
+    io.trace_release(w).bits := Mux(resultArb.io.chosen === 0.U,
+      laneContext(lane0), laneContext(lane1))
   }
 }

@@ -56,6 +56,30 @@ csrc/
 
 ## Quick Start
 
+### Explore Init-to-SDF configuration
+
+The standalone C model replays camera rays from `InitStage` through the terminal
+SDF result and compares them with a nearest-hit triangle BVH oracle:
+
+```bash
+make sdf-cmodel-test
+make sdf-sweep
+```
+
+The default Killeroo sweep runs at `400x400` and writes `summary.csv`,
+`best.json`, and `ray_failures.csv` under `build/sdf_sweep/`. A successful exit
+means every BVH-hit pixel also produced an SDF hit. The JSON report separately
+states whether the loaded cache shape and active-cell count fit the current RTL.
+
+Candidate sets can be overridden without changing the RTL defaults:
+
+```bash
+build/sdf_config_explorer \
+  --width 128 --height 96 \
+  --max-steps-list 32,64,96 \
+  --threshold-list 0.01,0.02,0.04,0.08
+```
+
 ### Run Default Simulation (SimTop Mode)
 
 ```bash
