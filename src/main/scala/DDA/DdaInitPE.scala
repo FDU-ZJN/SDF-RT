@@ -24,6 +24,7 @@ class DdaInitPE(
   private val tMaxInputLatency = math.max(distSelectLatency, deltaLatency)
   private val relativeTMaxLatency = tMaxInputLatency + cfg.fmulLatency
   private val totalInitLatency = relativeTMaxLatency + cfg.faddLatency
+  private val coordWidth = GlobalConfig.ddaCoordWidth
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
 
   private def alignToTarget(x: UInt, pathLatency: Int, targetLatency: Int): UInt =
@@ -196,6 +197,10 @@ class DdaInitPE(
   val subXIdxOut = pipeUInt(mapXIdx, totalInitLatency - mapLatency)
   val subYIdxOut = pipeUInt(mapYIdx, totalInitLatency - mapLatency)
   val subZIdxOut = pipeUInt(mapZIdx, totalInitLatency - mapLatency)
+  val coordLimit = GlobalConfig.DdaRes.U(addrWidth.W)
+  val subXClamped = Mux(subXIdxOut >= coordLimit, coordLimit, subXIdxOut)
+  val subYClamped = Mux(subYIdxOut >= coordLimit, coordLimit, subYIdxOut)
+  val subZClamped = Mux(subZIdxOut >= coordLimit, coordLimit, subZIdxOut)
 
   io.out.valid := pipeBool(inFire, totalInitLatency)
   io.out.bits := 0.U.asTypeOf(new DdaContext(cfg, addrWidth))
@@ -203,9 +208,9 @@ class DdaInitPE(
   io.out.bits.meta := reqAtOut.meta
   io.out.bits.traceSlot := reqAtOut.traceSlot
   io.out.bits.initialized := true.B
-  io.out.bits.subX := Mux(subXNegOut, (-1).S((addrWidth + 1).W), subXIdxOut.zext)
-  io.out.bits.subY := Mux(subYNegOut, (-1).S((addrWidth + 1).W), subYIdxOut.zext)
-  io.out.bits.subZ := Mux(subZNegOut, (-1).S((addrWidth + 1).W), subZIdxOut.zext)
+  io.out.bits.subX := Mux(subXNegOut, (-1).S(coordWidth.W), subXClamped(coordWidth - 2, 0).zext)
+  io.out.bits.subY := Mux(subYNegOut, (-1).S(coordWidth.W), subYClamped(coordWidth - 2, 0).zext)
+  io.out.bits.subZ := Mux(subZNegOut, (-1).S(coordWidth.W), subZClamped(coordWidth - 2, 0).zext)
   io.out.bits.iter := 0.U
   io.out.bits.tMaxX := tMaxAbsX.io.res
   io.out.bits.tMaxY := tMaxAbsY.io.res

@@ -9,9 +9,10 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "reset valid bits, refill a miss, and serve the following hit" in {
     val c = TriPeConfig(cacheLineTriangles = 2)
-    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, bankId = 0, numBanks = 1,
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
       numSets = 4, ways = 1, reqQueueDepth = 2, mergeQueueDepth = 2, mshrEntries = 1,
       useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
       dut.io.allocResp.valid.poke(false.B)
@@ -84,9 +85,10 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "return all merged waiters from one refill" in {
     val c = TriPeConfig(cacheLineTriangles = 2)
-    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, bankId = 0, numBanks = 1,
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
       numSets = 4, ways = 1, reqQueueDepth = 4, mergeQueueDepth = 4, mshrEntries = 1,
       useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
       dut.io.allocResp.valid.poke(false.B)
@@ -148,9 +150,10 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "recheck a parked hit when a refill replaces the same direct-mapped set" in {
     val c = TriPeConfig(cacheLineTriangles = 1)
-    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, bankId = 0, numBanks = 1,
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
       numSets = 2, ways = 1, reqQueueDepth = 4, mergeQueueDepth = 2, mshrEntries = 2,
       useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
       dut.io.allocResp.valid.poke(false.B)
@@ -231,9 +234,10 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "not apply an advancing lookup refill bypass to the next request" in {
     val c = TriPeConfig(cacheLineTriangles = 1)
-    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, bankId = 0, numBanks = 1,
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
       numSets = 2, ways = 1, reqQueueDepth = 4, mergeQueueDepth = 2, mshrEntries = 3,
       useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
       dut.io.allocResp.valid.poke(false.B)
@@ -313,6 +317,49 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       // The following addr-3 request must also allocate.  A false cache hit
       // here is the tag-snapshot corruption that caused wrong PPM colors.
       allocate(expectedAddr = 3, id = 0)
+    }
+  }
+
+  it should "use the runtime bank ID for allocation and global triangle IDs" in {
+    val c = TriPeConfig(cacheLineTriangles = 1)
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 4,
+      numSets = 2, ways = 1, reqQueueDepth = 2, mergeQueueDepth = 2, mshrEntries = 1,
+      useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(2.U)
+      dut.io.req.valid.poke(false.B)
+      dut.io.resp.ready.poke(true.B)
+      dut.io.allocResp.valid.poke(false.B)
+      dut.io.refillDone.valid.poke(false.B)
+      dut.clock.step(5)
+
+      dut.io.req.bits.addr.poke(3.U)
+      dut.io.req.bits.mask.poke(1.U)
+      dut.io.req.bits.src.poke(0.U)
+      dut.io.req.bits.tag.poke(7.U)
+      dut.io.req.valid.poke(true.B)
+      while (!dut.io.req.ready.peekBoolean()) dut.clock.step()
+      dut.clock.step()
+      dut.io.req.valid.poke(false.B)
+
+      while (!dut.io.allocReq.valid.peekBoolean()) dut.clock.step()
+      dut.io.allocReq.bits.bank.expect(2.U)
+      dut.io.allocReq.bits.addr.expect(3.U)
+      dut.io.allocResp.bits.id.poke(0.U)
+      dut.io.allocResp.bits.merged.poke(false.B)
+      dut.io.allocResp.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.allocResp.valid.poke(false.B)
+
+      dut.io.refillDone.bits.id.poke(0.U)
+      dut.io.refillDone.bits.data.poke(BigInt("3f800000", 16).U)
+      dut.io.refillDone.valid.poke(true.B)
+      while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()
+      dut.clock.step()
+      dut.io.refillDone.valid.poke(false.B)
+
+      while (!dut.io.resp.valid.peekBoolean()) dut.clock.step()
+      // local block 3 in bank 2 of 4 maps to global block/triangle 14.
+      dut.io.resp.bits.resp.block.tris(0).id.expect(14.U)
     }
   }
 

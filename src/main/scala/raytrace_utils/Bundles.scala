@@ -33,8 +33,8 @@ class RayIngress(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 
 class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val v0 = new Vec3(cfg)
-  val v1 = new Vec3(cfg)
-  val v2 = new Vec3(cfg)
+  val e1 = new Vec3(cfg)
+  val e2 = new Vec3(cfg)
   val id = UInt(cfg.addrWidth.W)
 }
 
@@ -43,8 +43,9 @@ class TriangleBlock(val c: TriPeConfig) extends Bundle {
   val mask = Vec(c.cacheLineTriangles, Bool())
 }
 class TriBatch(addrWidth: Int) extends Bundle {
-  val base_addr = UInt(addrWidth.W)
-  val count     = UInt(16.W)
+  require(addrWidth >= GlobalConfig.subgridMetaMemTriStartWidth)
+  val base_addr = UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)
+  val count     = UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)
 }
 
 class TraceResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
@@ -109,9 +110,9 @@ class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
   val meta = new RayMeta(addrWidth)
   val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
   val initialized = Bool()
-  val subX = SInt((addrWidth + 1).W)
-  val subY = SInt((addrWidth + 1).W)
-  val subZ = SInt((addrWidth + 1).W)
+  val subX = SInt(GlobalConfig.ddaCoordWidth.W)
+  val subY = SInt(GlobalConfig.ddaCoordWidth.W)
+  val subZ = SInt(GlobalConfig.ddaCoordWidth.W)
   val iter = UInt(16.W)
   val tMaxX = UInt(cfg.totalWidth.W)
   val tMaxY = UInt(cfg.totalWidth.W)

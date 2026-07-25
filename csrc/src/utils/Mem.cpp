@@ -645,6 +645,85 @@ inline int clamp_index(int v, int lo, int hi) {
     return std::max(lo, std::min(v, hi));
 }
 
+using DVec3 = std::array<double, 3>;
+
+inline DVec3 dsub(const DVec3& a, const DVec3& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+inline DVec3 dcross(const DVec3& a, const DVec3& b) {
+    return {
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    };
+}
+
+inline double ddot(const DVec3& a, const DVec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+// Conservative triangle/AABB SAT.  The box is inflated slightly so a
+// triangle touching a cell boundary is retained in both neighboring cells.
+bool triangle_intersects_box(
+    const Triangle& tri,
+    const DVec3& boxMin,
+    const DVec3& boxMax,
+    double epsilon) {
+    const DVec3 center = {
+        0.5 * (boxMin[0] + boxMax[0]),
+        0.5 * (boxMin[1] + boxMax[1]),
+        0.5 * (boxMin[2] + boxMax[2])
+    };
+    const DVec3 half = {
+        0.5 * (boxMax[0] - boxMin[0]) + epsilon,
+        0.5 * (boxMax[1] - boxMin[1]) + epsilon,
+        0.5 * (boxMax[2] - boxMin[2]) + epsilon
+    };
+    const DVec3 v[3] = {
+        {double(tri.v0[0]) - center[0], double(tri.v0[1]) - center[1], double(tri.v0[2]) - center[2]},
+        {double(tri.v1[0]) - center[0], double(tri.v1[1]) - center[1], double(tri.v1[2]) - center[2]},
+        {double(tri.v2[0]) - center[0], double(tri.v2[1]) - center[1], double(tri.v2[2]) - center[2]}
+    };
+
+    auto overlaps_axis = [&](const DVec3& axis) {
+        const double axisLen2 = ddot(axis, axis);
+        if (axisLen2 <= 1e-30) return true;
+        const double p0 = ddot(v[0], axis);
+        const double p1 = ddot(v[1], axis);
+        const double p2 = ddot(v[2], axis);
+        const double triMin = std::min(p0, std::min(p1, p2));
+        const double triMax = std::max(p0, std::max(p1, p2));
+        const double radius =
+            half[0] * std::abs(axis[0]) +
+            half[1] * std::abs(axis[1]) +
+            half[2] * std::abs(axis[2]);
+        return triMin <= radius && triMax >= -radius;
+    };
+
+    if (!overlaps_axis({1.0, 0.0, 0.0}) ||
+        !overlaps_axis({0.0, 1.0, 0.0}) ||
+        !overlaps_axis({0.0, 0.0, 1.0})) {
+        return false;
+    }
+
+    const DVec3 edges[3] = {
+        dsub(v[1], v[0]),
+        dsub(v[2], v[1]),
+        dsub(v[0], v[2])
+    };
+    if (!overlaps_axis(dcross(edges[0], edges[1]))) return false;
+
+    for (const DVec3& edge : edges) {
+        if (!overlaps_axis({0.0, edge[2], -edge[1]}) ||
+            !overlaps_axis({-edge[2], 0.0, edge[0]}) ||
+            !overlaps_axis({edge[1], -edge[0], 0.0})) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline uint32_t floatToRawU32Early(float value) {
     uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -696,7 +775,7 @@ extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx) {
 
 namespace {
 constexpr int kBytesPerFloat = 4;
-constexpr int kFloatsPerTri = 9;  // 3 vertices * 3 coords
+constexpr int kFloatsPerTri = 9;  // v0, e1=v1-v0, e2=v2-v0
 constexpr int kBytesPerTri = kFloatsPerTri * kBytesPerFloat;
 
 inline uint32_t floatToRawU32(float value) {
@@ -858,8 +937,8 @@ extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle da
         //             tri.v2[0], tri.v2[1], tri.v2[2]);
         const float values[kFloatsPerTri] = {
             tri.v0[0], tri.v0[1], tri.v0[2],
-            tri.v1[0], tri.v1[1], tri.v1[2],
-            tri.v2[0], tri.v2[1], tri.v2[2]
+            tri.v1[0] - tri.v0[0], tri.v1[1] - tri.v0[1], tri.v1[2] - tri.v0[2],
+            tri.v2[0] - tri.v0[0], tri.v2[1] - tri.v0[1], tri.v2[2] - tri.v0[2]
         };
 
         uint8_t* base = out + lane * kBytesPerTri;
@@ -1011,9 +1090,15 @@ void build_subgrid_triangle_index(
     const float invSubCellX = fullSubResX / extentX;
     const float invSubCellY = fullSubResY / extentY;
     const float invSubCellZ = fullSubResZ / extentZ;
+    const double subCellSizeX = double(extentX) / double(fullSubResX);
+    const double subCellSizeY = double(extentY) / double(fullSubResY);
+    const double subCellSizeZ = double(extentZ) / double(fullSubResZ);
+    const double overlapEpsilon =
+        std::max(subCellSizeX, std::max(subCellSizeY, subCellSizeZ)) * 1e-5;
 
     std::vector<std::pair<uint64_t, uint32_t>> refs;
     refs.reserve(triangles.size() * 8);
+    size_t aabbCandidateRefs = 0;
 
     const int maxSubX = globalResX * subResX - 1;
     const int maxSubY = globalResY * subResY - 1;
@@ -1035,12 +1120,12 @@ void build_subgrid_triangle_index(
             continue;
         }
 
-        int subMinX = static_cast<int>(std::floor((triMinX - gridMin[0]) * invSubCellX + 1e-6f));
-        int subMinY = static_cast<int>(std::floor((triMinY - gridMin[1]) * invSubCellY + 1e-6f));
-        int subMinZ = static_cast<int>(std::floor((triMinZ - gridMin[2]) * invSubCellZ + 1e-6f));
-        int subMaxX = static_cast<int>(std::floor((triMaxX - gridMin[0]) * invSubCellX - 1e-6f));
-        int subMaxY = static_cast<int>(std::floor((triMaxY - gridMin[1]) * invSubCellY - 1e-6f));
-        int subMaxZ = static_cast<int>(std::floor((triMaxZ - gridMin[2]) * invSubCellZ - 1e-6f));
+        int subMinX = static_cast<int>(std::floor((triMinX - gridMin[0]) * invSubCellX - 1e-6f));
+        int subMinY = static_cast<int>(std::floor((triMinY - gridMin[1]) * invSubCellY - 1e-6f));
+        int subMinZ = static_cast<int>(std::floor((triMinZ - gridMin[2]) * invSubCellZ - 1e-6f));
+        int subMaxX = static_cast<int>(std::floor((triMaxX - gridMin[0]) * invSubCellX + 1e-6f));
+        int subMaxY = static_cast<int>(std::floor((triMaxY - gridMin[1]) * invSubCellY + 1e-6f));
+        int subMaxZ = static_cast<int>(std::floor((triMaxZ - gridMin[2]) * invSubCellZ + 1e-6f));
 
         subMinX = clamp_index(subMinX, 0, maxSubX);
         subMinY = clamp_index(subMinY, 0, maxSubY);
@@ -1060,6 +1145,20 @@ void build_subgrid_triangle_index(
                 const int gy = sy / subResY;
                 const int syLocal = sy % subResY;
                 for (int sz = subMinZ; sz <= subMaxZ; ++sz) {
+                    ++aabbCandidateRefs;
+                    const DVec3 cellMin = {
+                        double(gridMin[0]) + double(sx) * subCellSizeX,
+                        double(gridMin[1]) + double(sy) * subCellSizeY,
+                        double(gridMin[2]) + double(sz) * subCellSizeZ
+                    };
+                    const DVec3 cellMax = {
+                        double(gridMin[0]) + double(sx + 1) * subCellSizeX,
+                        double(gridMin[1]) + double(sy + 1) * subCellSizeY,
+                        double(gridMin[2]) + double(sz + 1) * subCellSizeZ
+                    };
+                    if (!triangle_intersects_box(tri, cellMin, cellMax, overlapEpsilon)) {
+                        continue;
+                    }
                     const int gz = sz / subResZ;
                     const int szLocal = sz % subResZ;
 
@@ -1128,7 +1227,10 @@ void build_subgrid_triangle_index(
     subgrid_sub_cells = static_cast<uint32_t>(subResX * subResY * subResZ);
     subgrid_layout_ready = true;
 
-    std::printf("[Subgrid] built: non_empty=%zu compact_tris=%zu max_tri_per_sub=%u global_cells=%u sub_cells=%u\n",
+    std::printf("[Subgrid] built: aabb_refs=%zu exact_refs=%zu removed=%zu non_empty=%zu compact_tris=%zu max_tri_per_sub=%u global_cells=%u sub_cells=%u\n",
+                aabbCandidateRefs,
+                refs.size(),
+                aabbCandidateRefs - refs.size(),
                 subgrid_tri_meta.size(),
                 triangles_compact_src_ids.size(),
                 static_cast<unsigned>(subgrid_max_tri_per_cell),

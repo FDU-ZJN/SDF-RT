@@ -300,12 +300,12 @@ class TriangleMemWrapper(val c: TriPeConfig) extends Module {
     blockData.tris(i).v0.x := triBits(31, 0)
     blockData.tris(i).v0.y := triBits(63, 32)
     blockData.tris(i).v0.z := triBits(95, 64)
-    blockData.tris(i).v1.x := triBits(127, 96)
-    blockData.tris(i).v1.y := triBits(159, 128)
-    blockData.tris(i).v1.z := triBits(191, 160)
-    blockData.tris(i).v2.x := triBits(223, 192)
-    blockData.tris(i).v2.y := triBits(255, 224)
-    blockData.tris(i).v2.z := triBits(287, 256)
+    blockData.tris(i).e1.x := triBits(127, 96)
+    blockData.tris(i).e1.y := triBits(159, 128)
+    blockData.tris(i).e1.z := triBits(191, 160)
+    blockData.tris(i).e2.x := triBits(223, 192)
+    blockData.tris(i).e2.y := triBits(255, 224)
+    blockData.tris(i).e2.z := triBits(287, 256)
     blockData.tris(i).id := dpiMem.io.addr_q * c.cacheLineTriangles.U(GlobalConfig.triMemAddrWidth.W) +
       i.U(GlobalConfig.triMemAddrWidth.W)
     blockData.mask(i) := dpiMem.io.valid_mask(i)
@@ -604,7 +604,6 @@ class TriangleMemCachedBank(
   val c: TriPeConfig,
   val srcWidth: Int,
   val tagWidth: Int,
-  val bankId: Int,
   val numBanks: Int = GlobalConfig.triMemNumBanks,
   val numSets: Int = GlobalConfig.triMemCacheSets,
   val ways: Int = GlobalConfig.triMemCacheWays,
@@ -626,6 +625,7 @@ class TriangleMemCachedBank(
   private val mergeIdxW = math.max(1, log2Ceil(mergeQueueDepth))
   private val mergeCountW = log2Ceil(mergeQueueDepth + 1)
   private val mshrIdW = math.max(1, log2Ceil(mshrEntries))
+  private val bankIdW = math.max(1, log2Ceil(numBanks))
   private val useXpmCache = useXpmCacheOverride.getOrElse(GlobalConfig.memImplMode == 2)
 
   class BankReq extends Bundle {
@@ -641,6 +641,7 @@ class TriangleMemCachedBank(
   }
 
   val io = IO(new Bundle {
+    val bankId = Input(UInt(bankIdW.W))
     val req = Flipped(Decoupled(new BankReq))
     val resp = Decoupled(new BankResp)
     val stat = Valid(Bool())
@@ -661,7 +662,7 @@ class TriangleMemCachedBank(
   private def decodeBlock(data: UInt, addrQ: UInt, mask: UInt): TriangleBlock = {
     val block = Wire(new TriangleBlock(c))
     val numBanksU = numBanks.U(GlobalConfig.triMemAddrWidth.W)
-    val globalBlock = addrQ * numBanksU + bankId.U(GlobalConfig.triMemAddrWidth.W)
+    val globalBlock = addrQ * numBanksU + io.bankId
     val bankBase = globalBlock * c.cacheLineTriangles.U(GlobalConfig.triMemAddrWidth.W)
     for (i <- 0 until c.cacheLineTriangles) {
       val hi = bitsPerTri * (i + 1) - 1
@@ -670,12 +671,12 @@ class TriangleMemCachedBank(
       block.tris(i).v0.x := triBits(31, 0)
       block.tris(i).v0.y := triBits(63, 32)
       block.tris(i).v0.z := triBits(95, 64)
-      block.tris(i).v1.x := triBits(127, 96)
-      block.tris(i).v1.y := triBits(159, 128)
-      block.tris(i).v1.z := triBits(191, 160)
-      block.tris(i).v2.x := triBits(223, 192)
-      block.tris(i).v2.y := triBits(255, 224)
-      block.tris(i).v2.z := triBits(287, 256)
+      block.tris(i).e1.x := triBits(127, 96)
+      block.tris(i).e1.y := triBits(159, 128)
+      block.tris(i).e1.z := triBits(191, 160)
+      block.tris(i).e2.x := triBits(223, 192)
+      block.tris(i).e2.y := triBits(255, 224)
+      block.tris(i).e2.z := triBits(287, 256)
       block.tris(i).id := bankBase + i.U(GlobalConfig.triMemAddrWidth.W)
       block.mask(i) := mask(i)
     }
@@ -765,7 +766,7 @@ class TriangleMemCachedBank(
   io.stat.valid := statsValid
   io.stat.bits := statsHit
   io.allocReq.valid := false.B
-  io.allocReq.bits.bank := bankId.U
+  io.allocReq.bits.bank := io.bankId
   io.allocReq.bits.addr := missQ.io.deq.bits.addr
   io.allocReq.bits.set := setIdxOf(missQ.io.deq.bits.addr)
   io.allocReq.bits.tag := tagOf(missQ.io.deq.bits.addr)
@@ -795,7 +796,7 @@ class TriangleMemCachedBank(
 
   def enqueuePending(mshrId: UInt, req: BankReq, set: UInt, tag: UInt, victimWay: UInt): Unit = {
     val count = pendingCount(mshrId)
-    assert(count =/= mergeQueueDepth.U, s"TriangleMemCachedBank[$bankId] merge queue overflow")
+    assert(count =/= mergeQueueDepth.U, "TriangleMemCachedBank merge queue overflow")
     pendingReqs(mshrId)(count(mergeIdxW - 1, 0)) := req
     pendingCount(mshrId) := count + 1.U
     when(count === 0.U) {
@@ -896,7 +897,7 @@ class TriangleMemCachedBank(
 
   val refillEmitFire = refillEmitValid && !dataReturnValid && respQ.io.enq.ready
   when(dataReturnValid) {
-    assert(respQ.io.enq.ready, s"TriangleMemCachedBank[$bankId] response queue overflow")
+    assert(respQ.io.enq.ready, "TriangleMemCachedBank response queue overflow")
   }
 
   when(!reset.asBool) {
@@ -918,7 +919,7 @@ class TriangleMemCachedBank(
     io.refillDone.ready := !refillEmitValid
     when(io.refillDone.fire) {
     val doneId = io.refillDone.bits.id
-    assert(pendingCount(doneId) =/= 0.U, s"TriangleMemCachedBank[$bankId] refill done with no pending waiters")
+    assert(pendingCount(doneId) =/= 0.U, "TriangleMemCachedBank refill done with no pending waiters")
     writeSetIdx := pendingSet(doneId)
     writeData := io.refillDone.bits.data
     emitMshrId := doneId
@@ -1054,12 +1055,12 @@ class TriangleMemMultiPort(
       block.tris(i).v0.x := triBits(31, 0)
       block.tris(i).v0.y := triBits(63, 32)
       block.tris(i).v0.z := triBits(95, 64)
-      block.tris(i).v1.x := triBits(127, 96)
-      block.tris(i).v1.y := triBits(159, 128)
-      block.tris(i).v1.z := triBits(191, 160)
-      block.tris(i).v2.x := triBits(223, 192)
-      block.tris(i).v2.y := triBits(255, 224)
-      block.tris(i).v2.z := triBits(287, 256)
+      block.tris(i).e1.x := triBits(127, 96)
+      block.tris(i).e1.y := triBits(159, 128)
+      block.tris(i).e1.z := triBits(191, 160)
+      block.tris(i).e2.x := triBits(223, 192)
+      block.tris(i).e2.y := triBits(255, 224)
+      block.tris(i).e2.z := triBits(287, 256)
       block.tris(i).id := bankBase + i.U(GlobalConfig.triMemAddrWidth.W)
       block.mask(i) := mask(i)
     }
@@ -1068,7 +1069,9 @@ class TriangleMemMultiPort(
 
   GlobalConfig.memImplMode match {
     case 0 | 2 =>
-      val banks = Seq.tabulate(numBanks)(b => Module(new TriangleMemCachedBank(c, srcW, tagWidth, b, numBanks, mshrEntries = mshrEntries)))
+      val banks = Seq.fill(numBanks)(Module(
+        new TriangleMemCachedBank(c, srcW, tagWidth, numBanks, mshrEntries = mshrEntries)
+      ))
       val statMons = Seq.fill(numBanks)(Module(new TriCacheStatsMonitor))
       val refillStatMon = Module(new TriCacheRefillStatsMonitor)
       val reqArbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
@@ -1104,6 +1107,7 @@ class TriangleMemMultiPort(
       io.axiOutstandingCount := backend.io.outstandingCount
 
       for (b <- 0 until numBanks) {
+        banks(b).io.bankId := b.U
         statMons(b).io.clk := clock
         statMons(b).io.reset := reset
         statMons(b).io.valid := banks(b).io.stat.valid

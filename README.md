@@ -161,7 +161,8 @@ SDF-RT/
 │       ├── bvh_mem.mem
 │       ├── sdf_global_mem.mem
 │       ├── sdf_local_mem.mem
-│       └── subgrid_meta_mem.mem
+│       ├── subgrid_block_dir.mem
+│       └── subgrid_compact_meta.mem
 ├── build/                        # Build outputs (Verilog, objects)
 ├── test_run_dir/                 # Simulation outputs (VCD, logs)
 ├── vivado/                       # Vivado project placeholder
@@ -254,8 +255,8 @@ SDF-RT/
 
 **Algorithm (Möller-Trumbore):**
 ```
-1. edge1 = v1 - v0
-2. edge2 = v2 - v0
+1. Load precomputed edge1 = v1 - v0
+2. Load precomputed edge2 = v2 - v0
 3. h = cross(direction, edge2)
 4. f = dot(edge1, h)
 5. if (f <= epsilon) return MISS
@@ -270,7 +271,7 @@ SDF-RT/
 ```
 
 **Hardware Optimizations:**
-- 3-axis parallel edge computation
+- Triangle memory stores `{v0, edge1, edge2}`; static edges are precomputed during export
 - Pipelined cross/dot products (~20 multiplications per ray)
 - Configurable fixed/float precision (Q16.16 support)
 - Multi-threaded ray batching
@@ -367,7 +368,8 @@ inline constexpr bool kEnableProgressPrint = true;
    +BVH_MEM_FILE=./vivado_mem/bvh_mem.mem
    +SDF_GLOBAL_MEM_FILE=./vivado_mem/sdf_global_mem.mem
    +SDF_LOCAL_MEM_FILE=./vivado_mem/sdf_local_mem.mem
-   +SUBGRID_META_MEM_FILE=./vivado_mem/subgrid_meta_mem.mem
+   +SUBGRID_BLOCK_DIR_MEM_FILE=./vivado_mem/subgrid_block_dir.mem
+   +SUBGRID_COMPACT_META_MEM_FILE=./vivado_mem/subgrid_compact_meta.mem
    ```
 
 3. **Set in Vivado GUI:**

@@ -24,8 +24,8 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     val id       = Output(UInt(cfg.addrWidth.W))
   })
   val v0=io.tri.v0
-  val v1=io.tri.v1
-  val v2=io.tri.v2
+  val e1Raw=io.tri.e1
+  val e2Raw=io.tri.e2
   val orig = io.ray.origin
   val dir = io.ray.dir
   val latMUL = cfg.fmulLatency
@@ -65,11 +65,11 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
     res
   }
 
-  val e1 = vecSub(v1, v0)
-  val e2 = vecSub(v2, v0)
   val s  = vecSub(orig, v0)
 
   val dir_d2 = PipeUtils.pipeData(dir, latADD)
+  val e1 = PipeUtils.pipeData(e1Raw, latADD)
+  val e2 = PipeUtils.pipeData(e2Raw, latADD)
 
   // ---------------- Stage B (T0+ADD -> T0+ADD+latCP) ----------------
   val cp_p = Module(new CrossProductUnit(cfg))

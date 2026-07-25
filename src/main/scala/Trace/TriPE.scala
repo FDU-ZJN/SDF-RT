@@ -45,8 +45,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val ctxBusy = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val activeEpoch = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  private val batchTriIdx = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
-  private val batchTrisRemaining = Reg(Vec(ctxCount, UInt(16.W)))
+  private val batchTriIdx = Reg(Vec(ctxCount, UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)))
+  private val batchTrisRemaining = Reg(Vec(ctxCount, UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)))
   private val batchInProgress = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val batchCellExitT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val boundaryCheckPending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))

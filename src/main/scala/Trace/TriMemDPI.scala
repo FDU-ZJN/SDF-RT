@@ -13,7 +13,7 @@ private class TriangleMemDPICore(
 ) extends BlackBox with HasBlackBoxInline {
   require(latency >= 1, s"TriangleMemDPI latency must be >= 1, got $latency")
 
-  // 计算单个三角形的字节数：3顶点 * 3坐标 * (位宽/8)
+  // 每个三角形保存 v0/e1/e2 三个向量，每个向量 3 个坐标。
   val bytesPerTri = 3 * 3 * (c.cfg.totalWidth / 8)
   val totalBytes = c.cacheLineTriangles * bytesPerTri
   val totalBits = totalBytes * 8

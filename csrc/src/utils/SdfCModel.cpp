@@ -229,6 +229,7 @@ OracleHit TriangleBvh::intersectBruteForce(const host_renderer::Ray& ray) const 
 const char* terminationName(Termination termination) {
     switch (termination) {
         case Termination::Hit: return "hit";
+        case Termination::FinalNegativeHit: return "final_negative_hit";
         case Termination::InitMiss: return "init_miss";
         case Termination::OutOfBounds: return "out_of_bounds";
         case Termination::MaxSteps: return "max_steps";
@@ -381,11 +382,21 @@ MarchResult SdfCModel::evaluate(const RayTrace& trace, const MarchConfig& config
         }
         const float threshold = iter < half ? config.threshold1
             : (iter < threeQuarter ? config.threshold2 : config.threshold3);
-        if (std::fabs(step.sample) < threshold) {
+        if (step.sample > 0.0f && step.sample < threshold) {
             result.hit = true;
-            result.hitT = std::signbit(step.sample) ? step.negativeHitDist : step.dist;
+            result.hitT = step.dist;
             result.termination = std::isfinite(result.hitT) ? Termination::Hit : Termination::NonFinite;
             result.hit = result.termination == Termination::Hit;
+            return result;
+        }
+        if (iter + 1 == config.maxSteps && std::signbit(step.sample)) {
+            result.hit = true;
+            // Match SdfPE: on the final negative sample, return the current t
+            // and do not commit the speculative prevSdf/2 backoff.
+            result.hitT = step.dist;
+            result.termination = std::isfinite(result.hitT)
+                ? Termination::FinalNegativeHit : Termination::NonFinite;
+            result.hit = result.termination == Termination::FinalNegativeHit;
             return result;
         }
     }

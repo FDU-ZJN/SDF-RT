@@ -279,7 +279,6 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_y = floatToU32(gridMax[1]);
     dut->io_setup_grid_max_z = floatToU32(gridMax[2]);
     dut->io_ray_in_valid = 0;
-    dut->io_ray_in_mask = 0;
     dut->io_ray_in_last = 0;
     dut->io_result_ready = 1;
     dut->io_triangle_base_address = 0;
@@ -330,26 +329,20 @@ int main(int argc, char** argv) {
 
     while (traceResultsReceived < framePixels || nextRay < framePixels) {
         const bool sendRays = nextRay < framePixels && dut->io_ray_in_ready && !freeRayIds.empty();
-        const size_t rayCount = sendRays ? std::min({size_t{2}, framePixels - nextRay, freeRayIds.size()}) : 0;
         dut->io_ray_in_valid = sendRays ? 1 : 0;
-        dut->io_ray_in_mask = rayCount == 0 ? 0 : ((1U << rayCount) - 1U);
-        dut->io_ray_in_last = sendRays && nextRay + rayCount == framePixels;
-        for (int lane = 0; lane < 2; ++lane) {
-            const size_t id = nextRay + static_cast<size_t>(lane);
+        dut->io_ray_in_last = sendRays && nextRay + 1 == framePixels;
+        if (sendRays) {
+            const size_t id = nextRay;
             const int x = id % static_cast<size_t>(runtimeWidth);
             const int y = id / static_cast<size_t>(runtimeWidth);
             const host_renderer::Ray ray = renderer.makeCameraRay(x, y);
-            const uint16_t rayId = lane < static_cast<int>(rayCount) ? freeRayIds[lane] : 0U;
-            uint32_t* originX[] = {&dut->io_ray_in_0_origin_x, &dut->io_ray_in_1_origin_x};
-            uint32_t* originY[] = {&dut->io_ray_in_0_origin_y, &dut->io_ray_in_1_origin_y};
-            uint32_t* originZ[] = {&dut->io_ray_in_0_origin_z, &dut->io_ray_in_1_origin_z};
-            uint32_t* dirX[] = {&dut->io_ray_in_0_dir_x, &dut->io_ray_in_1_dir_x};
-            uint32_t* dirY[] = {&dut->io_ray_in_0_dir_y, &dut->io_ray_in_1_dir_y};
-            uint32_t* dirZ[] = {&dut->io_ray_in_0_dir_z, &dut->io_ray_in_1_dir_z};
-            uint16_t* ids[] = {&dut->io_ray_in_0_rayId, &dut->io_ray_in_1_rayId};
-            *originX[lane] = floatToU32(ray.origin[0]); *originY[lane] = floatToU32(ray.origin[1]); *originZ[lane] = floatToU32(ray.origin[2]);
-            *dirX[lane] = floatToU32(ray.direction[0]); *dirY[lane] = floatToU32(ray.direction[1]); *dirZ[lane] = floatToU32(ray.direction[2]);
-            *ids[lane] = rayId;
+            dut->io_ray_in_origin_x = floatToU32(ray.origin[0]);
+            dut->io_ray_in_origin_y = floatToU32(ray.origin[1]);
+            dut->io_ray_in_origin_z = floatToU32(ray.origin[2]);
+            dut->io_ray_in_dir_x = floatToU32(ray.direction[0]);
+            dut->io_ray_in_dir_y = floatToU32(ray.direction[1]);
+            dut->io_ray_in_dir_z = floatToU32(ray.direction[2]);
+            dut->io_ray_in_rayId = freeRayIds.front();
         }
         triangleDma.drive(dut);
         // Sample handshakes while clock is low, then advance both sides of the
@@ -366,32 +359,28 @@ int main(int argc, char** argv) {
         const bool statusFire = dut->io_tri_dma_status_valid && dut->io_tri_dma_status_ready;
         const bool inputFire = dut->io_ray_in_valid && dut->io_ray_in_ready;
         const bool resultFire = dut->io_result_valid && dut->io_result_ready;
-        const uint32_t resultMask = dut->io_result_mask;
         const bool resultLast = dut->io_result_last;
-        const uint16_t resultIds[2] = {dut->io_result_0_meta_rayId, dut->io_result_1_meta_rayId};
-        const bool resultHits[2] = {dut->io_result_0_hit != 0, dut->io_result_1_hit != 0};
-        const uint32_t resultHitIds[2] = {dut->io_result_0_hitId, dut->io_result_1_hitId};
-        const uint32_t resultHitTs[2] = {dut->io_result_0_hitT, dut->io_result_1_hitT};
+        const uint16_t resultId = dut->io_result_meta_rayId;
+        const bool resultHit = dut->io_result_hit != 0;
+        const uint32_t resultHitId = dut->io_result_hitId;
+        const uint32_t resultHitT = dut->io_result_hitT;
         tick(dut);
         triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
         if (inputFire) {
-            for (size_t lane = 0; lane < rayCount; ++lane) {
-                const uint16_t rayId = freeRayIds.front();
-                if (rayIdToPixel[rayId] != -1) {
-                    std::cerr << "RayID allocator reused an active tag " << rayId << std::endl;
-                    delete dut;
-                    return 4;
-                }
-                rayIdToPixel[rayId] = static_cast<int64_t>(nextRay + lane);
-                freeRayIds.pop_front();
+            const uint16_t rayId = freeRayIds.front();
+            if (rayIdToPixel[rayId] != -1) {
+                std::cerr << "RayID allocator reused an active tag " << rayId << std::endl;
+                delete dut;
+                return 4;
             }
-            nextRay += rayCount;
+            rayIdToPixel[rayId] = static_cast<int64_t>(nextRay);
+            freeRayIds.pop_front();
+            ++nextRay;
             minFreeRayIds = std::min(minFreeRayIds, freeRayIds.size());
         }
         if (resultFire) {
-            for (int lane = 0; lane < 2; ++lane) if (resultMask & (1U << lane)) {
-                const uint16_t rayId = resultIds[lane];
+                const uint16_t rayId = resultId;
                 const int64_t pixelIndex = rayIdToPixel[rayId];
                 if (pixelIndex < 0) {
                     std::cerr << "Invalid or duplicate RayID " << rayId
@@ -403,15 +392,15 @@ int main(int argc, char** argv) {
                 rayIdToPixel[rayId] = -1;
                 freeRayIds.push_back(rayId);
                 const size_t idx = static_cast<size_t>(pixelIndex) * 3;
-                const size_t compactHitId = static_cast<size_t>(resultHitIds[lane]);
+                const size_t compactHitId = static_cast<size_t>(resultHitId);
                 const bool compactIdValid = compactHitId < triangles_compact_src_ids.size();
                 const size_t originalTriId = compactIdValid ? static_cast<size_t>(triangles_compact_src_ids[compactHitId]) : 0U;
                 const int pixelX = static_cast<int>(pixelIndex % runtimeWidth);
                 const int pixelY = static_cast<int>(pixelIndex / runtimeWidth);
                 const host_renderer::Ray ray = renderer.makeCameraRay(pixelX, pixelY);
                 std::array<uint8_t, 3> encoded{};
-                if (resultHits[lane]) {
-                    const float hitT = u32ToFloat(resultHitTs[lane]);
+                if (resultHit) {
+                    const float hitT = u32ToFloat(resultHitT);
                     if (!compactIdValid || originalTriId >= triangles.size() ||
                         originalTriId >= triangle_vertex_normals.size() ||
                         !std::isfinite(hitT) || hitT < 0.0f) {
@@ -430,8 +419,7 @@ int main(int argc, char** argv) {
                 image[idx + 1] = encoded[1];
                 image[idx + 2] = encoded[2];
                 ++traceResultsReceived;
-                if (resultHits[lane]) ++traceHits; else ++traceMisses;
-            }
+                if (resultHit) ++traceHits; else ++traceMisses;
             if (resultLast) sawResultLast = true;
             stallCycles = 0;
         }

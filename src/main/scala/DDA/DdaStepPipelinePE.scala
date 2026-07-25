@@ -9,8 +9,8 @@ import raytrace_utils.PipeUtils._
 class DdaStepPipelinePE(
   cfg: FloatConfig = FloatConfig.FP32,
   addrWidth: Int = 32,
-  globalRes: Int = 16,
-  subRes: Int = 16,
+  globalRes: Int = GlobalConfig.GlobalDdaRes,
+  subRes: Int = GlobalConfig.SubDdaRes,
   maxTraversalSteps: Int = 1024
 ) extends Module {
   require((globalRes & (globalRes - 1)) == 0, s"globalRes must be power-of-two, got $globalRes")
@@ -27,15 +27,18 @@ class DdaStepPipelinePE(
   private val globalShift = log2Ceil(globalRes)
   private val globalPlaneShift = globalShift + globalShift
   private val subPlaneShift = subShift + subShift
-  private val subMask = (subRes - 1).S((addrWidth + 1).W)
+  private val coordWidth = GlobalConfig.ddaCoordWidth
+  private val subMask = (subRes - 1).S(coordWidth.W)
   private val totalSub = globalRes * subRes
-  private val totalSubS = totalSub.S((addrWidth + 1).W)
+  require(totalSub <= (1 << (coordWidth - 1)) - 1,
+    s"DDA resolution $totalSub exceeds $coordWidth-bit signed coordinate range")
+  private val totalSubS = totalSub.S(coordWidth.W)
   private val memLatency = GlobalConfig.subgridMemDpiLatency
   private val stepCalcLatency = cfg.fcmpLatency + cfg.faddLatency
   private val totalStepLatency = math.max(memLatency, stepCalcLatency)
 
   private def negStep(isNeg: Bool): SInt =
-    Mux(isNeg, (-1).S((addrWidth + 1).W), 1.S((addrWidth + 1).W))
+    Mux(isNeg, (-1).S(coordWidth.W), 1.S(coordWidth.W))
 
   io.in.ready := true.B
   val inFire = io.in.fire
@@ -84,23 +87,29 @@ class DdaStepPipelinePE(
     nextAxis := Mux(cmpYZ.io.lt, 1.U, 2.U)
   }
 
-  val addTMaxX = Module(new FADD(cfg))
-  val addTMaxY = Module(new FADD(cfg))
-  val addTMaxZ = Module(new FADD(cfg))
-  addTMaxX.io.a := ctx.tMaxX
-  addTMaxX.io.b := ctx.tDeltaX
-  addTMaxY.io.a := ctx.tMaxY
-  addTMaxY.io.b := ctx.tDeltaY
-  addTMaxZ.io.a := ctx.tMaxZ
-  addTMaxZ.io.b := ctx.tDeltaZ
+  val tMaxXAtAxis = pipeUInt(ctx.tMaxX, cfg.fcmpLatency)
+  val tMaxYAtAxis = pipeUInt(ctx.tMaxY, cfg.fcmpLatency)
+  val tMaxZAtAxis = pipeUInt(ctx.tMaxZ, cfg.fcmpLatency)
+  val tDeltaXAtAxis = pipeUInt(ctx.tDeltaX, cfg.fcmpLatency)
+  val tDeltaYAtAxis = pipeUInt(ctx.tDeltaY, cfg.fcmpLatency)
+  val tDeltaZAtAxis = pipeUInt(ctx.tDeltaZ, cfg.fcmpLatency)
+  val selectedTMax = MuxLookup(nextAxis, tMaxZAtAxis)(Seq(
+    0.U -> tMaxXAtAxis,
+    1.U -> tMaxYAtAxis
+  ))
+  val selectedTDelta = MuxLookup(nextAxis, tDeltaZAtAxis)(Seq(
+    0.U -> tDeltaXAtAxis,
+    1.U -> tDeltaYAtAxis
+  ))
+  val addSelectedTMax = Module(new FADD(cfg))
+  addSelectedTMax.io.a := selectedTMax
+  addSelectedTMax.io.b := selectedTDelta
 
   val outValid = pipeBool(inFire, totalStepLatency)
   val terminalAtOut = pipeBool(terminalNow, totalStepLatency)
   val ctxAtOut = pipeData(ctx, totalStepLatency)
   val axisAtOut = pipeUInt(nextAxis, totalStepLatency - cfg.fcmpLatency)
-  val addXAtOut = pipeUInt(addTMaxX.io.res, totalStepLatency - cfg.faddLatency)
-  val addYAtOut = pipeUInt(addTMaxY.io.res, totalStepLatency - cfg.faddLatency)
-  val addZAtOut = pipeUInt(addTMaxZ.io.res, totalStepLatency - cfg.faddLatency)
+  val selectedAddAtOut = pipeUInt(addSelectedTMax.io.res, totalStepLatency - stepCalcLatency)
   val triStartAtOut = pipeUInt(io.subgrid_mem_resp.bits.triStart, totalStepLatency - memLatency)
   val triCountAtOut = pipeUInt(io.subgrid_mem_resp.bits.triCount, totalStepLatency - memLatency)
 
@@ -117,13 +126,13 @@ class DdaStepPipelinePE(
   nextCtx := ctxAtOut
   when(axisAtOut === 0.U) {
     nextCtx.subX := ctxAtOut.subX + negStep(stepNegXAtOut)
-    nextCtx.tMaxX := addXAtOut
+    nextCtx.tMaxX := selectedAddAtOut
   }.elsewhen(axisAtOut === 1.U) {
     nextCtx.subY := ctxAtOut.subY + negStep(stepNegYAtOut)
-    nextCtx.tMaxY := addYAtOut
+    nextCtx.tMaxY := selectedAddAtOut
   }.otherwise {
     nextCtx.subZ := ctxAtOut.subZ + negStep(stepNegZAtOut)
-    nextCtx.tMaxZ := addZAtOut
+    nextCtx.tMaxZ := selectedAddAtOut
   }
   nextCtx.iter := ctxAtOut.iter + 1.U
 

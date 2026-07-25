@@ -242,9 +242,15 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val bCtxCmp = pipeData(bCtx, cmpLatency)
   val bValidCmp = bCtxCmp.valid
   val bInBoundsCmp = bCtxCmp.inBounds
-  val bHit = bInBoundsCmp && cmpHit.io.lt
   val bSampleCmp = pipeUInt(bSample, cmpLatency)
   val bSampleNegCmp = pipeBool(bSampleNeg, cmpLatency)
+  // Positive samples use the normal threshold test.  A negative sample does
+  // not hit early; it becomes a terminal hit only when this sample consumes
+  // the final march step.
+  val bSamplePositive = !bSampleNegCmp && (bSampleCmp =/= fpZero)
+  val positiveHit = bSamplePositive && cmpHit.io.lt
+  val finalStepNegativeHit = bSampleNegCmp && (bCtxCmp.iter + 1.U >= maxStepsU)
+  val bHit = bInBoundsCmp && (positiveHit || finalStepNegativeHit)
 
   val prevSdfHalf = fpHalf(bCtxCmp.prevSdf)
   val negPrevSdfHalf = neg(prevSdfHalf)
@@ -274,7 +280,9 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val hitOutValid = pipeBool(bValidCmp && bHit, advanceLatency)
   val hitOutIter = advanceCtx.iter + 1.U
   val hitStayDist = advanceCtx.ray.dist
-  val hitOutDist = Mux(sampleIsNegAtOut, negDistAdd.io.res, hitStayDist)
+  // On a final-step negative hit, report the current crossing t.  The backoff
+  // result is deliberately not committed because tracing terminates here.
+  val hitOutDist = hitStayDist
   val hitOutPrevSdf = pipeUInt(nextPrevSdfRaw, advanceLatency)
 
   // --------------------

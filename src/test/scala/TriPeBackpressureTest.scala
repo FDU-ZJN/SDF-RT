@@ -22,12 +22,12 @@ class TriPeBackpressureTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.mem_resp.bits.block.tris(lane).v0.x.poke(0.U)
         dut.io.mem_resp.bits.block.tris(lane).v0.y.poke(0.U)
         dut.io.mem_resp.bits.block.tris(lane).v0.z.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v1.x.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v1.y.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v1.z.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v2.x.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v2.y.poke(0.U)
-        dut.io.mem_resp.bits.block.tris(lane).v2.z.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e1.x.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e1.y.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e1.z.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e2.x.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e2.y.poke(0.U)
+        dut.io.mem_resp.bits.block.tris(lane).e2.z.poke(0.U)
         dut.io.mem_resp.bits.block.tris(lane).id.poke(0.U)
       }
       for (ctx <- 0 until 2) {

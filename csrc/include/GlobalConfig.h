@@ -12,10 +12,12 @@ inline constexpr int kTriNumPE = 1;
 inline constexpr int kTriCacheLineTriangles = 4;
 inline constexpr int kTriNumBanks = 4;
 inline constexpr int kSDFGlobalRes = 16;
-inline constexpr int kSDFSubRes = 8;
+inline constexpr int kSDFSubRes = 4;
 
 inline constexpr int kDdaGlobalRes = 16;
-inline constexpr int kDdaSubRes = 2;
+inline constexpr int kDdaSubRes = 4;
+inline constexpr int kSubgridBlockSize = 32;
+inline constexpr int kSubgridCompactMetaDepth = 12288;
 
 inline constexpr int kSanityFullX = 64;
 inline constexpr int kSanityFullY = 145;

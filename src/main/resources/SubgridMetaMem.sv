@@ -1,142 +1,156 @@
 module SubgridMetaMem #(
   parameter int ADDR_WIDTH = 32,
-  parameter int GLOBALRES = 8,
-  parameter int SUBRES = 1,
+  parameter int GLOBALRES = 16,
+  parameter int SUBRES = 2,
   parameter int LATENCY = 2,
-  parameter int MAX_ENTRIES = 512,
-  parameter string INIT_FILE = "subgrid_meta_mem.mem"
+  parameter int MAX_ENTRIES = 32768,
+  parameter int BLOCK_DIR_DEPTH = 1024,
+  parameter int COMPACT_META_DEPTH = 4096,
+  parameter string DIR_INIT_FILE = "subgrid_block_dir.mem",
+  parameter string META_INIT_FILE = "subgrid_compact_meta.mem"
 ) (
-  input  logic                   clk,
-  input  logic                   reset,
-  input  logic [ADDR_WIDTH-1:0]  globalIdx_a,
-  input  logic [ADDR_WIDTH-1:0]  subIdx_a,
-  input  logic                   en_a,
-  output logic [21:0]            triStart_a,
-  output logic [9:0]             triCount_a,
-  output logic                   valid_a,
-  input  logic [ADDR_WIDTH-1:0]  globalIdx_b,
-  input  logic [ADDR_WIDTH-1:0]  subIdx_b,
-  input  logic                   en_b,
-  output logic [21:0]            triStart_b,
-  output logic [9:0]             triCount_b,
-  output logic                   valid_b
+  input logic clk,
+  input logic reset,
+  input logic [ADDR_WIDTH-1:0] globalIdx,
+  input logic [ADDR_WIDTH-1:0] subIdx,
+  input logic en,
+  output logic [21:0] triStart,
+  output logic [9:0] triCount,
+  output logic valid
 );
-
-  localparam int FIXED_LATENCY     = LATENCY;
+  localparam int FIXED_LATENCY = 2;
   localparam int GLOBAL_ADDR_WIDTH = $clog2(GLOBALRES) * 3;
-  localparam int SUB_ADDR_WIDTH    = $clog2(SUBRES) * 3;
+  localparam int SUB_ADDR_WIDTH = $clog2(SUBRES) * 3;
   localparam int LOOKUP_ADDR_WIDTH = GLOBAL_ADDR_WIDTH + SUB_ADDR_WIDTH;
-  localparam int MEM_ADDR_WIDTH    = (MAX_ENTRIES <= 1) ? 1 : $clog2(MAX_ENTRIES);
-  localparam int MEM_SIZE_BITS     = MAX_ENTRIES * 32;
+  localparam int DIR_ADDR_WIDTH = (BLOCK_DIR_DEPTH <= 1) ? 1 : $clog2(BLOCK_DIR_DEPTH);
+  localparam int META_ADDR_WIDTH = (COMPACT_META_DEPTH <= 1) ? 1 : $clog2(COMPACT_META_DEPTH);
 
-  logic [31:0] lookup_addr_a;
-  logic [31:0] lookup_addr_b;
-  logic [MEM_ADDR_WIDTH-1:0] mem_addr_a;
-  logic [MEM_ADDR_WIDTH-1:0] mem_addr_b;
-  logic [31:0] data_raw_a;
-  logic [31:0] data_raw_b;
-  logic                      in_range_pipe_a [0:FIXED_LATENCY-1];
-  logic                      in_range_pipe_b [0:FIXED_LATENCY-1];
-  logic [FIXED_LATENCY-1:0] valid_pipe_a;
-  logic [FIXED_LATENCY-1:0] valid_pipe_b;
-  integer i;
+  function automatic [5:0] popcount32(input logic [31:0] value);
+    integer bit_idx;
+    begin
+      popcount32 = 0;
+      for (bit_idx = 0; bit_idx < 32; bit_idx = bit_idx + 1)
+        popcount32 = popcount32 + value[bit_idx];
+    end
+  endfunction
+
+  function automatic [META_ADDR_WIDTH-1:0] compact_address(
+    input logic [47:0] directory,
+    input logic [4:0] lane);
+    logic [15:0] full_address;
+    begin
+      full_address = {1'b0, directory[46:32]} +
+                     {10'b0, popcount32(directory[31:0] & ((32'h1 << lane) - 1))};
+      compact_address = full_address[META_ADDR_WIDTH-1:0];
+    end
+  endfunction
 
   initial begin
-    if (LATENCY != FIXED_LATENCY) begin
-      $warning("[SubgridMetaMem] LATENCY=%0d is ignored, fixed latency is %0d", LATENCY, FIXED_LATENCY);
-    end
+    if (LATENCY != FIXED_LATENCY)
+      $error("[SubgridMetaMem] LATENCY must be %0d, got %0d", FIXED_LATENCY, LATENCY);
   end
 
+  logic [31:0] lookup;
   generate
     if (SUB_ADDR_WIDTH > 0) begin : gen_combined_addr
-      logic [LOOKUP_ADDR_WIDTH-1:0] combined_addr_a;
-      logic [LOOKUP_ADDR_WIDTH-1:0] combined_addr_b;
-      assign combined_addr_a = {globalIdx_a[GLOBAL_ADDR_WIDTH-1:0], subIdx_a[SUB_ADDR_WIDTH-1:0]};
-      assign combined_addr_b = {globalIdx_b[GLOBAL_ADDR_WIDTH-1:0], subIdx_b[SUB_ADDR_WIDTH-1:0]};
-      assign lookup_addr_a = {{(32-LOOKUP_ADDR_WIDTH){1'b0}}, combined_addr_a};
-      assign lookup_addr_b = {{(32-LOOKUP_ADDR_WIDTH){1'b0}}, combined_addr_b};
+      assign lookup = {{(32-LOOKUP_ADDR_WIDTH){1'b0}}, globalIdx[GLOBAL_ADDR_WIDTH-1:0], subIdx[SUB_ADDR_WIDTH-1:0]};
     end else begin : gen_global_only_addr
-      assign lookup_addr_a = {{(32-GLOBAL_ADDR_WIDTH){1'b0}}, globalIdx_a[GLOBAL_ADDR_WIDTH-1:0]};
-      assign lookup_addr_b = {{(32-GLOBAL_ADDR_WIDTH){1'b0}}, globalIdx_b[GLOBAL_ADDR_WIDTH-1:0]};
+      assign lookup = {{(32-GLOBAL_ADDR_WIDTH){1'b0}}, globalIdx[GLOBAL_ADDR_WIDTH-1:0]};
     end
   endgenerate
 
-  assign mem_addr_a = lookup_addr_a[MEM_ADDR_WIDTH-1:0];
-  assign mem_addr_b = lookup_addr_b[MEM_ADDR_WIDTH-1:0];
+  logic [DIR_ADDR_WIDTH-1:0] dir_addr;
+  logic [47:0] dir_raw;
+  logic [4:0] lane_s1;
+  logic range_s1;
+  logic [META_ADDR_WIDTH-1:0] meta_addr;
+  logic hit_s2;
+  logic [31:0] meta_raw;
+  logic [FIXED_LATENCY-1:0] valid_pipe;
 
-  xpm_memory_dprom #(
-    .MEMORY_SIZE        (MEM_SIZE_BITS),
-    .MEMORY_PRIMITIVE   ("block"),
-    .MEMORY_INIT_FILE   (INIT_FILE),
-    .MEMORY_INIT_PARAM  (""),
-    .USE_MEM_INIT       (1),
-    .READ_DATA_WIDTH_A  (32),
-    .READ_DATA_WIDTH_B  (32),
-    .ADDR_WIDTH_A       (MEM_ADDR_WIDTH),
-    .ADDR_WIDTH_B       (MEM_ADDR_WIDTH),
-    .READ_RESET_VALUE_A ("0"),
-    .READ_RESET_VALUE_B ("0"),
-    .READ_LATENCY_A     (FIXED_LATENCY),
-    .READ_LATENCY_B     (FIXED_LATENCY),
-    .CLOCKING_MODE      ("common_clock"),
-    .RST_MODE_A         ("SYNC"),
-    .RST_MODE_B         ("SYNC"),
-    .ECC_MODE           ("no_ecc"),
-    .WAKEUP_TIME        ("disable_sleep"),
-    .AUTO_SLEEP_TIME    (0),
-    .MESSAGE_CONTROL    (0),
-    .MEMORY_OPTIMIZATION("true"),
-    .CASCADE_HEIGHT     (0),
-    .RAM_DECOMP         ("auto"),
-    .SIM_ASSERT_CHK     (0),
-    .IGNORE_INIT_SYNTH  (0)
-  ) subgridmem_xpm_inst (
-    .sleep          (1'b0),
-    .clka           (clk),
-    .clkb           (clk),
-    .rsta           (reset),
-    .rstb           (reset),
-    .ena            (1'b1),
-    .enb            (1'b1),
-    .regcea         (1'b1),
-    .regceb         (1'b1),
-    .addra          (mem_addr_a),
-    .addrb          (mem_addr_b),
-    .injectsbiterra (1'b0),
-    .injectdbiterra (1'b0),
-    .douta          (data_raw_a),
-    .doutb          (data_raw_b),
-    .sbiterra       (),
-    .dbiterra       ()
-  );
+  assign dir_addr = lookup[DIR_ADDR_WIDTH+4:5];
+  assign meta_addr = compact_address(dir_raw, lane_s1);
 
   always_ff @(posedge clk) begin
+    lane_s1 <= lookup[4:0];
+    range_s1 <= lookup < MAX_ENTRIES;
+    hit_s2 <= range_s1 && dir_raw[{1'b0, lane_s1}];
+
     if (reset) begin
-      valid_pipe_a <= '0;
-      valid_pipe_b <= '0;
-      for (i = 0; i < FIXED_LATENCY; i = i + 1) begin
-        in_range_pipe_a[i] <= 1'b0;
-        in_range_pipe_b[i] <= 1'b0;
-      end
+      valid_pipe <= '0;
+      hit_s2 <= 1'b0;
     end else begin
-      valid_pipe_a[0] <= en_a;
-      valid_pipe_b[0] <= en_b;
-      in_range_pipe_a[0] <= (lookup_addr_a < MAX_ENTRIES);
-      in_range_pipe_b[0] <= (lookup_addr_b < MAX_ENTRIES);
-      for (i = 1; i < FIXED_LATENCY; i = i + 1) begin
-        valid_pipe_a[i] <= valid_pipe_a[i - 1];
-        valid_pipe_b[i] <= valid_pipe_b[i - 1];
-        in_range_pipe_a[i] <= in_range_pipe_a[i - 1];
-        in_range_pipe_b[i] <= in_range_pipe_b[i - 1];
-      end
+      valid_pipe <= {valid_pipe[FIXED_LATENCY-2:0], en};
     end
   end
 
-  assign triStart_a = in_range_pipe_a[FIXED_LATENCY - 1] ? data_raw_a[31:10] : 22'h0;
-  assign triCount_a = in_range_pipe_a[FIXED_LATENCY - 1] ? data_raw_a[9:0] : 10'h0;
-  assign valid_a    = valid_pipe_a[FIXED_LATENCY - 1];
-  assign triStart_b = in_range_pipe_b[FIXED_LATENCY - 1] ? data_raw_b[31:10] : 22'h0;
-  assign triCount_b = in_range_pipe_b[FIXED_LATENCY - 1] ? data_raw_b[9:0] : 10'h0;
-  assign valid_b    = valid_pipe_b[FIXED_LATENCY - 1];
+  xpm_memory_sprom #(
+    .MEMORY_SIZE(BLOCK_DIR_DEPTH * 48),
+    .MEMORY_PRIMITIVE("block"),
+    .MEMORY_INIT_FILE(DIR_INIT_FILE),
+    .MEMORY_INIT_PARAM(""),
+    .USE_MEM_INIT(1),
+    .READ_DATA_WIDTH_A(48),
+    .ADDR_WIDTH_A(DIR_ADDR_WIDTH),
+    .READ_LATENCY_A(1),
+    .READ_RESET_VALUE_A("0"),
+    .RST_MODE_A("SYNC"),
+    .ECC_MODE("no_ecc"),
+    .WAKEUP_TIME("disable_sleep"),
+    .AUTO_SLEEP_TIME(0),
+    .MEMORY_OPTIMIZATION("true"),
+    .CASCADE_HEIGHT(0),
+    .MESSAGE_CONTROL(0),
+    .SIM_ASSERT_CHK(0),
+    .IGNORE_INIT_SYNTH(0)
+  ) subgrid_dir_xpm (
+    .sleep(1'b0),
+    .clka(clk),
+    .rsta(reset),
+    .ena(1'b1),
+    .regcea(1'b1),
+    .addra(dir_addr),
+    .injectsbiterra(1'b0),
+    .injectdbiterra(1'b0),
+    .douta(dir_raw),
+    .sbiterra(),
+    .dbiterra()
+  );
 
+  xpm_memory_sprom #(
+    .MEMORY_SIZE(COMPACT_META_DEPTH * 32),
+    .MEMORY_PRIMITIVE("block"),
+    .MEMORY_INIT_FILE(META_INIT_FILE),
+    .MEMORY_INIT_PARAM(""),
+    .USE_MEM_INIT(1),
+    .READ_DATA_WIDTH_A(32),
+    .ADDR_WIDTH_A(META_ADDR_WIDTH),
+    .READ_LATENCY_A(1),
+    .READ_RESET_VALUE_A("0"),
+    .RST_MODE_A("SYNC"),
+    .ECC_MODE("no_ecc"),
+    .WAKEUP_TIME("disable_sleep"),
+    .AUTO_SLEEP_TIME(0),
+    .MEMORY_OPTIMIZATION("true"),
+    .CASCADE_HEIGHT(0),
+    .MESSAGE_CONTROL(0),
+    .SIM_ASSERT_CHK(0),
+    .IGNORE_INIT_SYNTH(0)
+  ) subgrid_meta_xpm (
+    .sleep(1'b0),
+    .clka(clk),
+    .rsta(reset),
+    .ena(1'b1),
+    .regcea(1'b1),
+    .addra(meta_addr),
+    .injectsbiterra(1'b0),
+    .injectdbiterra(1'b0),
+    .douta(meta_raw),
+    .sbiterra(),
+    .dbiterra()
+  );
+
+  assign triStart = hit_s2 ? meta_raw[31:10] : 22'h0;
+  assign triCount = hit_s2 ? meta_raw[9:0] : 10'h0;
+  assign valid = valid_pipe[FIXED_LATENCY-1];
 endmodule

@@ -1,9 +1,9 @@
 import chisel3._
 import chisel3.util._
 import raytrace_utils._
-import DDA.DDA
+import Backend.Backend
 import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
-import Trace.{TraceController, TriMemDmaReadData}
+import Trace.TriMemDmaReadData
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
@@ -23,14 +23,12 @@ class FpgaTop extends Module {
     val setup_ready = Output(Bool())
 
     val ray_in_valid = Input(Bool())
-    val ray_in = Input(Vec(2, new RayIngress(c.cfg)))
-    val ray_in_mask = Input(UInt(2.W))
+    val ray_in = Input(new RayIngress(c.cfg))
     val ray_in_last = Input(Bool())
     val ray_in_ready = Output(Bool())
 
     val result_valid = Output(Bool())
-    val result = Output(Vec(2, new RenderResult(c.cfg, c.addrWidth)))
-    val result_mask = Output(UInt(2.W))
+    val result = Output(new RenderResult(c.cfg, c.addrWidth))
     val result_last = Output(Bool())
     val result_ready = Input(Bool())
     val batch_done = Output(Bool())
@@ -51,13 +49,12 @@ class FpgaTop extends Module {
   })
 
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
-  val initStages = Seq.fill(2)(Module(new InitStage(c.cfg, c.addrWidth)))
+  val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
-  val ddaStage = Module(new DDA(c.cfg, c.addrWidth, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
-  val traceController = Module(new TraceController(c))
-  val earlyQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
-  val traceQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
-  val resultQ = Module(new FourToTwoArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.resultArbiterFifoDepth))
+  val backend = Module(new Backend(c, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
+  val earlyQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), 2, GlobalConfig.resultArbiterFifoDepth))
+  val traceQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.traceNumWorkers, GlobalConfig.resultArbiterFifoDepth))
+  val resultQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), 2, GlobalConfig.resultArbiterFifoDepth))
 
   val setupPending = RegInit(false.B)
   val setupOrigin = Reg(new Vec3(c.cfg))
@@ -77,11 +74,9 @@ class FpgaTop extends Module {
   setupUnit.io.setup_grid_max := setupGridMax
   io.setup_ready := !setupPending
 
-  for (lane <- 0 until 2) {
-    initStages(lane).io.setup_origin := setupUnit.io.origin
-    initStages(lane).io.setup_grid_min := setupUnit.io.gridMin
-    initStages(lane).io.setup_grid_max := setupUnit.io.gridMax
-  }
+  initStage.io.setup_origin := setupUnit.io.origin
+  initStage.io.setup_grid_min := setupUnit.io.gridMin
+  initStage.io.setup_grid_max := setupUnit.io.gridMax
   sdfStage.io.grid_min := setupUnit.io.gridMin
   sdfStage.io.inv_voxel := setupUnit.io.invVoxel
   sdfStage.io.inv_sub_voxel := setupUnit.io.invSubVoxel
@@ -91,24 +86,19 @@ class FpgaTop extends Module {
   val acceptedCount = RegInit(0.U(32.W))
   val emittedCount = RegInit(0.U(32.W))
   val protocolError = RegInit(false.B)
-  val inputMaskCount = PopCount(io.ray_in_mask)
-  val inputStageReady = (0 until 2).map(lane => !io.ray_in_mask(lane) || initStages(lane).io.in.ready).reduce(_ && _)
-  val inputCanAccept = inputStageReady && !batchClosed && setupUnit.io.setup_finish
+  val inputCanAccept = initStage.io.in.ready && !batchClosed && setupUnit.io.setup_finish
   io.ray_in_ready := inputCanAccept
   val inputFire = io.ray_in_valid && io.ray_in_ready
-  when(io.ray_in_valid && io.ray_in_mask === 0.U) { protocolError := true.B }
   when(io.ray_in_valid && batchClosed) { protocolError := true.B }
   when(inputFire) {
-    acceptedCount := acceptedCount + inputMaskCount
+    acceptedCount := acceptedCount + 1.U
     when(io.ray_in_last) { batchClosed := true.B }
   }
-  for (lane <- 0 until 2) {
-    initStages(lane).io.in.valid := io.ray_in_valid && io.ray_in_mask(lane) && inputCanAccept
-    initStages(lane).io.in.bits.ray.origin := io.ray_in(lane).origin
-    initStages(lane).io.in.bits.ray.dir := io.ray_in(lane).dir
-    initStages(lane).io.in.bits.ray.dist := 0.U
-    initStages(lane).io.in.bits.meta.rayId := io.ray_in(lane).rayId
-  }
+  initStage.io.in.valid := io.ray_in_valid && inputCanAccept
+  initStage.io.in.bits.ray.origin := io.ray_in.origin
+  initStage.io.in.bits.ray.dir := io.ray_in.dir
+  initStage.io.in.bits.ray.dist := 0.U
+  initStage.io.in.bits.meta.rayId := io.ray_in.rayId
 
   def missResult(rayId: UInt): RenderResult = {
     val r = Wire(new RenderResult(c.cfg, c.addrWidth))
@@ -119,46 +109,35 @@ class FpgaTop extends Module {
     r.rgb8 := 0.U
     r
   }
-  for (lane <- 0 until 2) {
-    val initOut = initStages(lane).io.out
-    earlyQ.io.enq(lane).valid := initOut.valid && !initOut.bits.hit
-    earlyQ.io.enq(lane).bits := missResult(initOut.bits.meta.rayId)
-    sdfStage.io.issue_in(lane).valid := initOut.valid && initOut.bits.hit
-    sdfStage.io.issue_in(lane).bits.ray := initOut.bits.ray
-    sdfStage.io.issue_in(lane).bits.meta := initOut.bits.meta
-    initOut.ready := Mux(initOut.bits.hit, sdfStage.io.issue_in(lane).ready, earlyQ.io.enq(lane).ready)
+  val initOut = initStage.io.out
+  earlyQ.io.enq(0).valid := initOut.valid && !initOut.bits.hit
+  earlyQ.io.enq(0).bits := missResult(initOut.bits.meta.rayId)
+  sdfStage.io.issue_in.valid := initOut.valid && initOut.bits.hit
+  sdfStage.io.issue_in.bits.ray := initOut.bits.ray
+  sdfStage.io.issue_in.bits.meta := initOut.bits.meta
+  initOut.ready := Mux(initOut.bits.hit, sdfStage.io.issue_in.ready, earlyQ.io.enq(0).ready)
 
-    val sdfOut = sdfStage.io.miss_out(lane)
-    earlyQ.io.enq(lane + 2).valid := sdfOut.valid
-    earlyQ.io.enq(lane + 2).bits := missResult(sdfOut.bits.meta.rayId)
-    sdfOut.ready := earlyQ.io.enq(lane + 2).ready
-  }
+  val sdfOut = sdfStage.io.miss_out
+  earlyQ.io.enq(1).valid := sdfOut.valid
+  earlyQ.io.enq(1).bits := missResult(sdfOut.bits.meta.rayId)
+  sdfOut.ready := earlyQ.io.enq(1).ready
 
-  sdfStage.io.dda_context_id <> ddaStage.io.init_alloc
-  ddaStage.io.context_in <> sdfStage.io.dda_context_out
+  sdfStage.io.dda_context_id <> backend.io.init_alloc
+  backend.io.context_in <> sdfStage.io.dda_context_out
 
-  traceController.io.trace_claim <> ddaStage.io.trace_claim
-  ddaStage.io.trace_cmd_context := traceController.io.trace_cmd_context
-  ddaStage.io.trace_cmd_active := traceController.io.trace_cmd_active
-  for (lane <- 0 until GlobalConfig.traceNumWorkers * 2) {
-    traceController.io.trace_cmd(lane) <> ddaStage.io.trace_cmd(lane)
-  }
-  traceController.io.trace_dda_done := ddaStage.io.trace_dda_done
-  ddaStage.io.trace_stop := traceController.io.trace_stop
-  ddaStage.io.trace_release := traceController.io.trace_release
-  traceController.io.triangleBaseAddress := io.triangle_base_address
-  io.tri_dma_cmd <> traceController.io.triDmaCmd
-  traceController.io.triDmaData <> io.tri_dma_data
-  traceController.io.triDmaStatus <> io.tri_dma_status
-  io.tri_dma_read_error := traceController.io.triDmaReadError
-  io.tri_dma_malformed_line_count := traceController.io.triDmaMalformedLineCount
-  io.tri_dma_status_error_count := traceController.io.triDmaStatusErrorCount
-  io.tri_dma_tag_mismatch_count := traceController.io.triDmaTagMismatchCount
-  io.tri_axi_issued_count := traceController.io.triAxiIssuedCount
-  io.tri_axi_completed_count := traceController.io.triAxiCompletedCount
-  io.tri_axi_outstanding_count := traceController.io.triAxiOutstandingCount
-  for (worker <- 0 until 4) {
-    val result = traceController.io.result_out(worker)
+  backend.io.triangleBaseAddress := io.triangle_base_address
+  io.tri_dma_cmd <> backend.io.triDmaCmd
+  backend.io.triDmaData <> io.tri_dma_data
+  backend.io.triDmaStatus <> io.tri_dma_status
+  io.tri_dma_read_error := backend.io.triDmaReadError
+  io.tri_dma_malformed_line_count := backend.io.triDmaMalformedLineCount
+  io.tri_dma_status_error_count := backend.io.triDmaStatusErrorCount
+  io.tri_dma_tag_mismatch_count := backend.io.triDmaTagMismatchCount
+  io.tri_axi_issued_count := backend.io.triAxiIssuedCount
+  io.tri_axi_completed_count := backend.io.triAxiCompletedCount
+  io.tri_axi_outstanding_count := backend.io.triAxiOutstandingCount
+  for (worker <- 0 until GlobalConfig.traceNumWorkers) {
+    val result = backend.io.result_out(worker)
     traceQ.io.enq(worker).valid := result.valid
     traceQ.io.enq(worker).bits.meta.rayId := result.bits.meta.rayId
     traceQ.io.enq(worker).bits.hit := result.bits.hit
@@ -168,28 +147,18 @@ class FpgaTop extends Module {
     result.ready := traceQ.io.enq(worker).ready
   }
 
-	val earlyDispatch = earlyQ.io.deq.valid && earlyQ.io.deq.ready
-	val traceDispatch = traceQ.io.deq.valid && traceQ.io.deq.ready
-	for (lane <- 0 until 2) {
-	  resultQ.io.enq(lane).valid := earlyDispatch && earlyQ.io.deq.bits.validMask(lane)
-	  resultQ.io.enq(lane).bits := earlyQ.io.deq.bits.bits(lane)
-	  resultQ.io.enq(lane + 2).valid := traceDispatch && traceQ.io.deq.bits.validMask(lane)
-	  resultQ.io.enq(lane + 2).bits := traceQ.io.deq.bits.bits(lane)
-	 }
-  earlyQ.io.deq.ready := resultQ.io.enq(0).ready && resultQ.io.enq(1).ready
-  traceQ.io.deq.ready := resultQ.io.enq(2).ready && resultQ.io.enq(3).ready
+  resultQ.io.enq(0) <> earlyQ.io.deq
+  resultQ.io.enq(1) <> traceQ.io.deq
   
   io.result_valid := resultQ.io.deq.valid
-  io.result_mask := resultQ.io.deq.bits.validMask
-  io.result := resultQ.io.deq.bits.bits
-  val resultCount = PopCount(resultQ.io.deq.bits.validMask)
-  val finalResult = batchClosed && (emittedCount + resultCount === acceptedCount)
+  io.result := resultQ.io.deq.bits
+  val finalResult = batchClosed && (emittedCount + 1.U === acceptedCount)
   io.result_last := resultQ.io.deq.valid && finalResult
   resultQ.io.deq.ready := io.result_ready
   val resultFire = resultQ.io.deq.fire
   val donePulse = WireDefault(false.B)
   when(resultFire) {
-    emittedCount := emittedCount + resultCount
+    emittedCount := emittedCount + 1.U
     when(finalResult) {
       batchClosed := false.B
       acceptedCount := 0.U
@@ -198,7 +167,7 @@ class FpgaTop extends Module {
     }
   }
   io.batch_done := donePulse
-  io.protocol_error := protocolError || ddaStage.io.watchdog_error
+  io.protocol_error := protocolError || backend.io.watchdog_error
 }
 
 object FpgaTopGen {

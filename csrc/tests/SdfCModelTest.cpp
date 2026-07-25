@@ -97,9 +97,12 @@ void testMarch() {
     configureConstantSdf(-0.01f);
     const sdf_cmodel::RayTrace negativeTrace = model.trace(ray, 2);
     const sdf_cmodel::MarchResult negativeHit = model.evaluate(negativeTrace, {2, 0.02f, 0.02f, 0.02f});
-    require(negativeHit.hit, "negative SDF within threshold should hit");
+    require(negativeHit.hit && negativeHit.iterations == 2,
+            "negative SDF should hit only on the final step");
+    require(negativeHit.termination == sdf_cmodel::Termination::FinalNegativeHit,
+            "negative final-step hit has unexpected terminal reason");
     requireNear(negativeHit.hitT, negativeTrace.entryT, 0.0f,
-                "first negative hit must back off by initial prevSdf=0");
+                "final negative hit must retain the current distance");
 
     const host_renderer::Ray away{{0.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 1.0f}};
     require(!model.trace(away, 2).initHit, "ray pointing away from grid should miss Init");

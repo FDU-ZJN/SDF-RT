@@ -49,7 +49,8 @@ csrc/
     ├── sdf_global_mem.mem        # Global SDF (16³ grid)
     ├── sdf_local_mem.mem         # Local SDF (4³ per cell)
     ├── sdf_local_mapping.mem     # Local SDF cell mapping
-    └── subgrid_meta_mem.mem      # Subgrid metadata (packed)
+    ├── subgrid_block_dir.mem     # 32-cell occupancy/base directory
+    └── subgrid_compact_meta.mem  # Metadata for non-empty cells
 ```
 
 ---
@@ -149,7 +150,7 @@ inline constexpr bool kEnableProgressPrint = true;  // Print progress messages
 ### 2. Subgrid Layout Optimization
 
 - Partitions space into subgrids
-- Assigns triangles to subgrids
+- Assigns triangles only to cells passing a conservative triangle-box SAT test
 - Produces compact triangle list: ~14203 entries (with repetition for subgrids)
 
 ### 3. SDF Generation
@@ -168,7 +169,8 @@ inline constexpr bool kEnableProgressPrint = true;  // Print progress messages
 | `normal_mem.mem` | Vertex normals | 3 floats/address |
 | `sdf_global_mem.mem` | Global SDF | 1 word/address |
 | `sdf_local_mem.mem` | Local SDF | 1 word/address |
-| `subgrid_meta_mem.mem` | Subgrid metadata | Packed (triStart, triCount) |
+| `subgrid_block_dir.mem` | Sparse lookup directory | 48-bit (base, occupancy mask) |
+| `subgrid_compact_meta.mem` | Non-empty subgrid metadata | 32-bit (triStart, triCount) |
 
 ### 5. Simulation Execution
 
@@ -223,14 +225,17 @@ All `.mem` files use the following format:
 - `@` prefix for address markers
 - Space-separated values (number per line matches BlackBox dimensions)
 
-### Packed Format (SubgridMetaMem)
+### Sparse Subgrid Format
 
 ```cpp
-uint32_t packed = ((triStart & 0xFFFF) << 16) | (triCount & 0xFFFF);
+denseCellId = globalIdx * (SubDdaRes * SubDdaRes * SubDdaRes) + subIdx;
+directory = blockDir[denseCellId >> 5];
+compactAddr = directory.base + popcount(directory.mask below denseCellId[4:0]);
 ```
 
-- Upper 16 bits: triangle start offset
-- Lower 16 bits: triangle count
+- Directory `[47]=0, [46:32]=base, [31:0]=occupancy mask`
+- Compact metadata `[31:10]=triStart, [9:0]=triCount`
+- Empty cells have no compact metadata entry and return zero directly
 
 ### Data Sources
 

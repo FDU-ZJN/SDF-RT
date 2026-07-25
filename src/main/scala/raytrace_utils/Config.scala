@@ -10,15 +10,15 @@ object GlobalConfig {
   val triMemNumPEs = 1
   val triMemCacheLineTriangles = 4
   val triMemNumBanks = 4
-  val sdfStepNumWorkers = 2
+  val sdfStepNumWorkers = 1
 
   private var useBlackBoxState = 0
-  def memImplMode: Int = useBlackBoxState
-  def setMemImplMode(value: Int): Unit = {
+  def memImplMode: Int = synchronized { useBlackBoxState }
+  def setMemImplMode(value: Int): Unit = synchronized {
     require(value >= 0 && value <= 2, s"memImplMode must be 0/1/2, got $value")
     useBlackBoxState = value
   }
-  def withMemImplMode[T](value: Int)(body: => T): T = {
+  def withMemImplMode[T](value: Int)(body: => T): T = synchronized {
     require(value >= 0 && value <= 2, s"memImplMode must be 0/1/2, got $value")
     val prev = useBlackBoxState
     useBlackBoxState = value
@@ -26,7 +26,7 @@ object GlobalConfig {
   }
 
   // Backward-compatible boolean API: false -> mode 0, true -> mode 1
-  def useBlackBox: Boolean = useBlackBoxState != 0
+  def useBlackBox: Boolean = synchronized { useBlackBoxState != 0 }
   def setUseBlackBox(value: Boolean): Unit = setMemImplMode(if (value) 1 else 0)
   def withUseBlackBox[T](value: Boolean)(body: => T): T = {
     withMemImplMode(if (value) 1 else 0)(body)
@@ -36,7 +36,7 @@ object GlobalConfig {
   // this independently selectable so Verilator can exercise that path while
   // retaining DPI models for the much larger SDF and subgrid memories.
   private var triangleDmaRefillState = false
-  def useTriangleDmaRefill: Boolean = useBlackBoxState == 2 || triangleDmaRefillState
+  def useTriangleDmaRefill: Boolean = synchronized { useBlackBoxState == 2 || triangleDmaRefillState }
   def withTriangleDmaRefill[T](value: Boolean)(body: => T): T = {
     val prev = triangleDmaRefillState
     triangleDmaRefillState = value
@@ -54,11 +54,12 @@ object GlobalConfig {
 
   val resultArbiterFifoDepth = 2
   val initOutputQueueDepth = 64
-  val ddaTraceSlotCount = 32
+  val ddaTraceSlotCount = 16
   val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
   val ddaTraceCmdDepth = 8
 
-  val sdfRetryQueueDepth = 64
+  // Preserve the old per-worker retry capacity after shrinking SDF to one lane.
+  val sdfRetryQueueDepth = 32
   val sdfFinalQueueDepth = 64
   val triMemDpiLatency = 3
   val triMemCacheHitLatency = 1
@@ -77,12 +78,14 @@ object GlobalConfig {
   val TriOriginalNum = 16000
 
   val GlobalSdfRes = 16
-  val LocalSdfRes = 8
+  val LocalSdfRes = 4
   val LocalCell = 2048
 
   val GlobalDdaRes = 16
-  val SubDdaRes = 2
+  val SubDdaRes = 4
   val DdaRes= GlobalDdaRes*SubDdaRes
+  // Signed range must include the two traversal sentinels -1 and DdaRes.
+  val ddaCoordWidth = log2Ceil(DdaRes + 1) + 1
 
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
@@ -101,6 +104,9 @@ object GlobalConfig {
   val subgridMetaMemAddrWidth = 32
   val subgridMetaMemTriStartWidth = 22
   val subgridMetaMemTriCountWidth = 10
+  val subgridBlockSize = 32
+  val subgridBlockShift = 5
+  val subgridCompactMetaDepth = 12288
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
@@ -120,16 +126,16 @@ object GlobalConfig {
   // ============================================================
   // SDF PE algorithm parameters
   // ============================================================
-  val sdfMaxSteps = 64
+  val sdfMaxSteps = 32
   // Conservative handoff to DDA: the scene sweep shows full coverage with no
   // surface overshoot at this threshold for all three SDF hierarchy levels.
-  val sdfThreshold1 = 0.32f
-  val sdfThreshold2 = 0.32f
-  val sdfThreshold3 = 0.32f
+  val sdfThreshold1 = 0.04f
+  val sdfThreshold2 = 0.08f
+  val sdfThreshold3 = 0.16f
   val sdfStepScale = 0.6f
 
 
-  val ddaMaxSteps = 3 * DdaRes
+  val ddaMaxSteps = 32
 
   private def alignUp(value: Int, quantum: Int): Int = {
     require(quantum > 0, s"alignment quantum must be > 0, got $quantum")
@@ -149,6 +155,7 @@ object GlobalConfig {
   val triMemBankDepth = triMemDepthFor(triMemNumBanks)
   val normalMemDepth = Trinum
   val subgridMetaMemDepth =  DdaRes*DdaRes*DdaRes
+  val subgridBlockDirDepth = (subgridMetaMemDepth + subgridBlockSize - 1) / subgridBlockSize
   val sdfGlobalMemDepth = GlobalSdfRes*GlobalSdfRes*GlobalSdfRes
   val sdfLocalMemDepth = LocalCell
 }

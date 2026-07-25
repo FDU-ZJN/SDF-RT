@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -42,6 +43,10 @@ struct Options {
     std::vector<float> thresholds = {
         0.00125f, 0.0025f, 0.005f, 0.01f, 0.02f, 0.04f, 0.08f, 0.16f, 0.32f};
 };
+
+// Keep this explicit report in lockstep with GlobalConfig.sdfMaxSteps and
+// sdfThreshold{1,2,3} in the Chisel RTL configuration.
+const MarchConfig kCurrentRtlMarchConfig{32, 0.04f, 0.08f, 0.16f};
 
 struct PixelRay {
     int x = 0;
@@ -334,6 +339,44 @@ int main(int argc, char** argv) {
         writeSummary(reportDir / "summary.csv", stats, bestIndex, hardwareCompatible, rtlShapeCompatible);
         writeBestJson(reportDir / "best.json", options, best, fullCoverage,
                       hardwareCompatible, rtlShapeCompatible, oracleMisses);
+
+        const auto currentConfigIt = std::find_if(candidates.begin(), candidates.end(),
+            [](const MarchConfig& config) {
+                constexpr float kConfigEpsilon = 1.0e-7f;
+                return config.maxSteps == kCurrentRtlMarchConfig.maxSteps &&
+                    std::fabs(config.threshold1 - kCurrentRtlMarchConfig.threshold1) < kConfigEpsilon &&
+                    std::fabs(config.threshold2 - kCurrentRtlMarchConfig.threshold2) < kConfigEpsilon &&
+                    std::fabs(config.threshold3 - kCurrentRtlMarchConfig.threshold3) < kConfigEpsilon;
+            });
+        if (currentConfigIt != candidates.end()) {
+            const size_t currentConfigIndex = static_cast<size_t>(currentConfigIt - candidates.begin());
+            const ConfigStats& currentStats = stats[currentConfigIndex];
+            std::ofstream currentFailures(reportDir / "current_rtl_failures.csv");
+            currentFailures << "x,y,oracle_t,sdf_hit,sdf_hit_t,signed_gap,iterations,termination,last_sample\n"
+                            << std::setprecision(9);
+            std::map<std::string, uint64_t> terminationCounts;
+            for (const PixelRay& pixel : hitRays) {
+                const auto trace = model.trace(pixel.ray, kCurrentRtlMarchConfig.maxSteps);
+                const MarchResult result = model.evaluate(trace, kCurrentRtlMarchConfig);
+                const char* termination = sdf_cmodel::terminationName(result.termination);
+                ++terminationCounts[termination];
+                const double gap = result.hit ? static_cast<double>(pixel.oracle.t) - result.hitT
+                                              : std::numeric_limits<double>::quiet_NaN();
+                if (!result.hit || gap < -options.surfaceEpsilon) {
+                    currentFailures << pixel.x << ',' << pixel.y << ',' << pixel.oracle.t << ','
+                                    << result.hit << ',' << result.hitT << ',' << gap << ','
+                                    << result.iterations << ',' << termination << ','
+                                    << result.lastSample << '\n';
+                }
+            }
+            std::cout << "Current RTL policy: misses=" << currentStats.sdfMisses
+                      << " overshoots=" << currentStats.overshoots << " terminations=";
+            for (const auto& [name, count] : terminationCounts) std::cout << ' ' << name << '=' << count;
+            std::cout << "\nCurrent-policy failures: "
+                      << std::filesystem::absolute(reportDir / "current_rtl_failures.csv") << '\n';
+        } else {
+            std::cerr << "WARNING: current RTL policy was not included in this candidate sweep.\n";
+        }
         std::ofstream failures(reportDir / "ray_failures.csv");
         failures << "x,y,oracle_t,sdf_hit,sdf_hit_t,signed_gap,iterations,termination,last_sample\n"
                  << std::setprecision(9);

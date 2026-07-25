@@ -113,7 +113,9 @@ void export_triangle_ddr_binary(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
 void export_sdf_local_mapping(const std::string& filename);
-void export_subgrid_meta_mem(const std::string& filename);
+void export_subgrid_sparse_mems(
+    const std::string& block_dir_filename,
+    const std::string& compact_meta_filename);
 void export_all_mems_for_vivado(const std::string& output_dir);
 
 // COE file export for FPGA BRAM initialization
@@ -121,7 +123,9 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
 void export_normal_mem_coe(const std::string& filename);
 void export_normal_id_mapping_coe(const std::string& filename);
 void export_sdf_local_mapping_coe(const std::string& filename);
-void export_subgrid_meta_mem_coe(const std::string& filename);
+void export_subgrid_sparse_mems_coe(
+    const std::string& block_dir_filename,
+    const std::string& compact_meta_filename);
 
 // Subgrid metadata accessors for export
 uint32_t get_subgrid_tri_start_uint32(unsigned int global_idx, unsigned int local_idx);

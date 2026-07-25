@@ -63,6 +63,7 @@ struct MarchConfig {
 
 enum class Termination {
     Hit,
+    FinalNegativeHit,
     InitMiss,
     OutOfBounds,
     MaxSteps,

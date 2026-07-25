@@ -11,6 +11,7 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <stdexcept>
 
 extern float get_global_sdf(int i, int j, int k);
 extern float get_local_sdf(int cell_idx, int li, int lj, int lk);
@@ -38,6 +39,68 @@ static inline std::string u32ToHex(uint32_t value) {
     return oss.str();
 }
 
+namespace {
+std::array<float, 9> triangleHardwareValues(const Triangle& tri) {
+    return {
+        tri.v0[0], tri.v0[1], tri.v0[2],
+        tri.v1[0] - tri.v0[0], tri.v1[1] - tri.v0[1], tri.v1[2] - tri.v0[2],
+        tri.v2[0] - tri.v0[0], tri.v2[1] - tri.v0[1], tri.v2[2] - tri.v0[2]
+    };
+}
+
+struct SparseSubgridImage {
+    std::vector<uint64_t> blockDirectory;
+    std::vector<uint32_t> compactMeta;
+    size_t nonEmptyCount = 0;
+};
+
+SparseSubgridImage buildSparseSubgridImage() {
+    if (!subgrid_layout_ready) {
+        throw std::runtime_error("subgrid layout is not ready");
+    }
+    constexpr uint32_t blockSize = rt::config::kSubgridBlockSize;
+    static_assert(blockSize == 32, "sparse subgrid directory requires 32-cell blocks");
+
+    const uint32_t totalCells = subgrid_global_cells * subgrid_sub_cells;
+    const uint32_t blockCount = (totalCells + blockSize - 1U) / blockSize;
+    SparseSubgridImage image;
+    image.blockDirectory.reserve(blockCount);
+    image.compactMeta.reserve(rt::config::kSubgridCompactMetaDepth);
+
+    for (uint32_t block = 0; block < blockCount; ++block) {
+        const uint32_t base = static_cast<uint32_t>(image.compactMeta.size());
+        uint32_t mask = 0;
+        for (uint32_t lane = 0; lane < blockSize; ++lane) {
+            const uint32_t denseCell = block * blockSize + lane;
+            if (denseCell >= totalCells) break;
+            const uint32_t globalIdx = denseCell / subgrid_sub_cells;
+            const uint32_t subIdx = denseCell % subgrid_sub_cells;
+            const uint32_t triStart = get_subgrid_tri_start_uint32(globalIdx, subIdx);
+            const uint16_t triCount = get_subgrid_tri_count_uint16(globalIdx, subIdx);
+            if (triCount == 0) continue;
+            if (triStart > 0x3FFFFFU || triCount > 0x3FFU) {
+                throw std::runtime_error("subgrid metadata field exceeds the hardware format");
+            }
+            if (image.compactMeta.size() >= rt::config::kSubgridCompactMetaDepth) {
+                throw std::runtime_error(
+                    "non-empty subgrid count exceeds compact metadata capacity " +
+                    std::to_string(rt::config::kSubgridCompactMetaDepth));
+            }
+            mask |= uint32_t(1) << lane;
+            image.compactMeta.push_back((triStart << 10) | uint32_t(triCount));
+        }
+        if (base > 0x7FFFU) {
+            throw std::runtime_error("subgrid directory base exceeds 15 bits");
+        }
+        image.blockDirectory.push_back((uint64_t(base) << 32) | uint64_t(mask));
+    }
+
+    image.nonEmptyCount = image.compactMeta.size();
+    image.compactMeta.resize(rt::config::kSubgridCompactMetaDepth, 0U);
+    return image;
+}
+} // namespace
+
 static inline size_t triBankDepthForExport(size_t triCount, int numPEs, int numBanks) {
     const size_t totalDepth = (triCount + static_cast<size_t>(numPEs) - 1) / static_cast<size_t>(numPEs);
     return (totalDepth + static_cast<size_t>(numBanks) - 1) / static_cast<size_t>(numBanks);
@@ -56,6 +119,7 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
     out << "// Triangle Memory Initialization File" << std::endl;
     out << "// Format: Each line = 1 bank-local address as one contiguous "
         << (numPEs * 9 * 32) << "-bit hex word" << std::endl;
+    out << "// Per triangle: {v0.xyz, e1.xyz=v1-v0, e2.xyz=v2-v0}" << std::endl;
     out << "// Bit layout matches COE/XPM: lane high-to-low, float[8:0] high-to-low" << std::endl;
     out << "// Total triangles: " << tri_store.size() << std::endl;
     out << "// Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
@@ -77,11 +141,7 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
                 }
             } else {
                 const Triangle& tri = tri_store[triIdx];
-                const float values[9] = {
-                    tri.v0[0], tri.v0[1], tri.v0[2],
-                    tri.v1[0], tri.v1[1], tri.v1[2],
-                    tri.v2[0], tri.v2[1], tri.v2[2]
-                };
+                const auto values = triangleHardwareValues(tri);
 
                 for (int f = 8; f >= 0; --f) {
                     hexLine += u32ToHex(floatToRawU32(values[f]));
@@ -117,11 +177,7 @@ void export_triangle_ddr_binary(const std::string& filename) {
             const size_t triIdx = blk * static_cast<size_t>(triBatchSize) + static_cast<size_t>(lane);
             if (triIdx >= tri_store.size()) break;
             const Triangle& tri = tri_store[triIdx];
-            const float values[9] = {
-                tri.v0[0], tri.v0[1], tri.v0[2],
-                tri.v1[0], tri.v1[1], tri.v1[2],
-                tri.v2[0], tri.v2[1], tri.v2[2]
-            };
+            const auto values = triangleHardwareValues(tri);
             for (int i = 0; i < 9; ++i) {
                 const uint32_t bits = floatToRawU32(values[i]);
                 const int offset = lane * 36 + i * 4;
@@ -292,49 +348,40 @@ void export_sdf_local_mapping(const std::string& filename) {
               << " entries) to " << filename << std::endl;
 }
 
-// Export subgrid metadata to .mem file
-void export_subgrid_meta_mem(const std::string& filename) {
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
+void export_subgrid_sparse_mems(
+    const std::string& block_dir_filename,
+    const std::string& compact_meta_filename) {
+    const SparseSubgridImage image = buildSparseSubgridImage();
+    std::ofstream dirOut(block_dir_filename);
+    std::ofstream metaOut(compact_meta_filename);
+    if (!dirOut.is_open() || !metaOut.is_open()) {
+        throw std::runtime_error("failed to open sparse subgrid .mem output files");
     }
 
-    out << "// Subgrid Meta Memory Initialization File" << std::endl;
-    out << "// Format: Each line = packed [31:10]=triStart(uint22), [9:0]=triCount(uint10)" << std::endl;
-    out << "// Linear $readmemh/XPM format: one 32-bit word per address, no @address markers" << std::endl;
-    out << std::endl;
-
-    extern bool subgrid_layout_ready;
-    extern uint32_t subgrid_global_cells;
-    extern uint32_t subgrid_sub_cells;
-    
-    if (!subgrid_layout_ready) {
-        std::cerr << "[MemExport] Warning: Subgrid layout not ready" << std::endl;
-        out << "// Subgrid layout not ready - file will be empty" << std::endl;
-        out.close();
-        return;
+    dirOut << "// Sparse Subgrid Block Directory: [47]=0 [46:32]=base [31:0]=occupancy mask\n\n";
+    for (uint64_t entry : image.blockDirectory) {
+        dirOut << std::hex << std::uppercase << std::setfill('0') << std::setw(12)
+               << entry << '\n';
+    }
+    metaOut << "// Compact Subgrid Meta: [31:10]=triStart [9:0]=triCount\n\n";
+    for (uint32_t entry : image.compactMeta) {
+        metaOut << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                << entry << '\n';
     }
 
-    uint32_t entryCount = 0;
-    for (uint32_t global_idx = 0; global_idx < subgrid_global_cells; ++global_idx) {
-        for (uint32_t sub_idx = 0; sub_idx < subgrid_sub_cells; ++sub_idx) {
-            uint32_t triStart = get_subgrid_tri_start_uint32(global_idx, sub_idx);
-            uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
-
-            uint32_t packed_value =
-                ((triStart & 0x3FFFFFu) << 10) |
-                static_cast<uint32_t>(triCount & 0x3FFu);
-
-            out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
-                << packed_value << std::endl;
-            ++entryCount;
-        }
-    }
-
-    out.close();
-    std::cout << "[MemExport] Exported subgrid meta (" << entryCount 
-              << " entries) to " << filename << std::endl;
+    const size_t denseBytes = size_t(subgrid_global_cells) * subgrid_sub_cells * 4U;
+    const size_t sparseBits = image.blockDirectory.size() * 48U +
+                              size_t(rt::config::kSubgridCompactMetaDepth) * 32U;
+    std::cout << "[MemExport] Sparse subgrid: total="
+              << size_t(subgrid_global_cells) * subgrid_sub_cells
+              << " non_empty=" << image.nonEmptyCount
+              << " occupancy=" << std::fixed << std::setprecision(2)
+              << (100.0 * double(image.nonEmptyCount) /
+                  double(size_t(subgrid_global_cells) * subgrid_sub_cells))
+              << "% dense_bytes=" << denseBytes
+              << " sparse_capacity_bytes=" << ((sparseBits + 7U) / 8U)
+              << " saved=" << (100.0 * (1.0 - double((sparseBits + 7U) / 8U) / double(denseBytes)))
+              << "%" << std::endl;
 }
 
 // Export triangle memory to COE file (for Vivado BRAM initialization)
@@ -349,7 +396,7 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
 
     // COE file format for Xilinx block RAM
     out << "; Triangle Memory COE File for Vivado" << std::endl;
-    out << "; Format: bank-local numPEs * 9 floats * 32 bits" << std::endl;
+    out << "; Format: bank-local numPEs * {v0.xyz,e1.xyz,e2.xyz} * 32 bits" << std::endl;
     out << "; Total triangles: " << tri_store.size() << std::endl;
     out << "; Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
@@ -373,11 +420,7 @@ void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBan
                 }
             } else {
                 const Triangle& tri = tri_store[triIdx];
-                const float values[9] = {
-                    tri.v0[0], tri.v0[1], tri.v0[2],
-                    tri.v1[0], tri.v1[1], tri.v1[2],
-                    tri.v2[0], tri.v2[1], tri.v2[2]
-                };
+                const auto values = triangleHardwareValues(tri);
 
                 for (int f = 8; f >= 0; --f) {
                     hexLine += u32ToHex(floatToRawU32(values[f]));
@@ -526,58 +569,34 @@ void export_sdf_local_mapping_coe(const std::string& filename) {
               << totalGlobals << " entries, " << bitsPerEntry << "-bit width)" << std::endl;
 }
 
-// Export subgrid metadata to COE file (for Vivado BRAM initialization)
-void export_subgrid_meta_mem_coe(const std::string& filename) {
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
+void export_subgrid_sparse_mems_coe(
+    const std::string& block_dir_filename,
+    const std::string& compact_meta_filename) {
+    const SparseSubgridImage image = buildSparseSubgridImage();
+    std::ofstream dirOut(block_dir_filename);
+    std::ofstream metaOut(compact_meta_filename);
+    if (!dirOut.is_open() || !metaOut.is_open()) {
+        throw std::runtime_error("failed to open sparse subgrid .coe output files");
     }
 
-    extern bool subgrid_layout_ready;
-    extern uint32_t subgrid_global_cells;
-    extern uint32_t subgrid_sub_cells;
-
-    if (!subgrid_layout_ready) {
-        std::cerr << "[MemExport] Warning: Subgrid layout not ready" << std::endl;
-        out << "; Subgrid layout not ready - file will be empty" << std::endl;
-        out.close();
-        return;
+    dirOut << "; Sparse Subgrid Block Directory [47]=0 [46:32]=base [31:0]=mask\n"
+           << "memory_initialization_radix=16;\nmemory_initialization_vector=\n";
+    for (size_t i = 0; i < image.blockDirectory.size(); ++i) {
+        dirOut << std::hex << std::uppercase << std::setfill('0') << std::setw(12)
+               << image.blockDirectory[i]
+               << (i + 1 == image.blockDirectory.size() ? ";\n" : ",\n");
     }
 
-    uint32_t totalEntries = subgrid_global_cells * subgrid_sub_cells;
-
-    // COE file format for Xilinx block RAM
-    out << "; Subgrid Meta Memory COE File for Vivado" << std::endl;
-    out << "; Format: 32-bit width per entry [31:10]=triStart, [9:0]=triCount" << std::endl;
-    out << "; Total entries: " << totalEntries << std::endl;
-    out << "memory_initialization_radix=16;" << std::endl;
-    out << "memory_initialization_vector=" << std::endl;
-
-    const int bitsPerEntry = 32;
-    uint32_t entryCount = 0;
-
-    for (uint32_t global_idx = 0; global_idx < subgrid_global_cells; ++global_idx) {
-        for (uint32_t sub_idx = 0; sub_idx < subgrid_sub_cells; ++sub_idx) {
-            uint32_t triStart = get_subgrid_tri_start_uint32(global_idx, sub_idx);
-            uint16_t triCount = get_subgrid_tri_count_uint16(global_idx, sub_idx);
-
-            uint32_t packed_value =
-                ((triStart & 0x3FFFFFu) << 10) |
-                static_cast<uint32_t>(triCount & 0x3FFu);
-
-            std::ostringstream oss;
-            oss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << packed_value;
-            out << oss.str() << (entryCount + 1 == totalEntries ? "" : ",") << std::endl;
-            ++entryCount;
-        }
+    metaOut << "; Compact Subgrid Meta [31:10]=triStart [9:0]=triCount\n"
+            << "memory_initialization_radix=16;\nmemory_initialization_vector=\n";
+    for (size_t i = 0; i < image.compactMeta.size(); ++i) {
+        metaOut << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                << image.compactMeta[i]
+                << (i + 1 == image.compactMeta.size() ? ";\n" : ",\n");
     }
 
-    out << ";" << std::endl;
-    out.close();
-    
-    std::cout << "[MemExport] Exported subgrid meta to COE " << filename << " (" 
-              << entryCount << " entries, " << bitsPerEntry << "-bit width)" << std::endl;
+    std::cout << "[MemExport] Exported sparse subgrid COE files: "
+              << block_dir_filename << ", " << compact_meta_filename << std::endl;
 }
 
 // Master export function
@@ -596,7 +615,9 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_normal_mem(output_dir + "/normal_mem.mem");
     export_sdf_mem(output_dir + "/sdf_global_mem.mem", output_dir + "/sdf_local_mem.mem");
     export_sdf_local_mapping(output_dir + "/sdf_local_mapping.mem");
-    export_subgrid_meta_mem(output_dir + "/subgrid_meta_mem.mem");
+    export_subgrid_sparse_mems(
+        output_dir + "/subgrid_block_dir.mem",
+        output_dir + "/subgrid_compact_meta.mem");
 
     // Export COE files for FPGA BRAM initialization
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
@@ -609,7 +630,9 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_normal_mem_coe(output_dir + "/normal_mem.coe");
     export_normal_id_mapping_coe(output_dir + "/normal_id_mapping.coe");
     export_sdf_local_mapping_coe(output_dir + "/sdf_local_mapping.coe");
-    export_subgrid_meta_mem_coe(output_dir + "/subgrid_meta_mem.coe");
+    export_subgrid_sparse_mems_coe(
+        output_dir + "/subgrid_block_dir.coe",
+        output_dir + "/subgrid_compact_meta.coe");
 
     std::cout << "========== Memory Export Complete ==========\n" << std::endl;
 }

@@ -7,7 +7,7 @@ WAVE_FILE = $(CSRC_DIR)/raytrace_$(MODE).vcd
 WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
 SBT = sbt
-JOBS ?= 1
+JOBS ?= 16
 
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
@@ -45,7 +45,8 @@ else ifeq ($(MODE),useblackbox)
 	             +TRI_MEM_BANK13_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank13.mem \
 	             +TRI_MEM_BANK14_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank14.mem \
 	             +TRI_MEM_BANK15_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank15.mem \
-	             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
+	             +SUBGRID_BLOCK_DIR_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_block_dir.mem \
+	             +SUBGRID_COMPACT_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_compact_meta.mem \
 	             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
 else ifeq ($(MODE),fpga)
 	VERILOG_DIR := $(ROOT_DIR)/build/fpga
@@ -73,7 +74,8 @@ else ifeq ($(MODE),fpga)
 	             +TRI_MEM_BANK13_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank13.mem \
 	             +TRI_MEM_BANK14_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank14.mem \
 	             +TRI_MEM_BANK15_FILE=$(VIVADO_MEM_DIR)/triangle_mem_bank15.mem \
-	             +SUBGRID_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_meta_mem.mem \
+	             +SUBGRID_BLOCK_DIR_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_block_dir.mem \
+	             +SUBGRID_COMPACT_META_MEM_FILE=$(VIVADO_MEM_DIR)/subgrid_compact_meta.mem \
 	             +NORMAL_MEM_FILE=$(VIVADO_MEM_DIR)/normal_mem.mem
 else
 	$(error Unknown MODE "$(MODE)". Use "noblackbox", "useblackbox", or "fpga")
@@ -129,11 +131,12 @@ V_OPTS = --cc --trace --exe -j $(JOBS) \
 # 目标程序路径（放在各自模式文件夹内）
 TARGET = $(VERILOG_DIR)/test_runner
 
-.PHONY: all clean run sim wave generate convert_vcd host-renderer-test sdf-cmodel sdf-cmodel-test sdf-sweep
+.PHONY: all clean run sim wave generate convert_vcd host-renderer-test subgrid-sparse-test sdf-cmodel sdf-cmodel-test sdf-sweep
 
 all: $(TARGET)
 
 HOST_RENDERER_TEST := $(ROOT_DIR)/build/host_renderer_test
+SUBGRID_SPARSE_TEST := $(ROOT_DIR)/build/subgrid_sparse_test
 
 host-renderer-test: $(HOST_RENDERER_TEST)
 	$(HOST_RENDERER_TEST)
@@ -146,6 +149,20 @@ $(HOST_RENDERER_TEST): $(CSRC_DIR)/tests/HostRendererTest.cpp \
 	$(CXX) -O2 -std=c++17 -I$(CSRC_DIR)/include \
 		$(CSRC_DIR)/tests/HostRendererTest.cpp \
 		$(CSRC_DIR)/src/utils/HostRenderer.cpp -o $@
+
+subgrid-sparse-test: $(SUBGRID_SPARSE_TEST)
+	$(SUBGRID_SPARSE_TEST)
+
+$(SUBGRID_SPARSE_TEST): $(CSRC_DIR)/tests/SubgridSparseTest.cpp \
+                         $(CSRC_DIR)/src/utils/Mem.cpp \
+                         $(CSRC_DIR)/src/utils/MemExport.cpp \
+                         $(CSRC_DIR)/include/Mem.h
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -std=c++17 -I$(CSRC_DIR)/include \
+		$(CSRC_DIR)/tests/SubgridSparseTest.cpp \
+		$(CSRC_DIR)/src/utils/Mem.cpp \
+		$(CSRC_DIR)/src/utils/MemExport.cpp \
+		-lcnpy -lz -ljpeg -o $@
 
 SDF_CMODEL := $(ROOT_DIR)/build/sdf_config_explorer
 SDF_CMODEL_TEST := $(ROOT_DIR)/build/sdf_cmodel_test
