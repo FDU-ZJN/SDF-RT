@@ -19,7 +19,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     val ray_ctx = Input(UInt(ctxW.W))
     val ray_valid = Input(Bool())
 
-    val tri_batch_in = Input(new TraceCellCmd(c.cfg, c.addrWidth))
+    val tri_batch_in = Input(new TriBatch(c.addrWidth))
     val tri_batch_ctx = Input(UInt(ctxW.W))
     val tri_batch_valid = Input(Bool())
     val dda_done = Input(Vec(ctxCount, Bool()))
@@ -48,8 +48,6 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val batchTriIdx = Reg(Vec(ctxCount, UInt(GlobalConfig.subgridMetaMemTriStartWidth.W)))
   private val batchTrisRemaining = Reg(Vec(ctxCount, UInt(GlobalConfig.subgridMetaMemTriCountWidth.W)))
   private val batchInProgress = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
-  private val batchCellExitT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
-  private val boundaryCheckPending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultCapturePending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
   private val bestT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
@@ -65,18 +63,11 @@ class TriPE(val c: TriPeConfig) extends Module {
   private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultEarlyStopReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
-  class BatchCmd extends Bundle {
-    val cmd = new TraceCellCmd(c.cfg, c.addrWidth)
-  }
-  private val batchQueues = Seq.fill(ctxCount)(Module(new Queue(new BatchCmd, 4, hasFlush = true)))
-
   private def clearContext(idx: Int): Unit = {
     ctxBusy(idx) := false.B
     batchTriIdx(idx) := 0.U
     batchTrisRemaining(idx) := 0.U
     batchInProgress(idx) := false.B
-    batchCellExitT(idx) := 0.U
-    boundaryCheckPending(idx) := false.B
     resultCapturePending(idx) := false.B
     bestT(idx) := missT
     bestId(idx) := 0.U
@@ -101,19 +92,12 @@ class TriPE(val c: TriPeConfig) extends Module {
   }
 
   for (ctx <- 0 until ctxCount) {
-    batchQueues(ctx).io.enq.valid := false.B
-    batchQueues(ctx).io.enq.bits := 0.U.asTypeOf(new BatchCmd)
-    batchQueues(ctx).io.deq.ready := false.B
-    batchQueues(ctx).io.flush.get := io.clear_ctx(ctx) ||
-      hitStop(ctx) ||
-      (io.ray_valid && io.start_ready(io.ray_ctx) && io.ray_ctx === ctx.U)
     io.start_ready(ctx) := !ctxBusy(ctx) && !resultValidReg(ctx)
     io.output_ready(ctx) := ctxBusy(ctx) &&
       !resultCapturePending(ctx) &&
       !resultValidReg(ctx) &&
       !hitStop(ctx) &&
-      !boundaryCheckPending(ctx) &&
-      batchQueues(ctx).io.enq.ready
+      !batchInProgress(ctx)
   }
 
   when(io.ray_valid && io.start_ready(io.ray_ctx)) {
@@ -123,7 +107,6 @@ class TriPE(val c: TriPeConfig) extends Module {
     batchTriIdx(io.ray_ctx) := 0.U
     batchTrisRemaining(io.ray_ctx) := 0.U
     batchInProgress(io.ray_ctx) := false.B
-    boundaryCheckPending(io.ray_ctx) := false.B
     resultCapturePending(io.ray_ctx) := false.B
     triOutstanding(io.ray_ctx) := 0.U
     bestT(io.ray_ctx) := missT
@@ -136,17 +119,10 @@ class TriPE(val c: TriPeConfig) extends Module {
 
   for (ctx <- 0 until ctxCount) {
     val batchToCtx = io.tri_batch_valid && io.tri_batch_ctx === ctx.U && io.output_ready(ctx)
-    batchQueues(ctx).io.enq.valid := batchToCtx
-    batchQueues(ctx).io.enq.bits.cmd := io.tri_batch_in
     when(batchToCtx) {
-      assert(batchQueues(ctx).io.enq.ready, "TriPE batch queue overflow")
-    }
-    batchQueues(ctx).io.deq.ready := !batchInProgress(ctx) && !boundaryCheckPending(ctx) &&
-      !hitStop(ctx) && !io.clear_ctx(ctx)
-    when(batchQueues(ctx).io.deq.fire) {
-      batchTriIdx(ctx) := batchQueues(ctx).io.deq.bits.cmd.tri.base_addr
-      batchTrisRemaining(ctx) := batchQueues(ctx).io.deq.bits.cmd.tri.count
-      batchCellExitT(ctx) := batchQueues(ctx).io.deq.bits.cmd.cellExitT
+      assert(io.tri_batch_in.count =/= 0.U, "TriPE received an empty triangle batch")
+      batchTriIdx(ctx) := io.tri_batch_in.base_addr
+      batchTrisRemaining(ctx) := io.tri_batch_in.count
       batchInProgress(ctx) := true.B
     }
   }
@@ -301,24 +277,15 @@ class TriPE(val c: TriPeConfig) extends Module {
     }
   }
 
-  private val boundaryCmps = Seq.fill(ctxCount)(Module(new FCMP(c.cfg)))
-  for (ctx <- 0 until ctxCount) {
-    boundaryCmps(ctx).io.a := bestT(ctx)
-    boundaryCmps(ctx).io.b := batchCellExitT(ctx)
-    boundaryCmps(ctx).io.signaling := false.B
-  }
-
   for (ctx <- 0 until ctxCount) {
     val hitUpdatesDrained = hitQs.map(q => !q.io.deq.valid).reduce(_ && _) && !hitArb.io.out.valid
     val batchDoneNow = batchInProgress(ctx) &&
       batchTrisRemaining(ctx) === 0.U &&
       triOutstanding(ctx) === 0.U &&
       hitUpdatesDrained
-    val boundaryResultValid = PipeUtils.pipeBool(batchDoneNow && hasHit(ctx), c.cfg.fcmpLatency, false.B)
     val resultDoneNow =
-      (hitStop(ctx) || (io.dda_done(ctx) && !batchQueues(ctx).io.deq.valid)) &&
+      (hitStop(ctx) || io.dda_done(ctx)) &&
         !batchInProgress(ctx) &&
-        !boundaryCheckPending(ctx) &&
         triOutstanding(ctx) === 0.U &&
         hitUpdatesDrained
 
@@ -329,13 +296,6 @@ class TriPE(val c: TriPeConfig) extends Module {
     when(batchDoneNow && !io.clear_ctx(ctx)) {
       batchInProgress(ctx) := false.B
       when(hasHit(ctx)) {
-        boundaryCheckPending(ctx) := true.B
-      }
-    }
-
-    when(boundaryResultValid && !io.clear_ctx(ctx)) {
-      boundaryCheckPending(ctx) := false.B
-      when(boundaryCmps(ctx).io.le) {
         hitStop(ctx) := true.B
       }
     }

@@ -10,15 +10,17 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val setup_grid_min = Input(new Vec3(cfg))
     val setup_grid_max = Input(new Vec3(cfg))
 
-    val in = Flipped(Decoupled(new RayIssue(cfg, addrWidth)))
-    val out = Decoupled(new InitStageResp(cfg, addrWidth))
+    val in = Flipped(Decoupled(UInt(GlobalConfig.frontendContextBits.W)))
+    val context_id = Output(UInt(GlobalConfig.frontendContextBits.W))
+    val immutable = Input(new ImmutableRayRecord(cfg, addrWidth))
+    val out = Decoupled(new FrontendInitResp(cfg))
   })
 
   val aabb = Module(new RayAABBIntersection(cfg))
 
   val aabbLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = 1
-  private val outputQueueDepth = GlobalConfig.initOutputQueueDepth
+  private val outputQueueDepth = GlobalConfig.frontendContextCount
   private val reservationCapacity = outputQueueDepth
   private val reservationWidth = log2Ceil(reservationCapacity + 1)
   val entryAdvanceShift = 14
@@ -48,53 +50,34 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   }
 
   val rayWire = Wire(new Ray(cfg))
-  rayWire.origin := io.in.bits.ray.origin
-  rayWire.dir := io.in.bits.ray.dir
+  io.context_id := io.in.bits
+  rayWire.origin := io.immutable.origin
+  rayWire.dir := io.immutable.dir
   rayWire.dist := 0.U
 
   aabb.io.ray := rayWire
   aabb.io.aabb.min := io.setup_grid_min
   aabb.io.aabb.max := io.setup_grid_max
 
-  val outputQ = Module(new Queue(new InitStageResp(cfg, addrWidth), outputQueueDepth))
+  val outputQ = Module(new Queue(new FrontendInitResp(cfg), outputQueueDepth))
   val reservations = RegInit(0.U(reservationWidth.W))
   io.in.ready := reservations < reservationCapacity.U
   val inFire = io.in.fire
   aabb.io.in_valid := inFire
 
-  val rdXAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.x, aabbLatency)
-  val rdYAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.y, aabbLatency)
-  val rdZAtAabb = PipeUtils.pipeData(io.in.bits.ray.dir.z, aabbLatency)
-
-  val roXAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.x, aabbLatency)
-  val roYAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.y, aabbLatency)
-  val roZAtAabb = PipeUtils.pipeData(io.in.bits.ray.origin.z, aabbLatency)
-
-  val rayIdAtAabb = PipeUtils.pipeData(io.in.bits.meta.rayId, aabbLatency)
+  val contextAtAabb = PipeUtils.pipeData(io.in.bits, aabbLatency)
 
   val tEntry = RegNext(entryAdvanceApprox(aabb.io.tNear))
 
   val outAlignLatency = entryLatency
   val outValid = PipeUtils.pipeBool(aabb.io.out_valid, outAlignLatency, false.B)
   val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
-  val outRayId = PipeUtils.pipeData(rayIdAtAabb, entryLatency)
-  val outRoX = PipeUtils.pipeData(roXAtAabb, entryLatency)
-  val outRoY = PipeUtils.pipeData(roYAtAabb, entryLatency)
-  val outRoZ = PipeUtils.pipeData(roZAtAabb, entryLatency)
-  val outRdX = PipeUtils.pipeData(rdXAtAabb, entryLatency)
-  val outRdY = PipeUtils.pipeData(rdYAtAabb, entryLatency)
-  val outRdZ = PipeUtils.pipeData(rdZAtAabb, entryLatency)
+  val outContextId = PipeUtils.pipeData(contextAtAabb, entryLatency)
 
   outputQ.io.enq.valid := outValid
   outputQ.io.enq.bits.hit := outHit
-  outputQ.io.enq.bits.ray.origin.x := outRoX
-  outputQ.io.enq.bits.ray.origin.y := outRoY
-  outputQ.io.enq.bits.ray.origin.z := outRoZ
-  outputQ.io.enq.bits.ray.dir.x := outRdX
-  outputQ.io.enq.bits.ray.dir.y := outRdY
-  outputQ.io.enq.bits.ray.dir.z := outRdZ
-  outputQ.io.enq.bits.ray.dist := tEntry
-  outputQ.io.enq.bits.meta.rayId := outRayId
+  outputQ.io.enq.bits.contextId := outContextId
+  outputQ.io.enq.bits.entryT := tEntry
   assert(!outValid || outputQ.io.enq.ready, "InitStage reservation overflow")
   io.out <> outputQ.io.deq
 

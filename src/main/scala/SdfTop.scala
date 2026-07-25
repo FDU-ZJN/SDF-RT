@@ -9,8 +9,8 @@ class SdfTop extends Module {
     val grid_min = Input(new Vec3(c.cfg))
     val inv_voxel = Input(new Vec3(c.cfg))
 
-    val in = Flipped(Decoupled(new SdfRayReq(c.cfg, c.addrWidth)))
-    val out = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
+    val in = Flipped(Decoupled(new SdfStepReq(c.cfg)))
+    val out = Decoupled(new SdfStepResp(c.cfg))
     
     // SDF memory write port for PS initialization
     val sdf_mem_wr = Flipped(new SdfMemWriteIO)
@@ -23,7 +23,6 @@ class SdfTop extends Module {
   sdfPe.io.grid_min := io.grid_min
   sdfPe.io.inv_voxel := io.inv_voxel
   sdfPe.io.out <> io.out
-  sdfPe.io.out_hit.ready := true.B
 
   sdfPe.io.sdf_mem_req.ready := true.B
   sdfMem.io.clk := clock
@@ -38,4 +37,3 @@ class SdfTop extends Module {
   // Connect write port
   sdfMem.io.wr <> io.sdf_mem_wr
 }
-

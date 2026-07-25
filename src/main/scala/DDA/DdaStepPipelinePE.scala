@@ -17,7 +17,7 @@ class DdaStepPipelinePE(
   require((subRes & (subRes - 1)) == 0, s"subRes must be power-of-two, got $subRes")
 
   val io = IO(new Bundle {
-    val in = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
+    val in = Flipped(Decoupled(new DdaTraversalState(cfg)))
     val subgrid_mem_req = Valid(new DdaSubgridMetaReq(addrWidth))
     val subgrid_mem_resp = Input(Valid(new DdaSubgridMetaResp))
     val out = Decoupled(new DdaStepResult(cfg, addrWidth))
@@ -118,11 +118,11 @@ class DdaStepPipelinePE(
     assert(io.subgrid_mem_resp.valid, "DdaStepPipelinePE expects fixed-latency subgridMem response")
   }
 
-  val stepNegXAtOut = ctxAtOut.ray.dir.x(cfg.totalWidth - 1)
-  val stepNegYAtOut = ctxAtOut.ray.dir.y(cfg.totalWidth - 1)
-  val stepNegZAtOut = ctxAtOut.ray.dir.z(cfg.totalWidth - 1)
+  val stepNegXAtOut = ctxAtOut.dirNegX
+  val stepNegYAtOut = ctxAtOut.dirNegY
+  val stepNegZAtOut = ctxAtOut.dirNegZ
 
-  val nextCtx = Wire(new DdaContext(cfg, addrWidth))
+  val nextCtx = Wire(new DdaTraversalState(cfg))
   nextCtx := ctxAtOut
   when(axisAtOut === 0.U) {
     nextCtx.subX := ctxAtOut.subX + negStep(stepNegXAtOut)
@@ -137,16 +137,12 @@ class DdaStepPipelinePE(
   nextCtx.iter := ctxAtOut.iter + 1.U
 
   io.out.valid := outValid
-  io.out.bits.ctx := Mux(terminalAtOut, ctxAtOut, nextCtx)
+  io.out.bits.state := Mux(terminalAtOut, ctxAtOut, nextCtx)
   io.out.bits.done := terminalAtOut
   io.out.bits.watchdog := pipeBool(watchdogNow, totalStepLatency)
   io.out.bits.emitCmd := !terminalAtOut && triCountAtOut =/= 0.U
   io.out.bits.tri.base_addr := triStartAtOut
   io.out.bits.tri.count := triCountAtOut
-  io.out.bits.cellExitT := MuxLookup(axisAtOut, ctxAtOut.tMaxZ)(Seq(
-    0.U -> ctxAtOut.tMaxX,
-    1.U -> ctxAtOut.tMaxY
-  ))
 
   when(io.out.valid) {
     assert(io.out.ready, "DdaStepPipelinePE expects io.out.ready to stay high in pipeline mode")

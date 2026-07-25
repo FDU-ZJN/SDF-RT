@@ -26,13 +26,14 @@ class InitSdfCModelParityTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.in.valid.poke(false.B)
       dut.clock.step()
 
-      dut.io.in.bits.ray.origin.x.poke(bits(0.0f).U)
-      dut.io.in.bits.ray.origin.y.poke(bits(0.0f).U)
-      dut.io.in.bits.ray.origin.z.poke(bits(2.0f).U)
-      dut.io.in.bits.ray.dir.x.poke(bits(0.0f).U)
-      dut.io.in.bits.ray.dir.y.poke(bits(0.0f).U)
-      dut.io.in.bits.ray.dir.z.poke(bits(-1.0f).U)
-      dut.io.in.bits.meta.rayId.poke(7.U)
+      dut.io.in.bits.poke(3.U)
+      dut.io.immutable.origin.x.poke(bits(0.0f).U)
+      dut.io.immutable.origin.y.poke(bits(0.0f).U)
+      dut.io.immutable.origin.z.poke(bits(2.0f).U)
+      dut.io.immutable.dir.x.poke(bits(0.0f).U)
+      dut.io.immutable.dir.y.poke(bits(0.0f).U)
+      dut.io.immutable.dir.z.poke(bits(-1.0f).U)
+      dut.io.immutable.meta.rayId.poke(7.U)
       dut.io.in.valid.poke(true.B)
       while (!dut.io.in.ready.peek().litToBoolean) dut.clock.step()
       dut.clock.step()
@@ -45,8 +46,8 @@ class InitSdfCModelParityTest extends AnyFlatSpec with ChiselScalatestTester {
       }
       assert(waited < 100, "InitStage response timed out")
       dut.io.out.bits.hit.expect(true.B)
-      dut.io.out.bits.ray.dist.expect(bits(1.0f + 1.0f / 16384.0f).U)
-      dut.io.out.bits.meta.rayId.expect(7.U)
+      dut.io.out.bits.entryT.expect(bits(1.0f + 1.0f / 16384.0f).U)
+      dut.io.out.bits.contextId.expect(3.U)
     }
   }
 
@@ -70,21 +71,20 @@ class InitSdfCModelParityTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.sdf_mem_resp.valid.poke(true.B)
       dut.io.sdf_mem_resp.bits.poke(bits(0.25f).U)
       dut.io.out.ready.poke(true.B)
-      dut.io.out_hit.ready.poke(true.B)
       dut.io.in.valid.poke(false.B)
       dut.clock.step()
 
       def issue(dist: Float, prevSdf: Float, rayId: Int, iter: Int = 0): Unit = {
-        dut.io.in.bits.ray.origin.x.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.origin.y.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.origin.z.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.dir.x.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.dir.y.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.dir.z.poke(bits(0.0f).U)
-        dut.io.in.bits.ray.dist.poke(bits(dist).U)
-        dut.io.in.bits.meta.rayId.poke(rayId.U)
-        dut.io.in.bits.iter.poke(iter.U)
-        dut.io.in.bits.prevSdf.poke(bits(prevSdf).U)
+        dut.io.in.bits.contextId.poke((rayId & 31).U)
+        dut.io.in.bits.origin.x.poke(bits(0.0f).U)
+        dut.io.in.bits.origin.y.poke(bits(0.0f).U)
+        dut.io.in.bits.origin.z.poke(bits(0.0f).U)
+        dut.io.in.bits.dir.x.poke(bits(0.0f).U)
+        dut.io.in.bits.dir.y.poke(bits(0.0f).U)
+        dut.io.in.bits.dir.z.poke(bits(0.0f).U)
+        dut.io.in.bits.state.dist.poke(bits(dist).U)
+        dut.io.in.bits.state.iter.poke(iter.U)
+        dut.io.in.bits.state.prevSdf.poke(bits(prevSdf).U)
         dut.io.in.valid.poke(true.B)
         dut.clock.step()
         dut.io.in.valid.poke(false.B)
@@ -92,28 +92,30 @@ class InitSdfCModelParityTest extends AnyFlatSpec with ChiselScalatestTester {
 
       issue(0.5f, 0.0f, 11)
       var waited = 0
-      while (!dut.io.out_hit.valid.peek().litToBoolean && waited < 100) {
+      while (!dut.io.out.valid.peek().litToBoolean && waited < 100) {
         dut.clock.step()
         waited += 1
       }
       assert(waited < 100, "positive SDF hit timed out")
-      dut.io.out_hit.bits.ray.dist.expect(bits(0.5f).U)
-      dut.io.out_hit.bits.iter.expect(1.U)
+      dut.io.out.bits.hit.expect(true.B)
+      dut.io.out.bits.done.expect(true.B)
+      dut.io.out.bits.state.dist.expect(bits(0.5f).U)
+      dut.io.out.bits.state.iter.expect(1.U)
       dut.clock.step()
 
       dut.io.sdf_mem_resp.bits.poke(bits(-0.25f).U)
       issue(0.5f, 0.5f, 12)
       waited = 0
       while (!dut.io.out.valid.peek().litToBoolean && waited < 100) {
-        assert(!dut.io.out_hit.valid.peek().litToBoolean, "negative SDF unexpectedly counted as a hit")
         dut.clock.step()
         waited += 1
       }
       assert(waited < 100, "negative SDF miss timed out")
       dut.io.out.bits.hit.expect(false.B)
-      dut.io.out.bits.ray.dist.expect(bits(0.25f).U)
-      dut.io.out.bits.iter.expect(1.U)
-      dut.io.out.bits.prevSdf.expect(bits(0.25f).U)
+      dut.io.out.bits.done.expect(false.B)
+      dut.io.out.bits.state.dist.expect(bits(0.25f).U)
+      dut.io.out.bits.state.iter.expect(1.U)
+      dut.io.out.bits.state.prevSdf.expect(bits(0.25f).U)
       dut.clock.step()
 
       // A negative value on the last allowed sample terminates as an SDF hit.
@@ -121,13 +123,15 @@ class InitSdfCModelParityTest extends AnyFlatSpec with ChiselScalatestTester {
       // speculative prevSdf/2 backoff is not committed.
       issue(0.5f, 0.5f, 13, iter = 3)
       waited = 0
-      while (!dut.io.out_hit.valid.peek().litToBoolean && waited < 100) {
+      while (!dut.io.out.valid.peek().litToBoolean && waited < 100) {
         dut.clock.step()
         waited += 1
       }
       assert(waited < 100, "final-step negative SDF hit timed out")
-      dut.io.out_hit.bits.ray.dist.expect(bits(0.5f).U)
-      dut.io.out_hit.bits.iter.expect(4.U)
+      dut.io.out.bits.hit.expect(true.B)
+      dut.io.out.bits.done.expect(true.B)
+      dut.io.out.bits.state.dist.expect(bits(0.5f).U)
+      dut.io.out.bits.state.iter.expect(4.U)
     }
   }
 }

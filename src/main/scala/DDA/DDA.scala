@@ -12,7 +12,7 @@ class DDA(
   maxTraversalSteps: Int = 1024
 ) extends Module {
   val io = IO(new Bundle {
-    val in = Flipped(Decoupled(new DdaContext(cfg, addrWidth)))
+    val in = Flipped(Decoupled(new DdaTraversalState(cfg)))
     val out = Decoupled(new DdaStepResult(cfg, addrWidth))
   })
 

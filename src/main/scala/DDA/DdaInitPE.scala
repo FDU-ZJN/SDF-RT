@@ -14,7 +14,7 @@ class DdaInitPE(
     val in = Flipped(Decoupled(new DdaTraversalReq(cfg, addrWidth)))
     val grid_min = Input(new Vec3(cfg))
     val inv_sub_voxel = Input(new Vec3(cfg))
-    val out = Decoupled(new DdaContext(cfg, addrWidth))
+    val out = Decoupled(new BackendContextInit(cfg, addrWidth))
   })
 
   private val positionLatency = cfg.ffmaLatency
@@ -203,21 +203,26 @@ class DdaInitPE(
   val subZClamped = Mux(subZIdxOut >= coordLimit, coordLimit, subZIdxOut)
 
   io.out.valid := pipeBool(inFire, totalInitLatency)
-  io.out.bits := 0.U.asTypeOf(new DdaContext(cfg, addrWidth))
-  io.out.bits.ray := reqAtOut.ray
-  io.out.bits.meta := reqAtOut.meta
-  io.out.bits.traceSlot := reqAtOut.traceSlot
-  io.out.bits.initialized := true.B
-  io.out.bits.subX := Mux(subXNegOut, (-1).S(coordWidth.W), subXClamped(coordWidth - 2, 0).zext)
-  io.out.bits.subY := Mux(subYNegOut, (-1).S(coordWidth.W), subYClamped(coordWidth - 2, 0).zext)
-  io.out.bits.subZ := Mux(subZNegOut, (-1).S(coordWidth.W), subZClamped(coordWidth - 2, 0).zext)
-  io.out.bits.iter := 0.U
-  io.out.bits.tMaxX := tMaxAbsX.io.res
-  io.out.bits.tMaxY := tMaxAbsY.io.res
-  io.out.bits.tMaxZ := tMaxAbsZ.io.res
-  io.out.bits.tDeltaX := tDeltaCapX
-  io.out.bits.tDeltaY := tDeltaCapY
-  io.out.bits.tDeltaZ := tDeltaCapZ
+  io.out.bits := 0.U.asTypeOf(new BackendContextInit(cfg, addrWidth))
+  io.out.bits.sourceFrontendId := reqAtOut.frontendContextId
+  io.out.bits.contextId := reqAtOut.traceSlot
+  io.out.bits.immutable.origin := reqAtOut.ray.origin
+  io.out.bits.immutable.dir := reqAtOut.ray.dir
+  io.out.bits.immutable.meta := reqAtOut.meta
+  io.out.bits.traversal.contextId := reqAtOut.traceSlot
+  io.out.bits.traversal.subX := Mux(subXNegOut, (-1).S(coordWidth.W), subXClamped(coordWidth - 2, 0).zext)
+  io.out.bits.traversal.subY := Mux(subYNegOut, (-1).S(coordWidth.W), subYClamped(coordWidth - 2, 0).zext)
+  io.out.bits.traversal.subZ := Mux(subZNegOut, (-1).S(coordWidth.W), subZClamped(coordWidth - 2, 0).zext)
+  io.out.bits.traversal.iter := 0.U
+  io.out.bits.traversal.tMaxX := tMaxAbsX.io.res
+  io.out.bits.traversal.tMaxY := tMaxAbsY.io.res
+  io.out.bits.traversal.tMaxZ := tMaxAbsZ.io.res
+  io.out.bits.traversal.tDeltaX := tDeltaCapX
+  io.out.bits.traversal.tDeltaY := tDeltaCapY
+  io.out.bits.traversal.tDeltaZ := tDeltaCapZ
+  io.out.bits.traversal.dirNegX := reqAtOut.ray.dir.x(cfg.totalWidth - 1)
+  io.out.bits.traversal.dirNegY := reqAtOut.ray.dir.y(cfg.totalWidth - 1)
+  io.out.bits.traversal.dirNegZ := reqAtOut.ray.dir.z(cfg.totalWidth - 1)
 
   when(io.out.valid) {
     assert(io.out.ready, "DdaInitPE expects io.out.ready to stay high in pipeline mode")

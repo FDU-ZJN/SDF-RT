@@ -2,7 +2,7 @@ import chisel3._
 import chisel3.util._
 import raytrace_utils._
 import Backend.Backend
-import SDF.{InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
+import SDF.{FrontendContextManager, InitStage, SdfMemWriteIO, SdfStage, SetupUnit}
 import Trace.TriMemDmaReadData
 
 import java.nio.charset.StandardCharsets
@@ -51,6 +51,8 @@ class FpgaTop extends Module {
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val initStage = Module(new InitStage(c.cfg, c.addrWidth))
   val sdfStage = Module(new SdfStage(c.cfg, c.addrWidth))
+  val frontendContexts = Module(new FrontendContextManager(c.cfg, c.addrWidth,
+    readPorts = 4, releasePorts = 3, stateWritePorts = 2))
   val backend = Module(new Backend(c, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
   val earlyQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), 2, GlobalConfig.resultArbiterFifoDepth))
   val traceQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.traceNumWorkers, GlobalConfig.resultArbiterFifoDepth))
@@ -86,7 +88,7 @@ class FpgaTop extends Module {
   val acceptedCount = RegInit(0.U(32.W))
   val emittedCount = RegInit(0.U(32.W))
   val protocolError = RegInit(false.B)
-  val inputCanAccept = initStage.io.in.ready && !batchClosed && setupUnit.io.setup_finish
+  val inputCanAccept = frontendContexts.io.ingress.ready && !batchClosed && setupUnit.io.setup_finish
   io.ray_in_ready := inputCanAccept
   val inputFire = io.ray_in_valid && io.ray_in_ready
   when(io.ray_in_valid && batchClosed) { protocolError := true.B }
@@ -94,11 +96,11 @@ class FpgaTop extends Module {
     acceptedCount := acceptedCount + 1.U
     when(io.ray_in_last) { batchClosed := true.B }
   }
-  initStage.io.in.valid := io.ray_in_valid && inputCanAccept
-  initStage.io.in.bits.ray.origin := io.ray_in.origin
-  initStage.io.in.bits.ray.dir := io.ray_in.dir
-  initStage.io.in.bits.ray.dist := 0.U
-  initStage.io.in.bits.meta.rayId := io.ray_in.rayId
+  frontendContexts.io.ingress.valid := io.ray_in_valid && inputCanAccept
+  frontendContexts.io.ingress.bits := io.ray_in
+  initStage.io.in <> frontendContexts.io.init_issue
+  frontendContexts.io.read_id(0) := initStage.io.context_id
+  initStage.io.immutable := frontendContexts.io.immutable(0)
 
   def missResult(rayId: UInt): RenderResult = {
     val r = Wire(new RenderResult(c.cfg, c.addrWidth))
@@ -110,17 +112,38 @@ class FpgaTop extends Module {
     r
   }
   val initOut = initStage.io.out
+  frontendContexts.io.read_id(1) := initOut.bits.contextId
   earlyQ.io.enq(0).valid := initOut.valid && !initOut.bits.hit
-  earlyQ.io.enq(0).bits := missResult(initOut.bits.meta.rayId)
+  earlyQ.io.enq(0).bits := missResult(frontendContexts.io.immutable(1).meta.rayId)
   sdfStage.io.issue_in.valid := initOut.valid && initOut.bits.hit
-  sdfStage.io.issue_in.bits.ray := initOut.bits.ray
-  sdfStage.io.issue_in.bits.meta := initOut.bits.meta
+  sdfStage.io.issue_in.bits := initOut.bits.contextId
   initOut.ready := Mux(initOut.bits.hit, sdfStage.io.issue_in.ready, earlyQ.io.enq(0).ready)
+
+  frontendContexts.io.state_write(0).valid := initOut.fire && initOut.bits.hit
+  frontendContexts.io.state_write(0).bits.contextId := initOut.bits.contextId
+  frontendContexts.io.state_write(0).bits.state.dist := initOut.bits.entryT
+  frontendContexts.io.state_write(0).bits.state.iter := 0.U
+  frontendContexts.io.state_write(0).bits.state.prevSdf := 0.U
+
+  frontendContexts.io.read_id(2) := sdfStage.io.sdf_context_id
+  sdfStage.io.sdf_immutable := frontendContexts.io.immutable(2)
+  sdfStage.io.sdf_state := frontendContexts.io.sdf_state(2)
+  frontendContexts.io.state_write(1) := sdfStage.io.state_write
+  frontendContexts.io.read_id(3) := sdfStage.io.final_context_id
+  sdfStage.io.final_immutable := frontendContexts.io.immutable(3)
+  sdfStage.io.final_state := frontendContexts.io.sdf_state(3)
 
   val sdfOut = sdfStage.io.miss_out
   earlyQ.io.enq(1).valid := sdfOut.valid
-  earlyQ.io.enq(1).bits := missResult(sdfOut.bits.meta.rayId)
+  earlyQ.io.enq(1).bits := missResult(frontendContexts.io.immutable(3).meta.rayId)
   sdfOut.ready := earlyQ.io.enq(1).ready
+
+  frontendContexts.io.release(0).valid := initOut.fire && !initOut.bits.hit
+  frontendContexts.io.release(0).bits := initOut.bits.contextId
+  frontendContexts.io.release(1).valid := sdfOut.fire
+  frontendContexts.io.release(1).bits := sdfOut.bits.contextId
+  frontendContexts.io.release(2).valid := sdfStage.io.dda_context_out.fire
+  frontendContexts.io.release(2).bits := sdfStage.io.dda_context_out.bits.sourceFrontendId
 
   sdfStage.io.dda_context_id <> backend.io.init_alloc
   backend.io.context_in <> sdfStage.io.dda_context_out

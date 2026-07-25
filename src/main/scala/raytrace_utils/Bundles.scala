@@ -1,7 +1,6 @@
 package raytrace_utils
 
 import chisel3._
-import chisel3.util.log2Ceil
 
 class Vec3(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val x = UInt(cfg.totalWidth.W)
@@ -31,6 +30,35 @@ class RayIngress(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val rayId = UInt(16.W)
 }
 
+class ImmutableRayRecord(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val origin = new Vec3(cfg)
+  val dir = new Vec3(cfg)
+  val meta = new RayMeta(addrWidth)
+}
+
+class FrontendSdfState(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val dist = UInt(cfg.totalWidth.W)
+  val iter = UInt(16.W)
+  val prevSdf = UInt(cfg.totalWidth.W)
+}
+
+class FrontendStateWrite(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.frontendContextBits.W)
+  val state = new FrontendSdfState(cfg)
+}
+
+class FrontendInitResp(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.frontendContextBits.W)
+  val hit = Bool()
+  val entryT = UInt(cfg.totalWidth.W)
+}
+
+class FrontendSdfResult(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.frontendContextBits.W)
+  val hit = Bool()
+  val dist = UInt(cfg.totalWidth.W)
+}
+
 class Triangle(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val v0 = new Vec3(cfg)
   val e1 = new Vec3(cfg)
@@ -55,11 +83,6 @@ class TraceResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exte
   val hitT = UInt(cfg.totalWidth.W)
 }
 
-class TraceResultWithSlot(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val slotIdx = UInt(GlobalConfig.ddaTraceSlotBits.W)
-  val result = new TraceResult(cfg, addrWidth)
-}
-
 class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val meta = new RayMeta(addrWidth)
   val hit = Bool()
@@ -68,24 +91,18 @@ class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) ext
   val rgb8 = UInt(24.W)
 }
 
-class RayIssue(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
+class SdfStepReq(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.frontendContextBits.W)
+  val origin = new Vec3(cfg)
+  val dir = new Vec3(cfg)
+  val state = new FrontendSdfState(cfg)
 }
 
-class SdfRayReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val iter = UInt(16.W)
-  val prevSdf = UInt(cfg.totalWidth.W)
-}
-
-class SdfRayResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
+class SdfStepResp(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.frontendContextBits.W)
+  val state = new FrontendSdfState(cfg)
+  val done = Bool()
   val hit = Bool()
-  val iter = UInt(16.W)
-  val prevSdf = UInt(cfg.totalWidth.W)
 }
 
 class SdfMemReq(addrWidth: Int = 32) extends Bundle {
@@ -93,23 +110,15 @@ class SdfMemReq(addrWidth: Int = 32) extends Bundle {
   val localIdx = UInt(addrWidth.W)
 }
 
-class InitStageResp(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val hit = Bool()
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-}
-
 class DdaTraversalReq(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val frontendContextId = UInt(GlobalConfig.frontendContextBits.W)
   val ray = new Ray(cfg)
   val meta = new RayMeta(addrWidth)
   val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
 }
 
-class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ray = new Ray(cfg)
-  val meta = new RayMeta(addrWidth)
-  val traceSlot = UInt(GlobalConfig.ddaTraceSlotBits.W)
-  val initialized = Bool()
+class DdaTraversalState(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
+  val contextId = UInt(GlobalConfig.backendContextBits.W)
   val subX = SInt(GlobalConfig.ddaCoordWidth.W)
   val subY = SInt(GlobalConfig.ddaCoordWidth.W)
   val subZ = SInt(GlobalConfig.ddaCoordWidth.W)
@@ -120,6 +129,16 @@ class DdaContext(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) exten
   val tDeltaX = UInt(cfg.totalWidth.W)
   val tDeltaY = UInt(cfg.totalWidth.W)
   val tDeltaZ = UInt(cfg.totalWidth.W)
+  val dirNegX = Bool()
+  val dirNegY = Bool()
+  val dirNegZ = Bool()
+}
+
+class BackendContextInit(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val sourceFrontendId = UInt(GlobalConfig.frontendContextBits.W)
+  val contextId = UInt(GlobalConfig.backendContextBits.W)
+  val immutable = new ImmutableRayRecord(cfg, addrWidth)
+  val traversal = new DdaTraversalState(cfg)
 }
 
 class DdaSubgridMeta(addrWidth: Int = 32) extends Bundle {
@@ -138,17 +157,11 @@ class DdaSubgridMetaResp extends Bundle {
 }
 
 class DdaStepResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val ctx = new DdaContext(cfg, addrWidth)
+  val state = new DdaTraversalState(cfg)
   val done = Bool()
   val watchdog = Bool()
   val emitCmd = Bool()
   val tri = new TriBatch(addrWidth)
-  val cellExitT = UInt(cfg.totalWidth.W)
-}
-
-class TraceCellCmd(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val tri = new TriBatch(addrWidth)
-  val cellExitT = UInt(cfg.totalWidth.W)
 }
 
 class TraceContextDesc(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {

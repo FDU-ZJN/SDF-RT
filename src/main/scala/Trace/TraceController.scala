@@ -15,7 +15,7 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     val trace_claim = Flipped(Decoupled(new TraceContextDesc(c.cfg, c.addrWidth)))
     val trace_cmd_context = Output(Vec(traceLanes, UInt(contextBits.W)))
     val trace_cmd_active = Output(Vec(traceLanes, Bool()))
-    val trace_cmd = Flipped(Vec(traceLanes, Decoupled(new TraceCellCmd(c.cfg, c.addrWidth))))
+    val trace_cmd = Flipped(Vec(traceLanes, Decoupled(new TriBatch(c.addrWidth))))
     val trace_dda_done = Input(Vec(traceLanes, Bool()))
     val trace_stop = Vec(numWorkers, Valid(UInt(contextBits.W)))
     val trace_release = Vec(numWorkers, Valid(UInt(contextBits.W)))
@@ -52,8 +52,6 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   val laneStarted = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
   val laneFinished = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
   val laneContext = Reg(Vec(traceLanes, UInt(contextBits.W)))
-  val laneRay = Reg(Vec(traceLanes, new Ray(c.cfg)))
-  val laneMeta = Reg(Vec(traceLanes, new RayMeta(c.addrWidth)))
   val laneResult = Reg(Vec(traceLanes, new TraceResult(c.cfg, c.addrWidth)))
   val laneResultValid = RegInit(VecInit(Seq.fill(traceLanes)(false.B)))
 
@@ -61,7 +59,10 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   val freeRotated = Wire(Vec(traceLanes, Bool()))
   for (offset <- 0 until traceLanes) {
     val lane = (claimRr + offset.U)(traceLaneBits - 1, 0)
-    freeRotated(offset) := !laneBound(lane)
+    val startReady = VecInit((0 until traceLanes).map(i =>
+      workers(i / ctxCount).io.start_ready(i % ctxCount)
+    ))
+    freeRotated(offset) := !laneBound(lane) && startReady(lane)
   }
   val claimOH = PriorityEncoderOH(freeRotated)
   val claimValid = freeRotated.asUInt.orR
@@ -69,11 +70,9 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   io.trace_claim.ready := claimValid
   when(io.trace_claim.fire) {
     laneBound(claimLane) := true.B
-    laneStarted(claimLane) := false.B
+    laneStarted(claimLane) := true.B
     laneFinished(claimLane) := false.B
     laneContext(claimLane) := io.trace_claim.bits.contextId
-    laneRay(claimLane) := io.trace_claim.bits.ray
-    laneMeta(claimLane) := io.trace_claim.bits.meta
     claimRr := claimLane + 1.U
   }
 
@@ -93,7 +92,7 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     worker.io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth))
     worker.io.ray_ctx := 0.U
     worker.io.ray_valid := false.B
-    worker.io.tri_batch_in := 0.U.asTypeOf(new TraceCellCmd(c.cfg, c.addrWidth))
+    worker.io.tri_batch_in := 0.U.asTypeOf(new TriBatch(c.addrWidth))
     worker.io.tri_batch_ctx := 0.U
     worker.io.tri_batch_valid := false.B
     worker.io.clear_ctx := VecInit(Seq.fill(ctxCount)(false.B))
@@ -103,16 +102,14 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
         !laneFinished(lane) && io.trace_dda_done(lane)
     }
 
-    val issue0 = laneBound(lane0) && !laneStarted(lane0) && worker.io.start_ready(0)
-    val issue1 = laneBound(lane1) && !laneStarted(lane1) && worker.io.start_ready(1)
-    when(issue0 || issue1) {
-      val local = Mux(issue0, 0.U, 1.U)
-      val lane = Mux(issue0, lane0.U(traceLaneBits.W), lane1.U(traceLaneBits.W))
-      worker.io.ray_in := laneRay(lane)
-      worker.io.ray_meta := laneMeta(lane)
+    val claim0 = io.trace_claim.fire && claimLane === lane0.U
+    val claim1 = io.trace_claim.fire && claimLane === lane1.U
+    when(claim0 || claim1) {
+      val local = Mux(claim0, 0.U, 1.U)
+      worker.io.ray_in := io.trace_claim.bits.ray
+      worker.io.ray_meta := io.trace_claim.bits.meta
       worker.io.ray_ctx := local
       worker.io.ray_valid := true.B
-      laneStarted(lane) := true.B
     }
 
     val cmd0 = io.trace_cmd(lane0).valid && io.trace_cmd_active(lane0) && worker.io.output_ready(0)

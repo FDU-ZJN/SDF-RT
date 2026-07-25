@@ -17,7 +17,7 @@ class Backend(
 
   val io = IO(new Bundle {
     val init_alloc = Decoupled(UInt(GlobalConfig.ddaTraceSlotBits.W))
-    val context_in = Flipped(Decoupled(new DdaContext(c.cfg, c.addrWidth)))
+    val context_in = Flipped(Decoupled(new BackendContextInit(c.cfg, c.addrWidth)))
     val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
     val watchdog_error = Output(Bool())
 

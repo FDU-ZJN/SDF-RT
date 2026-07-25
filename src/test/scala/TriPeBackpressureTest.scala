@@ -49,9 +49,8 @@ class TriPeBackpressureTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.ray_valid.poke(false.B)
 
       dut.io.output_ready(0).expect(true.B)
-      dut.io.tri_batch_in.tri.base_addr.poke(0.U)
-      dut.io.tri_batch_in.tri.count.poke(cfg.cacheLineTriangles.U)
-      dut.io.tri_batch_in.cellExitT.poke(java.lang.Float.floatToRawIntBits(1.0f).U)
+      dut.io.tri_batch_in.base_addr.poke(0.U)
+      dut.io.tri_batch_in.count.poke(cfg.cacheLineTriangles.U)
       dut.io.tri_batch_valid.poke(true.B)
       dut.clock.step()
       dut.io.tri_batch_valid.poke(false.B)

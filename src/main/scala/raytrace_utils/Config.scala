@@ -10,8 +10,6 @@ object GlobalConfig {
   val triMemNumPEs = 1
   val triMemCacheLineTriangles = 4
   val triMemNumBanks = 4
-  val sdfStepNumWorkers = 1
-
   private var useBlackBoxState = 0
   def memImplMode: Int = synchronized { useBlackBoxState }
   def setMemImplMode(value: Int): Unit = synchronized {
@@ -53,14 +51,16 @@ object GlobalConfig {
   }
 
   val resultArbiterFifoDepth = 2
-  val initOutputQueueDepth = 64
-  val ddaTraceSlotCount = 16
-  val ddaTraceSlotBits = log2Ceil(ddaTraceSlotCount)
-  val ddaTraceCmdDepth = 8
+  val frontendContextCount = 16
+  val frontendContextBits = log2Ceil(frontendContextCount)
+  val backendContextCount = 16
+  val backendContextBits = log2Ceil(backendContextCount)
+  // Compatibility aliases for the existing Trace interfaces.  Backend and
+  // frontend IDs are independent even though both are five bits wide.
+  val ddaTraceSlotCount = backendContextCount
+  val ddaTraceSlotBits = backendContextBits
+  val backendContextCmdFifoDepth = 8
 
-  // Preserve the old per-worker retry capacity after shrinking SDF to one lane.
-  val sdfRetryQueueDepth = 32
-  val sdfFinalQueueDepth = 64
   val triMemDpiLatency = 3
   val triMemCacheHitLatency = 1
   val triMemMissPenalty = 60

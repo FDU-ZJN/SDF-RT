@@ -29,58 +29,37 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
 
   private def commitContext(dut: DdaScheduler, id: Int, rayId: Int): Unit = {
     dut.io.context_in.valid.poke(true.B)
-    dut.io.context_in.bits.ray.origin.x.poke(0.U)
-    dut.io.context_in.bits.ray.origin.y.poke(0.U)
-    dut.io.context_in.bits.ray.origin.z.poke(0.U)
-    dut.io.context_in.bits.ray.dir.x.poke(0.U)
-    dut.io.context_in.bits.ray.dir.y.poke(0.U)
-    dut.io.context_in.bits.ray.dir.z.poke(0.U)
-    dut.io.context_in.bits.ray.dist.poke(0.U)
-    dut.io.context_in.bits.traceSlot.poke(id.U)
-    dut.io.context_in.bits.meta.rayId.poke(rayId.U)
-    dut.io.context_in.bits.initialized.poke(true.B)
-    dut.io.context_in.bits.subX.poke(0.S)
-    dut.io.context_in.bits.subY.poke(0.S)
-    dut.io.context_in.bits.subZ.poke(0.S)
-    dut.io.context_in.bits.iter.poke(0.U)
-    dut.io.context_in.bits.tMaxX.poke(0.U)
-    dut.io.context_in.bits.tMaxY.poke(0.U)
-    dut.io.context_in.bits.tMaxZ.poke(0.U)
-    dut.io.context_in.bits.tDeltaX.poke(0.U)
-    dut.io.context_in.bits.tDeltaY.poke(0.U)
-    dut.io.context_in.bits.tDeltaZ.poke(0.U)
+    dut.io.context_in.bits.sourceFrontendId.poke(0.U)
+    dut.io.context_in.bits.contextId.poke(id.U)
+    dut.io.context_in.bits.immutable.origin.x.poke(0.U)
+    dut.io.context_in.bits.immutable.origin.y.poke(0.U)
+    dut.io.context_in.bits.immutable.origin.z.poke(0.U)
+    dut.io.context_in.bits.immutable.dir.x.poke(0.U)
+    dut.io.context_in.bits.immutable.dir.y.poke(0.U)
+    dut.io.context_in.bits.immutable.dir.z.poke(0.U)
+    dut.io.context_in.bits.immutable.meta.rayId.poke(rayId.U)
+    pokeState(dut.io.context_in.bits.traversal, id, iter = 0)
     dut.clock.step()
     dut.io.context_in.valid.poke(false.B)
   }
 
+  private def pokeState(state: DdaTraversalState, id: Int, iter: Int): Unit = {
+    state.contextId.poke(id.U)
+    state.subX.poke(0.S); state.subY.poke(0.S); state.subZ.poke(0.S)
+    state.iter.poke(iter.U)
+    state.tMaxX.poke(0.U); state.tMaxY.poke(0.U); state.tMaxZ.poke(0.U)
+    state.tDeltaX.poke(0.U); state.tDeltaY.poke(0.U); state.tDeltaZ.poke(0.U)
+    state.dirNegX.poke(false.B); state.dirNegY.poke(false.B); state.dirNegZ.poke(false.B)
+  }
+
   private def returnCommand(dut: DdaScheduler, id: Int, base: Int): Unit = {
     dut.io.step_out.valid.poke(true.B)
-    dut.io.step_out.bits.ctx.ray.origin.x.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.origin.y.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.origin.z.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.dir.x.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.dir.y.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.dir.z.poke(0.U)
-    dut.io.step_out.bits.ctx.ray.dist.poke(0.U)
-    dut.io.step_out.bits.ctx.traceSlot.poke(id.U)
-    dut.io.step_out.bits.ctx.meta.rayId.poke(23.U)
-    dut.io.step_out.bits.ctx.initialized.poke(true.B)
-    dut.io.step_out.bits.ctx.subX.poke(0.S)
-    dut.io.step_out.bits.ctx.subY.poke(0.S)
-    dut.io.step_out.bits.ctx.subZ.poke(0.S)
-    dut.io.step_out.bits.ctx.iter.poke((base + 1).U)
-    dut.io.step_out.bits.ctx.tMaxX.poke(0.U)
-    dut.io.step_out.bits.ctx.tMaxY.poke(0.U)
-    dut.io.step_out.bits.ctx.tMaxZ.poke(0.U)
-    dut.io.step_out.bits.ctx.tDeltaX.poke(0.U)
-    dut.io.step_out.bits.ctx.tDeltaY.poke(0.U)
-    dut.io.step_out.bits.ctx.tDeltaZ.poke(0.U)
+    pokeState(dut.io.step_out.bits.state, id, iter = base + 1)
     dut.io.step_out.bits.done.poke(false.B)
     dut.io.step_out.bits.watchdog.poke(false.B)
     dut.io.step_out.bits.emitCmd.poke(true.B)
     dut.io.step_out.bits.tri.base_addr.poke(base.U)
     dut.io.step_out.bits.tri.count.poke(1.U)
-    dut.io.step_out.bits.cellExitT.poke(java.lang.Float.floatToRawIntBits(base + 1.0f).U)
     dut.clock.step()
     dut.io.step_out.valid.poke(false.B)
   }
@@ -98,6 +77,32 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
+  it should "issue one DDA step per cycle across 32 resident contexts" in {
+    test(new DdaScheduler(cfg, 32, GlobalConfig.ddaMaxSteps)) { dut =>
+      clearInputs(dut)
+
+      dut.io.init_alloc.ready.poke(true.B)
+      for (id <- 0 until GlobalConfig.backendContextCount) {
+        dut.io.init_alloc.valid.expect(true.B)
+        dut.io.init_alloc.bits.expect(id.U)
+        dut.clock.step()
+      }
+      dut.io.init_alloc.ready.poke(false.B)
+
+      for (id <- 0 until GlobalConfig.backendContextCount) {
+        commitContext(dut, id = id, rayId = 100 + id)
+      }
+
+      dut.io.step_in.ready.poke(true.B)
+      for (id <- 0 until GlobalConfig.backendContextCount) {
+        dut.io.step_in.valid.expect(true.B)
+        dut.io.step_in.bits.contextId.expect(id.U)
+        dut.clock.step()
+      }
+      dut.io.step_in.valid.expect(false.B)
+    }
+  }
+
   it should "fill, stream, stop, and safely recycle a context" in {
     test(new DdaScheduler(cfg, 32, GlobalConfig.ddaMaxSteps)) { dut =>
       clearInputs(dut)
@@ -110,10 +115,10 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       commitContext(dut, id = 0, rayId = 23)
 
       // With no consumer, eight DDA returns fill the context-local FIFO.
-      for (cmd <- 0 until GlobalConfig.ddaTraceCmdDepth) {
+      for (cmd <- 0 until GlobalConfig.backendContextCmdFifoDepth) {
         dut.io.step_in.ready.poke(true.B)
         dut.io.step_in.valid.expect(true.B)
-        dut.io.step_in.bits.traceSlot.expect(0.U)
+        dut.io.step_in.bits.contextId.expect(0.U)
         dut.clock.step()
         dut.io.step_in.ready.poke(false.B)
         returnCommand(dut, id = 0, base = cmd)
@@ -131,7 +136,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.trace_cmd_context(0).poke(0.U)
       dut.io.trace_cmd_active(0).poke(true.B)
       dut.io.trace_cmd(0).valid.expect(true.B)
-      dut.io.trace_cmd(0).bits.tri.base_addr.expect(0.U)
+      dut.io.trace_cmd(0).bits.base_addr.expect(0.U)
       dut.io.trace_cmd(0).ready.poke(true.B)
       dut.clock.step()
       dut.io.trace_cmd(0).ready.poke(false.B)
@@ -152,13 +157,12 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.trace_release(0).valid.poke(true.B)
       dut.io.trace_release(0).bits.poke(0.U)
       dut.io.step_out.valid.poke(true.B)
-      dut.io.step_out.bits.ctx.traceSlot.poke(0.U)
+      pokeState(dut.io.step_out.bits.state, 0, iter = 0)
       dut.io.step_out.bits.done.poke(false.B)
       dut.io.step_out.bits.watchdog.poke(false.B)
       dut.io.step_out.bits.emitCmd.poke(true.B)
       dut.io.step_out.bits.tri.base_addr.poke(99.U)
       dut.io.step_out.bits.tri.count.poke(1.U)
-      dut.io.step_out.bits.cellExitT.poke(java.lang.Float.floatToRawIntBits(100.0f).U)
       dut.clock.step()
       dut.io.trace_release(0).valid.poke(false.B)
       dut.io.step_out.valid.poke(false.B)
@@ -197,7 +201,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.step_in.ready.poke(false.B)
       dut.io.step_out.valid.poke(true.B)
-      dut.io.step_out.bits.ctx.traceSlot.poke(0.U)
+      pokeState(dut.io.step_out.bits.state, 0, iter = 0)
       dut.io.step_out.bits.done.poke(true.B)
       dut.io.step_out.bits.watchdog.poke(false.B)
       dut.io.step_out.bits.emitCmd.poke(false.B)
@@ -205,7 +209,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.step_out.valid.poke(false.B)
 
       dut.io.trace_cmd(0).valid.expect(true.B)
-      dut.io.trace_cmd(0).bits.tri.base_addr.expect(7.U)
+      dut.io.trace_cmd(0).bits.base_addr.expect(7.U)
       dut.io.trace_dda_done(0).expect(false.B)
 
       dut.io.trace_cmd(0).ready.poke(true.B)

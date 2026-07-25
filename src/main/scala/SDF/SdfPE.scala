@@ -8,7 +8,7 @@ import raytrace_utils.PipeUtils._
 
 class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val io = IO(new Bundle {
-    val in = Flipped(Decoupled(new SdfRayReq(c.cfg, c.addrWidth)))
+    val in = Flipped(Decoupled(new SdfStepReq(c.cfg)))
     val sdf_mem_req = Decoupled(new SdfMemReq(c.addrWidth))
     val sdf_mem_resp = Flipped(Decoupled(UInt(c.cfg.totalWidth.W)))
 
@@ -16,18 +16,14 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
     val grid_min = Input(new Vec3(c.cfg))
     val inv_voxel = Input(new Vec3(c.cfg))
 
-    // Miss-only output (continue/terminal miss path)
-    val out = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
-    // Hit output (terminal hit path)
-    val out_hit = Decoupled(new SdfRayResp(c.cfg, c.addrWidth))
+    val out = Decoupled(new SdfStepResp(c.cfg))
   })
 
-  // Keep all request fields together while they cross the fixed-latency
-  // address, memory, compare, and advance paths.  In particular, RayID and
-  // iter must never be delayed independently from the ray they describe.
+  // Only the mutable state and context ID cross the fixed-latency pipeline;
+  // immutable origin/direction are consumed by the position stage above.
   class SdfPipeCtx extends Bundle {
-    val ray = new Ray(c.cfg)
-    val meta = new RayMeta(c.addrWidth)
+    val contextId = UInt(GlobalConfig.frontendContextBits.W)
+    val dist = UInt(c.cfg.totalWidth.W)
     val iter = UInt(16.W)
     val prevSdf = UInt(c.cfg.totalWidth.W)
     val inBounds = Bool()
@@ -70,6 +66,8 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val positionLatency = c.cfg.ffmaLatency
   val addrLatency = positionLatency + c.cfg.faddLatency + c.cfg.fmulLatency + c.cfg.fptointLatency
   val advanceLatency = c.cfg.faddLatency
+  val totalStepLatency = addrLatency + GlobalConfig.sdfMemDpiLatency +
+    c.cfg.fcmpLatency + advanceLatency
 
   def neg(x: UInt): UInt = Cat(!x(c.cfg.totalWidth - 1), x(c.cfg.totalWidth - 2, 0))
 
@@ -104,15 +102,15 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val posX = Module(new FFMA(c.cfg))
   val posY = Module(new FFMA(c.cfg))
   val posZ = Module(new FFMA(c.cfg))
-  posX.io.a := io.in.bits.ray.dir.x
-  posX.io.b := io.in.bits.ray.dist
-  posX.io.c := io.in.bits.ray.origin.x
-  posY.io.a := io.in.bits.ray.dir.y
-  posY.io.b := io.in.bits.ray.dist
-  posY.io.c := io.in.bits.ray.origin.y
-  posZ.io.a := io.in.bits.ray.dir.z
-  posZ.io.b := io.in.bits.ray.dist
-  posZ.io.c := io.in.bits.ray.origin.z
+  posX.io.a := io.in.bits.dir.x
+  posX.io.b := io.in.bits.state.dist
+  posX.io.c := io.in.bits.origin.x
+  posY.io.a := io.in.bits.dir.y
+  posY.io.b := io.in.bits.state.dist
+  posY.io.c := io.in.bits.origin.y
+  posZ.io.a := io.in.bits.dir.z
+  posZ.io.b := io.in.bits.state.dist
+  posZ.io.c := io.in.bits.origin.z
 
   val subGx = Module(new FADD(c.cfg))
   val subGy = Module(new FADD(c.cfg))
@@ -187,10 +185,10 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   io.in.ready := true.B
   val inFire = io.in.fire
   val inCtx = Wire(new SdfPipeCtx)
-  inCtx.ray := io.in.bits.ray
-  inCtx.meta := io.in.bits.meta
-  inCtx.iter := io.in.bits.iter
-  inCtx.prevSdf := io.in.bits.prevSdf
+  inCtx.contextId := io.in.bits.contextId
+  inCtx.dist := io.in.bits.state.dist
+  inCtx.iter := io.in.bits.state.iter
+  inCtx.prevSdf := io.in.bits.state.prevSdf
   inCtx.inBounds := false.B
   inCtx.valid := inFire
   val addrCtxBase = pipeData(inCtx, addrLatency)
@@ -257,11 +255,11 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val sampleIsNeg = bSampleNegCmp
 
   val posDistAdd = Module(new FADD(c.cfg))
-  posDistAdd.io.a := bCtxCmp.ray.dist
+  posDistAdd.io.a := bCtxCmp.dist
   posDistAdd.io.b := bSampleCmp
 
   val negDistAdd = Module(new FADD(c.cfg))
-  negDistAdd.io.a := bCtxCmp.ray.dist
+  negDistAdd.io.a := bCtxCmp.dist
   negDistAdd.io.b := negPrevSdfHalf
 
   val nextPrevSdfRaw = Mux(sampleIsNeg, prevSdfHalf, bSampleCmp)
@@ -279,7 +277,7 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
 
   val hitOutValid = pipeBool(bValidCmp && bHit, advanceLatency)
   val hitOutIter = advanceCtx.iter + 1.U
-  val hitStayDist = advanceCtx.ray.dist
+  val hitStayDist = advanceCtx.dist
   // On a final-step negative hit, report the current crossing t.  The backoff
   // result is deliberately not committed because tracing terminates here.
   val hitOutDist = hitStayDist
@@ -288,30 +286,15 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   // --------------------
   // Stage D: output
   // --------------------
-  io.out.valid := outValid
-  io.out.bits.meta := advanceCtx.meta
-  io.out.bits.hit := false.B
-  io.out.bits.iter := outIter
-  io.out.bits.prevSdf := outPrevSdf
-
-  io.out.bits.ray.origin := advanceCtx.ray.origin
-  io.out.bits.ray.dir := advanceCtx.ray.dir
-  io.out.bits.ray.dist := outDist
-
-  io.out_hit.valid := hitOutValid
-  io.out_hit.bits.meta := advanceCtx.meta
-  io.out_hit.bits.hit := true.B
-  io.out_hit.bits.iter := hitOutIter
-  io.out_hit.bits.prevSdf := hitOutPrevSdf
-
-  io.out_hit.bits.ray.origin := advanceCtx.ray.origin
-  io.out_hit.bits.ray.dir := advanceCtx.ray.dir
-  io.out_hit.bits.ray.dist := hitOutDist
+  io.out.valid := outValid || hitOutValid
+  io.out.bits.contextId := advanceCtx.contextId
+  io.out.bits.state.dist := Mux(hitOutValid, hitOutDist, outDist)
+  io.out.bits.state.iter := Mux(hitOutValid, hitOutIter, outIter)
+  io.out.bits.state.prevSdf := Mux(hitOutValid, hitOutPrevSdf, outPrevSdf)
+  io.out.bits.hit := hitOutValid
+  io.out.bits.done := hitOutValid || !outInBounds || outIter >= maxStepsU
 
   when(io.out.valid) {
     assert(io.out.ready, "SdfPE expects io.out.ready to stay high in pipeline mode")
-  }
-  when(io.out_hit.valid) {
-    assert(io.out_hit.ready, "SdfPE expects io.out_hit.ready to stay high in pipeline mode")
   }
 }

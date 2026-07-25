@@ -10,11 +10,11 @@ class DdaWidthOptimizationTest extends AnyFlatSpec with ChiselScalatestTester {
   private def fp32(value: Float): UInt =
     java.lang.Float.floatToRawIntBits(value).U(32.W)
 
-  it should "use seven bits and saturate a positive out-of-bounds coordinate" in {
+  it should "use the configured narrow width and saturate a positive out-of-bounds coordinate" in {
     test(new DdaInitPE(FloatConfig.FP32, 32)) { dut =>
-      assert(dut.io.out.bits.subX.getWidth == 7)
-      assert(dut.io.out.bits.subY.getWidth == 7)
-      assert(dut.io.out.bits.subZ.getWidth == 7)
+      assert(dut.io.out.bits.traversal.subX.getWidth == GlobalConfig.ddaCoordWidth)
+      assert(dut.io.out.bits.traversal.subY.getWidth == GlobalConfig.ddaCoordWidth)
+      assert(dut.io.out.bits.traversal.subZ.getWidth == GlobalConfig.ddaCoordWidth)
 
       dut.io.out.ready.poke(true.B)
       dut.io.in.valid.poke(false.B)
@@ -33,6 +33,7 @@ class DdaWidthOptimizationTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.in.bits.ray.dir.z.poke(fp32(1.0f))
       dut.io.in.bits.ray.dist.poke(fp32(0.0f))
       dut.io.in.bits.meta.rayId.poke(7.U)
+      dut.io.in.bits.frontendContextId.poke(5.U)
       dut.io.in.bits.traceSlot.poke(3.U)
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
@@ -44,9 +45,9 @@ class DdaWidthOptimizationTest extends AnyFlatSpec with ChiselScalatestTester {
         waited += 1
       }
       assert(dut.io.out.valid.peekBoolean(), "DDA init result did not arrive")
-      dut.io.out.bits.subX.expect(GlobalConfig.DdaRes.S)
-      dut.io.out.bits.subY.expect(0.S)
-      dut.io.out.bits.subZ.expect(0.S)
+      dut.io.out.bits.traversal.subX.expect(GlobalConfig.DdaRes.S)
+      dut.io.out.bits.traversal.subY.expect(0.S)
+      dut.io.out.bits.traversal.subZ.expect(0.S)
     }
   }
 }
