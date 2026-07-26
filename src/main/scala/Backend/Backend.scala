@@ -19,7 +19,6 @@ class Backend(
     val init_alloc = Decoupled(UInt(GlobalConfig.ddaTraceSlotBits.W))
     val context_in = Flipped(Decoupled(new BackendContextInit(c.cfg, c.addrWidth)))
     val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
-    val watchdog_error = Output(Bool())
 
     val triangleBaseAddress = Input(UInt(64.W))
     val triDmaCmd = Decoupled(UInt(80.W))
@@ -43,16 +42,19 @@ class Backend(
   dda.io.in <> contexts.io.step_in
   contexts.io.step_out <> dda.io.out
 
-  trace.io.trace_claim <> contexts.io.trace_claim
-  contexts.io.trace_cmd_context := trace.io.trace_cmd_context
-  contexts.io.trace_cmd_active := trace.io.trace_cmd_active
+  for (ctx <- 0 until GlobalConfig.backendContextCount) {
+    trace.io.trace_start(ctx) <> contexts.io.trace_start(ctx)
+    trace.io.trace_cmd(ctx) <> contexts.io.trace_cmd(ctx)
+  }
+  contexts.io.trace_claim.ready := false.B
+  contexts.io.trace_cmd_context := VecInit(Seq.fill(GlobalConfig.traceNumWorkers * 2)(0.U))
+  contexts.io.trace_cmd_active := VecInit(Seq.fill(GlobalConfig.traceNumWorkers * 2)(false.B))
   for (lane <- 0 until GlobalConfig.traceNumWorkers * 2) {
-    trace.io.trace_cmd(lane) <> contexts.io.trace_cmd(lane)
+    contexts.io.trace_cmd_legacy(lane).ready := false.B
   }
   trace.io.trace_dda_done := contexts.io.trace_dda_done
   contexts.io.trace_stop := trace.io.trace_stop
   contexts.io.trace_release := trace.io.trace_release
-  io.watchdog_error := contexts.io.watchdog_error
 
   trace.io.triangleBaseAddress := io.triangleBaseAddress
   io.triDmaCmd <> trace.io.triDmaCmd

@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "verilated.h"
 #include "VFpgaTop.h"
@@ -312,6 +313,32 @@ int main(int argc, char** argv) {
     std::cout << "Setup ready after " << setupWait << " cycles." << std::endl;
 
     std::cout << "Phase 2: Streaming rays and collecting unordered results..." << std::endl;
+    // Inject pixels in 4x4 tiles.  The hardware still receives one ray per
+    // cycle, but neighboring pixels are grouped spatially instead of being
+    // streamed a complete scanline at a time.  Edge tiles are clipped to the
+    // runtime image dimensions so the stream contains exactly framePixels rays.
+    std::vector<std::pair<int, int>> injectionOrder;
+    injectionOrder.reserve(framePixels);
+    constexpr int kTileSize = 4;
+    for (int tileY = 0; tileY < runtimeHeight; tileY += kTileSize) {
+        for (int tileX = 0; tileX < runtimeWidth; tileX += kTileSize) {
+            for (int localY = 0; localY < kTileSize; ++localY) {
+                for (int localX = 0; localX < kTileSize; ++localX) {
+                    const int x = tileX + localX;
+                    const int y = tileY + localY;
+                    if (x < runtimeWidth && y < runtimeHeight) {
+                        injectionOrder.emplace_back(x, y);
+                    }
+                }
+            }
+        }
+    }
+    if (injectionOrder.size() != framePixels) {
+        std::cerr << "4x4 injection order size mismatch (order="
+                  << injectionOrder.size() << ", frame=" << framePixels << ")" << std::endl;
+        delete dut;
+        return 3;
+    }
     size_t nextRay = 0;
     size_t traceResultsReceived = 0;
     size_t traceHits = 0;
@@ -332,9 +359,8 @@ int main(int argc, char** argv) {
         dut->io_ray_in_valid = sendRays ? 1 : 0;
         dut->io_ray_in_last = sendRays && nextRay + 1 == framePixels;
         if (sendRays) {
-            const size_t id = nextRay;
-            const int x = id % static_cast<size_t>(runtimeWidth);
-            const int y = id / static_cast<size_t>(runtimeWidth);
+            const int x = injectionOrder[nextRay].first;
+            const int y = injectionOrder[nextRay].second;
             const host_renderer::Ray ray = renderer.makeCameraRay(x, y);
             dut->io_ray_in_origin_x = floatToU32(ray.origin[0]);
             dut->io_ray_in_origin_y = floatToU32(ray.origin[1]);
@@ -374,7 +400,9 @@ int main(int argc, char** argv) {
                 delete dut;
                 return 4;
             }
-            rayIdToPixel[rayId] = static_cast<int64_t>(nextRay);
+            rayIdToPixel[rayId] = static_cast<int64_t>(
+                static_cast<size_t>(injectionOrder[nextRay].second) * runtimeWidth +
+                static_cast<size_t>(injectionOrder[nextRay].first));
             freeRayIds.pop_front();
             ++nextRay;
             minFreeRayIds = std::min(minFreeRayIds, freeRayIds.size());
@@ -477,7 +505,7 @@ int main(int argc, char** argv) {
               << "  data beats: " << triangleDma.dataBeats()
               << "  statuses: " << triangleDma.statuses() << std::endl;
     if (dut->io_protocol_error) {
-        std::cerr << "FPGA backend protocol error (including DDA traversal watchdog)." << std::endl;
+        std::cerr << "FPGA backend protocol error." << std::endl;
         delete dut;
         return 5;
     }

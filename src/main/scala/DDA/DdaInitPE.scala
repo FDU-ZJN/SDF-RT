@@ -23,7 +23,8 @@ class DdaInitPE(
   private val deltaLatency = cfg.fmulLatency + cfg.fdivLatency
   private val tMaxInputLatency = math.max(distSelectLatency, deltaLatency)
   private val relativeTMaxLatency = tMaxInputLatency + cfg.fmulLatency
-  private val totalInitLatency = relativeTMaxLatency + cfg.faddLatency
+  private val axisLatency = relativeTMaxLatency + cfg.faddLatency
+  private val requestLatency = axisLatency + 3
   private val coordWidth = GlobalConfig.ddaCoordWidth
   private val fpOne = java.lang.Float.floatToRawIntBits(1.0f).U(cfg.totalWidth.W)
 
@@ -31,199 +32,178 @@ class DdaInitPE(
     pipeUInt(x, math.max(0, targetLatency - pathLatency))
   private def fpAbs(x: UInt): UInt = Cat(0.U(1.W), x(cfg.totalWidth - 2, 0))
   private def neg(x: UInt): UInt = Cat(!x(cfg.totalWidth - 1), x(cfg.totalWidth - 2, 0))
+  private def selectAxis(v: Vec3, axis: UInt): UInt =
+    Mux(axis === 0.U, v.x, Mux(axis === 1.U, v.y, v.z))
 
-  io.in.ready := true.B
-
+  // One ray occupies the axis issuer for three consecutive cycles.  The Z
+  // issue cycle may also accept the next ray, which starts its X axis on the
+  // following cycle and gives a sustained initiation interval of three.
+  val heldReq = Reg(new DdaTraversalReq(cfg, addrWidth))
+  val axisBusy = RegInit(false.B)
+  val issueAxisReg = RegInit(0.U(2.W))
+  val canAccept = !axisBusy || issueAxisReg === 2.U
+  io.in.ready := canAccept
   val inFire = io.in.fire
-  val reqAtOut = pipeData(io.in.bits, totalInitLatency)
 
-  val stepNegX = io.in.bits.ray.dir.x(cfg.totalWidth - 1)
-  val stepNegY = io.in.bits.ray.dir.y(cfg.totalWidth - 1)
-  val stepNegZ = io.in.bits.ray.dir.z(cfg.totalWidth - 1)
+  val issueValid = axisBusy
+  val issueAxis = issueAxisReg
+  val issueReq = heldReq
 
-  // Materialize the current traversal point from the immutable ray origin and accumulated distance.
-  val posX = Module(new FFMA(cfg))
-  val posY = Module(new FFMA(cfg))
-  val posZ = Module(new FFMA(cfg))
-  posX.io.a := io.in.bits.ray.dir.x
-  posX.io.b := io.in.bits.ray.dist
-  posX.io.c := io.in.bits.ray.origin.x
-  posY.io.a := io.in.bits.ray.dir.y
-  posY.io.b := io.in.bits.ray.dist
-  posY.io.c := io.in.bits.ray.origin.y
-  posZ.io.a := io.in.bits.ray.dir.z
-  posZ.io.b := io.in.bits.ray.dist
-  posZ.io.c := io.in.bits.ray.origin.z
+  when(!axisBusy) {
+    when(inFire) {
+      heldReq := io.in.bits
+      axisBusy := true.B
+      issueAxisReg := 0.U
+    }
+  }.elsewhen(issueAxisReg === 2.U) {
+    when(inFire) {
+      heldReq := io.in.bits
+      axisBusy := true.B
+      issueAxisReg := 0.U
+    }.otherwise {
+      axisBusy := false.B
+      issueAxisReg := 0.U
+    }
+  }.otherwise {
+    issueAxisReg := issueAxisReg + 1.U
+  }
 
-  val subGx = Module(new FADD(cfg))
-  val subGy = Module(new FADD(cfg))
-  val subGz = Module(new FADD(cfg))
-  subGx.io.a := posX.io.res
-  subGx.io.b := neg(io.grid_min.x)
-  subGy.io.a := posY.io.res
-  subGy.io.b := neg(io.grid_min.y)
-  subGz.io.a := posZ.io.res
-  subGz.io.b := neg(io.grid_min.z)
+  val axisOrigin = selectAxis(issueReq.ray.origin, issueAxis)
+  val axisDir = selectAxis(issueReq.ray.dir, issueAxis)
+  val axisGridMin = selectAxis(io.grid_min, issueAxis)
+  val axisInvSubVoxel = selectAxis(io.inv_sub_voxel, issueAxis)
 
-  val mulIdxX = Module(new FMUL(cfg))
-  val mulIdxY = Module(new FMUL(cfg))
-  val mulIdxZ = Module(new FMUL(cfg))
-  mulIdxX.io.a := subGx.io.res
-  mulIdxX.io.b := io.inv_sub_voxel.x
-  mulIdxY.io.a := subGy.io.res
-  mulIdxY.io.b := io.inv_sub_voxel.y
-  mulIdxZ.io.a := subGz.io.res
-  mulIdxZ.io.b := io.inv_sub_voxel.z
+  // Shared per-axis path: position and subgrid coordinate mapping.
+  val position = Module(new FFMA(cfg))
+  position.io.a := axisDir
+  position.io.b := issueReq.ray.dist
+  position.io.c := axisOrigin
 
-  val fpToIntX = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
-  val fpToIntY = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
-  val fpToIntZ = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
-  fpToIntX.io.a := mulIdxX.io.result
-  fpToIntX.io.op := "b11".U
-  fpToIntY.io.a := mulIdxY.io.result
-  fpToIntY.io.op := "b11".U
-  fpToIntZ.io.a := mulIdxZ.io.result
-  fpToIntZ.io.op := "b11".U
+  val subGridMin = Module(new FADD(cfg))
+  subGridMin.io.a := position.io.res
+  subGridMin.io.b := neg(pipeUInt(axisGridMin, positionLatency))
 
-  val mapXNeg = fpToIntX.io.result(31)
-  val mapYNeg = fpToIntY.io.result(31)
-  val mapZNeg = fpToIntZ.io.result(31)
-  val mapXIdx = fpToIntX.io.result(addrWidth - 1, 0).asUInt
-  val mapYIdx = fpToIntY.io.result(addrWidth - 1, 0).asUInt
-  val mapZIdx = fpToIntZ.io.result(addrWidth - 1, 0).asUInt
+  val mulIdx = Module(new FMUL(cfg))
+  mulIdx.io.a := subGridMin.io.res
+  mulIdx.io.b := pipeUInt(axisInvSubVoxel, positionLatency + cfg.faddLatency)
 
-  val idxToFpX = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  val idxToFpY = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  val idxToFpZ = Module(new IntToFP(cfg.expWidth, cfg.precision))
-  idxToFpX.io.int := mapXIdx
-  idxToFpY.io.int := mapYIdx
-  idxToFpZ.io.int := mapZIdx
+  val fpToInt = Module(new FPToInt(cfg.expWidth, cfg.precision, cfg.fptointLatency))
+  fpToInt.io.a := mulIdx.io.result
+  fpToInt.io.op := "b11".U
+  val mapNeg = fpToInt.io.result(31)
+  val mapIdx = fpToInt.io.result(addrWidth - 1, 0).asUInt
 
-  val fracSubX = Module(new FADD(cfg))
-  val fracSubY = Module(new FADD(cfg))
-  val fracSubZ = Module(new FADD(cfg))
-  val mulIdxXAtInt = pipeUInt(mulIdxX.io.result, cfg.fptointLatency)
-  val mulIdxYAtInt = pipeUInt(mulIdxY.io.result, cfg.fptointLatency)
-  val mulIdxZAtInt = pipeUInt(mulIdxZ.io.result, cfg.fptointLatency)
-  fracSubX.io.a := mulIdxXAtInt
-  fracSubX.io.b := neg(idxToFpX.io.result)
-  fracSubY.io.a := mulIdxYAtInt
-  fracSubY.io.b := neg(idxToFpY.io.result)
-  fracSubZ.io.a := mulIdxZAtInt
-  fracSubZ.io.b := neg(idxToFpZ.io.result)
+  val idxToFp = Module(new IntToFP(cfg.expWidth, cfg.precision))
+  idxToFp.io.int := mapIdx
 
-  val oneMinusFracX = Module(new FADD(cfg))
-  val oneMinusFracY = Module(new FADD(cfg))
-  val oneMinusFracZ = Module(new FADD(cfg))
-  oneMinusFracX.io.a := fpOne
-  oneMinusFracX.io.b := neg(fracSubX.io.res)
-  oneMinusFracY.io.a := fpOne
-  oneMinusFracY.io.b := neg(fracSubY.io.res)
-  oneMinusFracZ.io.a := fpOne
-  oneMinusFracZ.io.b := neg(fracSubZ.io.res)
+  val fracSub = Module(new FADD(cfg))
+  val mulIdxAtInt = pipeUInt(mulIdx.io.result, cfg.fptointLatency)
+  fracSub.io.a := mulIdxAtInt
+  fracSub.io.b := neg(idxToFp.io.result)
 
-  val fracXAligned = pipeUInt(fracSubX.io.res, cfg.faddLatency)
-  val fracYAligned = pipeUInt(fracSubY.io.res, cfg.faddLatency)
-  val fracZAligned = pipeUInt(fracSubZ.io.res, cfg.faddLatency)
-  val stepNegXAtDist = pipeBool(stepNegX, distSelectLatency)
-  val stepNegYAtDist = pipeBool(stepNegY, distSelectLatency)
-  val stepNegZAtDist = pipeBool(stepNegZ, distSelectLatency)
-  val distX = Mux(stepNegXAtDist, fracXAligned, oneMinusFracX.io.res)
-  val distY = Mux(stepNegYAtDist, fracYAligned, oneMinusFracY.io.res)
-  val distZ = Mux(stepNegZAtDist, fracZAligned, oneMinusFracZ.io.res)
+  val oneMinusFrac = Module(new FADD(cfg))
+  oneMinusFrac.io.a := fpOne
+  oneMinusFrac.io.b := neg(fracSub.io.res)
 
-  val dsdtMulX = Module(new FMUL(cfg))
-  val dsdtMulY = Module(new FMUL(cfg))
-  val dsdtMulZ = Module(new FMUL(cfg))
-  dsdtMulX.io.a := io.in.bits.ray.dir.x
-  dsdtMulX.io.b := io.inv_sub_voxel.x
-  dsdtMulY.io.a := io.in.bits.ray.dir.y
-  dsdtMulY.io.b := io.inv_sub_voxel.y
-  dsdtMulZ.io.a := io.in.bits.ray.dir.z
-  dsdtMulZ.io.b := io.inv_sub_voxel.z
+  val fracAligned = pipeUInt(fracSub.io.res, cfg.faddLatency)
+  val stepNegAtDist = pipeBool(axisDir(cfg.totalWidth - 1), distSelectLatency)
+  val dist = Mux(stepNegAtDist, fracAligned, oneMinusFrac.io.res)
 
-  val absDsdtX = fpAbs(dsdtMulX.io.result)
-  val absDsdtY = fpAbs(dsdtMulY.io.result)
-  val absDsdtZ = fpAbs(dsdtMulZ.io.result)
+  // Shared per-axis path: reciprocal cell-crossing distance.
+  val dsdtMul = Module(new FMUL(cfg))
+  dsdtMul.io.a := axisDir
+  dsdtMul.io.b := axisInvSubVoxel
 
-  val deltaDivX = Module(new FRQ(cfg))
-  val deltaDivY = Module(new FRQ(cfg))
-  val deltaDivZ = Module(new FRQ(cfg))
-  deltaDivX.io.in := absDsdtX
-  deltaDivX.io.in_valid := inFire
-  deltaDivY.io.in := absDsdtY
-  deltaDivY.io.in_valid := inFire
-  deltaDivZ.io.in := absDsdtZ
-  deltaDivZ.io.in_valid := inFire
+  val deltaDiv = Module(new FRQ(cfg))
+  deltaDiv.io.in := fpAbs(dsdtMul.io.result)
+  deltaDiv.io.in_valid := pipeBool(issueValid, cfg.fmulLatency)
 
-  val distToMulX = alignToTarget(distX, distSelectLatency, tMaxInputLatency)
-  val distToMulY = alignToTarget(distY, distSelectLatency, tMaxInputLatency)
-  val distToMulZ = alignToTarget(distZ, distSelectLatency, tMaxInputLatency)
-  val deltaToMulX = alignToTarget(deltaDivX.io.result, deltaLatency, tMaxInputLatency)
-  val deltaToMulY = alignToTarget(deltaDivY.io.result, deltaLatency, tMaxInputLatency)
-  val deltaToMulZ = alignToTarget(deltaDivZ.io.result, deltaLatency, tMaxInputLatency)
+  val distToMul = alignToTarget(dist, distSelectLatency, tMaxInputLatency)
+  val deltaToMul = alignToTarget(deltaDiv.io.result, deltaLatency, tMaxInputLatency)
 
-  val tMaxMulX = Module(new FMUL(cfg))
-  val tMaxMulY = Module(new FMUL(cfg))
-  val tMaxMulZ = Module(new FMUL(cfg))
-  tMaxMulX.io.a := distToMulX
-  tMaxMulX.io.b := deltaToMulX
-  tMaxMulY.io.a := distToMulY
-  tMaxMulY.io.b := deltaToMulY
-  tMaxMulZ.io.a := distToMulZ
-  tMaxMulZ.io.b := deltaToMulZ
+  val tMaxMul = Module(new FMUL(cfg))
+  tMaxMul.io.a := distToMul
+  tMaxMul.io.b := deltaToMul
 
-  // Triangle intersections report t from the original ray origin. Convert the
-  // cell-boundary distances, which are computed from the SDF hit position, to
-  // that same absolute coordinate before DDA traversal starts.
-  val rayBaseT = pipeUInt(io.in.bits.ray.dist, relativeTMaxLatency)
-  val tMaxAbsX = Module(new FADD(cfg))
-  val tMaxAbsY = Module(new FADD(cfg))
-  val tMaxAbsZ = Module(new FADD(cfg))
-  tMaxAbsX.io.a := tMaxMulX.io.result
-  tMaxAbsX.io.b := rayBaseT
-  tMaxAbsY.io.a := tMaxMulY.io.result
-  tMaxAbsY.io.b := rayBaseT
-  tMaxAbsZ.io.a := tMaxMulZ.io.result
-  tMaxAbsZ.io.b := rayBaseT
+  val rayBaseT = pipeUInt(issueReq.ray.dist, relativeTMaxLatency)
+  val tMaxAbs = Module(new FADD(cfg))
+  tMaxAbs.io.a := tMaxMul.io.result
+  tMaxAbs.io.b := rayBaseT
 
-  val tDeltaCapX = alignToTarget(deltaDivX.io.result, deltaLatency, totalInitLatency)
-  val tDeltaCapY = alignToTarget(deltaDivY.io.result, deltaLatency, totalInitLatency)
-  val tDeltaCapZ = alignToTarget(deltaDivZ.io.result, deltaLatency, totalInitLatency)
+  val tDeltaAtOut = alignToTarget(deltaDiv.io.result, deltaLatency, axisLatency)
+  val mapNegAtOut = pipeBool(mapNeg, axisLatency - mapLatency)
+  val mapIdxAtOut = pipeUInt(mapIdx, axisLatency - mapLatency)
+  val dirNegAtOut = pipeBool(axisDir(cfg.totalWidth - 1), axisLatency)
+  val axisAtOut = pipeUInt(issueAxis, axisLatency)
+  val axisOutValid = pipeBool(issueValid, axisLatency, false.B)
 
-  val subXNegOut = pipeBool(mapXNeg, totalInitLatency - mapLatency)
-  val subYNegOut = pipeBool(mapYNeg, totalInitLatency - mapLatency)
-  val subZNegOut = pipeBool(mapZNeg, totalInitLatency - mapLatency)
-  val subXIdxOut = pipeUInt(mapXIdx, totalInitLatency - mapLatency)
-  val subYIdxOut = pipeUInt(mapYIdx, totalInitLatency - mapLatency)
-  val subZIdxOut = pipeUInt(mapZIdx, totalInitLatency - mapLatency)
   val coordLimit = GlobalConfig.DdaRes.U(addrWidth.W)
-  val subXClamped = Mux(subXIdxOut >= coordLimit, coordLimit, subXIdxOut)
-  val subYClamped = Mux(subYIdxOut >= coordLimit, coordLimit, subYIdxOut)
-  val subZClamped = Mux(subZIdxOut >= coordLimit, coordLimit, subZIdxOut)
+  val subClamped = Mux(mapIdxAtOut >= coordLimit, coordLimit, mapIdxAtOut)
+  val subCoord = Mux(mapNegAtOut,
+    (-1).S(coordWidth.W),
+    subClamped(coordWidth - 2, 0).zext)
 
-  io.out.valid := pipeBool(inFire, totalInitLatency)
-  io.out.bits := 0.U.asTypeOf(new BackendContextInit(cfg, addrWidth))
-  io.out.bits.sourceFrontendId := reqAtOut.frontendContextId
-  io.out.bits.contextId := reqAtOut.traceSlot
-  io.out.bits.immutable.origin := reqAtOut.ray.origin
-  io.out.bits.immutable.dir := reqAtOut.ray.dir
-  io.out.bits.immutable.meta := reqAtOut.meta
-  io.out.bits.traversal.contextId := reqAtOut.traceSlot
-  io.out.bits.traversal.subX := Mux(subXNegOut, (-1).S(coordWidth.W), subXClamped(coordWidth - 2, 0).zext)
-  io.out.bits.traversal.subY := Mux(subYNegOut, (-1).S(coordWidth.W), subYClamped(coordWidth - 2, 0).zext)
-  io.out.bits.traversal.subZ := Mux(subZNegOut, (-1).S(coordWidth.W), subZClamped(coordWidth - 2, 0).zext)
-  io.out.bits.traversal.iter := 0.U
-  io.out.bits.traversal.tMaxX := tMaxAbsX.io.res
-  io.out.bits.traversal.tMaxY := tMaxAbsY.io.res
-  io.out.bits.traversal.tMaxZ := tMaxAbsZ.io.res
-  io.out.bits.traversal.tDeltaX := tDeltaCapX
-  io.out.bits.traversal.tDeltaY := tDeltaCapY
-  io.out.bits.traversal.tDeltaZ := tDeltaCapZ
-  io.out.bits.traversal.dirNegX := reqAtOut.ray.dir.x(cfg.totalWidth - 1)
-  io.out.bits.traversal.dirNegY := reqAtOut.ray.dir.y(cfg.totalWidth - 1)
-  io.out.bits.traversal.dirNegZ := reqAtOut.ray.dir.z(cfg.totalWidth - 1)
+  class AxisResult extends Bundle {
+    val sub = SInt(coordWidth.W)
+    val tMax = UInt(cfg.totalWidth.W)
+    val tDelta = UInt(cfg.totalWidth.W)
+    val dirNeg = Bool()
+  }
 
+  val axisResult = Wire(new AxisResult)
+  axisResult.sub := subCoord
+  axisResult.tMax := tMaxAbs.io.res
+  axisResult.tDelta := tDeltaAtOut
+  axisResult.dirNeg := dirNegAtOut
+
+  val xResult = Reg(new AxisResult)
+  val yResult = Reg(new AxisResult)
+  when(axisOutValid && axisAtOut === 0.U) {
+    xResult := axisResult
+  }
+  when(axisOutValid && axisAtOut === 1.U) {
+    yResult := axisResult
+  }
+
+  // The request accepted with X is aligned to the Z result.  Registering the
+  // assembled context keeps the wide backend payload off the arithmetic path.
+  val reqAtZ = pipeData(io.in.bits, requestLatency)
+  val reqAtZValid = pipeBool(inFire, requestLatency, false.B)
+  val complete = axisOutValid && axisAtOut === 2.U
+  val outBits = Reg(new BackendContextInit(cfg, addrWidth))
+  val outValid = RegInit(false.B)
+
+  when(outValid && io.out.ready) {
+    outValid := false.B
+  }
+  when(complete) {
+    assert(reqAtZValid, "DDA init Z result lost its request metadata")
+    assert(!outValid || io.out.ready, "DdaInitPE output holding register overflow")
+    outBits := 0.U.asTypeOf(new BackendContextInit(cfg, addrWidth))
+    outBits.sourceFrontendId := reqAtZ.frontendContextId
+    outBits.contextId := reqAtZ.traceSlot
+    outBits.immutable.origin := reqAtZ.ray.origin
+    outBits.immutable.dir := reqAtZ.ray.dir
+    outBits.immutable.meta := reqAtZ.meta
+    outBits.traversal.contextId := reqAtZ.traceSlot
+    outBits.traversal.subX := xResult.sub
+    outBits.traversal.subY := yResult.sub
+    outBits.traversal.subZ := axisResult.sub
+    outBits.traversal.iter := 0.U
+    outBits.traversal.tMaxX := xResult.tMax
+    outBits.traversal.tMaxY := yResult.tMax
+    outBits.traversal.tMaxZ := axisResult.tMax
+    outBits.traversal.tDeltaX := xResult.tDelta
+    outBits.traversal.tDeltaY := yResult.tDelta
+    outBits.traversal.tDeltaZ := axisResult.tDelta
+    outBits.traversal.dirNegX := xResult.dirNeg
+    outBits.traversal.dirNegY := yResult.dirNeg
+    outBits.traversal.dirNegZ := axisResult.dirNeg
+    outValid := true.B
+  }
+
+  io.out.valid := outValid
+  io.out.bits := outBits
   when(io.out.valid) {
     assert(io.out.ready, "DdaInitPE expects io.out.ready to stay high in pipeline mode")
   }

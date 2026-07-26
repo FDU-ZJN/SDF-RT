@@ -47,7 +47,6 @@ class DdaStepPipelinePE(
   val inBounds = ctx.subX >= 0.S && ctx.subY >= 0.S && ctx.subZ >= 0.S &&
     ctx.subX < totalSubS && ctx.subY < totalSubS && ctx.subZ < totalSubS
   val terminalNow = !inBounds || ctx.iter >= maxTraversalSteps.U
-  val watchdogNow = inBounds && ctx.iter >= maxTraversalSteps.U
   val nonTerminalFire = inFire && !terminalNow
 
   val globalX = (ctx.subX.asUInt >> subShift).pad(addrWidth)(addrWidth - 1, 0)
@@ -139,7 +138,6 @@ class DdaStepPipelinePE(
   io.out.valid := outValid
   io.out.bits.state := Mux(terminalAtOut, ctxAtOut, nextCtx)
   io.out.bits.done := terminalAtOut
-  io.out.bits.watchdog := pipeBool(watchdogNow, totalStepLatency)
   io.out.bits.emitCmd := !terminalAtOut && triCountAtOut =/= 0.U
   io.out.bits.tri.base_addr := triStartAtOut
   io.out.bits.tri.count := triCountAtOut

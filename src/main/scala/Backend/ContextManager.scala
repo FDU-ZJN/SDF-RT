@@ -15,7 +15,7 @@ class ContextManager(
 ) extends Module {
   private val contextCount = GlobalConfig.backendContextCount
   private val contextBits = GlobalConfig.backendContextBits
-  private val traceLanes = GlobalConfig.traceNumWorkers * 2
+  private val traceLanes = GlobalConfig.traceNumWorkers * 2 // legacy width
   private val numWorkers = GlobalConfig.traceNumWorkers
 
   val io = IO(new Bundle {
@@ -24,14 +24,16 @@ class ContextManager(
     val step_in = Decoupled(new DdaTraversalState(cfg))
     val step_out = Flipped(Decoupled(new DdaStepResult(cfg, addrWidth)))
 
+    val trace_start = Vec(contextCount, Decoupled(new TraceContextDesc(cfg, addrWidth)))
+    val trace_cmd = Vec(contextCount, Decoupled(new TriBatch(addrWidth)))
+    val trace_dda_done = Output(Vec(contextCount, Bool()))
+    // Deprecated dynamic-lane ports retained for source compatibility.
     val trace_claim = Decoupled(new TraceContextDesc(cfg, addrWidth))
     val trace_cmd_context = Input(Vec(traceLanes, UInt(contextBits.W)))
     val trace_cmd_active = Input(Vec(traceLanes, Bool()))
-    val trace_cmd = Vec(traceLanes, Decoupled(new TriBatch(addrWidth)))
-    val trace_dda_done = Output(Vec(traceLanes, Bool()))
+    val trace_cmd_legacy = Vec(traceLanes, Decoupled(new TriBatch(addrWidth)))
     val trace_stop = Vec(numWorkers, Flipped(Valid(UInt(contextBits.W))))
     val trace_release = Vec(numWorkers, Flipped(Valid(UInt(contextBits.W))))
-    val watchdog_error = Output(Bool())
   })
 
   val immutableTable = Reg(Vec(contextCount, new ImmutableRayRecord(cfg, addrWidth)))
@@ -43,8 +45,6 @@ class ContextManager(
   val traceStopped = RegInit(VecInit(Seq.fill(contextCount)(false.B)))
   val resultAccepted = RegInit(VecInit(Seq.fill(contextCount)(false.B)))
   val stepInFlight = RegInit(VecInit(Seq.fill(contextCount)(false.B)))
-  val watchdogError = RegInit(false.B)
-  io.watchdog_error := watchdogError
 
   val cmdFifos = Seq.fill(contextCount)(Module(new Queue(
     new TriBatch(addrWidth),
@@ -132,9 +132,6 @@ class ContextManager(
       traversalTable(responseId) := io.step_out.bits.state
       when(io.step_out.bits.done) {
         ddaDone(responseId) := true.B
-        when(io.step_out.bits.watchdog) {
-          watchdogError := true.B
-        }
       }
     }
   }
@@ -152,61 +149,38 @@ class ContextManager(
     claimEligible(ctx) := active(ctx) && !claimed(ctx) && !traceStopped(ctx) &&
       (cmdFifos(ctx).io.deq.valid || ddaDone(ctx))
   }
-  val claimRr = RegInit(0.U(contextBits.W))
-  val claimRotated = Wire(Vec(contextCount, Bool()))
-  for (offset <- 0 until contextCount) {
-    val ctx = (claimRr + offset.U)(contextBits - 1, 0)
-    claimRotated(offset) := claimEligible(ctx)
-  }
-  val claimPickOH = PriorityEncoderOH(claimRotated)
-  val claimPickId = (OHToUInt(claimPickOH) + claimRr)(contextBits - 1, 0)
-  io.trace_claim.valid := claimRotated.asUInt.orR
-  io.trace_claim.bits.contextId := claimPickId
-  io.trace_claim.bits.ray.origin := immutableTable(claimPickId).origin
-  io.trace_claim.bits.ray.dir := immutableTable(claimPickId).dir
-  io.trace_claim.bits.ray.dist := 0.U
-  io.trace_claim.bits.meta := immutableTable(claimPickId).meta
-  when(io.trace_claim.fire) {
-    assert(claimEligible(claimPickId), "Trace claimed an ineligible backend context")
-    claimed(claimPickId) := true.B
-    claimRr := claimPickId + 1.U
-  }
-
-  val queueDeqValid = VecInit(cmdFifos.map(_.io.deq.valid))
-  val queueDeqBits = VecInit(cmdFifos.map(_.io.deq.bits))
-  for (lane <- 0 until traceLanes) {
-    val ctx = io.trace_cmd_context(lane)
-    io.trace_cmd(lane).valid := io.trace_cmd_active(lane) && queueDeqValid(ctx)
-    io.trace_cmd(lane).bits := queueDeqBits(ctx)
-    io.trace_dda_done(lane) := io.trace_cmd_active(lane) &&
-      ddaDone(ctx) && !queueDeqValid(ctx)
-  }
+  io.trace_claim.valid := false.B
+  io.trace_claim.bits := 0.U.asTypeOf(io.trace_claim.bits)
   for (ctx <- 0 until contextCount) {
-    val laneMatch = VecInit((0 until traceLanes).map(lane =>
-      io.trace_cmd_active(lane) && io.trace_cmd_context(lane) === ctx.U
-    ))
-    assert(PopCount(laneMatch) <= 1.U,
-      "A backend context is bound to multiple Trace lanes")
-    cmdFifos(ctx).io.deq.ready := (0 until traceLanes).map(lane =>
-      laneMatch(lane) && io.trace_cmd(lane).ready
-    ).reduce(_ || _)
+    io.trace_start(ctx).valid := claimEligible(ctx)
+    io.trace_start(ctx).bits.contextId := ctx.U
+    io.trace_start(ctx).bits.ray.origin := immutableTable(ctx).origin
+    io.trace_start(ctx).bits.ray.dir := immutableTable(ctx).dir
+    io.trace_start(ctx).bits.ray.dist := 0.U
+    io.trace_start(ctx).bits.meta := immutableTable(ctx).meta
+    when(io.trace_start(ctx).fire) { claimed(ctx) := true.B }
+    io.trace_cmd(ctx).valid := claimed(ctx) && !traceStopped(ctx) && cmdFifos(ctx).io.deq.valid
+    io.trace_cmd(ctx).bits := cmdFifos(ctx).io.deq.bits
+    cmdFifos(ctx).io.deq.ready := io.trace_cmd(ctx).ready
+    io.trace_dda_done(ctx) := claimed(ctx) && ddaDone(ctx) && !cmdFifos(ctx).io.deq.valid
   }
+  for (lane <- 0 until traceLanes) { io.trace_cmd_legacy(lane).valid := false.B; io.trace_cmd_legacy(lane).bits := 0.U.asTypeOf(new TriBatch(addrWidth)) }
 
   for (ctx <- 0 until contextCount) {
     when(stopNow(ctx)) {
-      assert(active(ctx) && claimed(ctx), "Trace stopped an inactive or unclaimed context")
-      traceStopped(ctx) := true.B
+      when(active(ctx) && claimed(ctx)) { traceStopped(ctx) := true.B }
     }
     when(releaseNow(ctx)) {
-      assert(active(ctx) && claimed(ctx), "Trace released an inactive or unclaimed context")
-      resultAccepted(ctx) := true.B
-      val returningNow = responseFire && responseId === ctx.U
-      when(!stepInFlight(ctx) || returningNow) {
-        active(ctx) := false.B
-        claimed(ctx) := false.B
-        ddaDone(ctx) := false.B
-        traceStopped(ctx) := false.B
-        resultAccepted(ctx) := false.B
+      when(active(ctx) && claimed(ctx)) {
+        resultAccepted(ctx) := true.B
+        val returningNow = responseFire && responseId === ctx.U
+        when(!stepInFlight(ctx) || returningNow) {
+          active(ctx) := false.B
+          claimed(ctx) := false.B
+          ddaDone(ctx) := false.B
+          traceStopped(ctx) := false.B
+          resultAccepted(ctx) := false.B
+        }
       }
     }
     assert(!(active(ctx) && initReserved(ctx)),

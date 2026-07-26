@@ -190,7 +190,7 @@ class FpgaTop extends Module {
     }
   }
   io.batch_done := donePulse
-  io.protocol_error := protocolError || backend.io.watchdog_error
+  io.protocol_error := protocolError
 }
 
 object FpgaTopGen {

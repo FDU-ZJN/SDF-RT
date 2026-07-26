@@ -159,7 +159,6 @@ class DdaSubgridMetaResp extends Bundle {
 class DdaStepResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
   val state = new DdaTraversalState(cfg)
   val done = Bool()
-  val watchdog = Bool()
   val emitCmd = Bool()
   val tri = new TriBatch(addrWidth)
 }

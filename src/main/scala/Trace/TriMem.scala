@@ -1258,19 +1258,35 @@ class TriangleMemMultiPort(
         io.req(p).ready := reqReady(p)
       }
 
-      val respArbs = Seq.fill(numPorts)(Module(new RRArbiter(new TriMemResp(c, tagWidth), numBanks)))
+      // Arbitrate only the small bank selector.  Carrying the complete
+      // TriangleBlock through one RRArbiter per port replicated a very wide
+      // mux tree (four ports x four banks).  The selected bank is now used to
+      // perform one data mux after arbitration, keeping block data out of the
+      // control decision path.
+      val respArbs = Seq.fill(numPorts)(Module(new RRArbiter(UInt(bankSelW.W), numBanks)))
+      val respSelected = Seq.fill(numPorts)(Wire(new TriMemResp(c, tagWidth)))
       for (p <- 0 until numPorts) {
         for (b <- 0 until numBanks) {
           respArbs(p).io.in(b).valid := banks(b).io.resp.valid && banks(b).io.resp.bits.src === p.U
-          respArbs(p).io.in(b).bits := banks(b).io.resp.bits.resp
+          respArbs(p).io.in(b).bits := b.U
         }
-        io.resp(p) <> respArbs(p).io.out
+
+        val selectedOH = UIntToOH(respArbs(p).io.out.bits, numBanks)
+        respSelected(p) := Mux1H(
+          selectedOH.asBools,
+          banks.map(_.io.resp.bits.resp)
+        )
+
+        io.resp(p).valid := respArbs(p).io.out.valid
+        io.resp(p).bits := respSelected(p)
+        respArbs(p).io.out.ready := io.resp(p).ready
       }
 
       for (b <- 0 until numBanks) {
         val respReadyVec = Wire(Vec(numPorts, Bool()))
         for (p <- 0 until numPorts) {
-          respReadyVec(p) := respArbs(p).io.in(b).ready && banks(b).io.resp.bits.src === p.U
+          respReadyVec(p) := respArbs(p).io.out.valid &&
+            respArbs(p).io.out.bits === b.U && io.resp(p).ready
         }
         banks(b).io.resp.ready := respReadyVec.asUInt.orR
       }

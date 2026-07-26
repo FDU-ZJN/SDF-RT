@@ -5,11 +5,12 @@ import chisel3.util._
 import raytrace_utils._
 import raytrace_utils.fudian._
 
-class TriPE(val c: TriPeConfig) extends Module {
+class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContextsPerWorker) extends Module {
   require(c.numPEs == 1, s"TriPE currently has one triangle intersector per worker, got ${c.numPEs}")
+  require(contextCount >= 2 && (contextCount & (contextCount - 1)) == 0)
 
-  private val ctxCount = 2
-  private val ctxW = 1
+  private val ctxCount = contextCount
+  private val ctxW = log2Ceil(contextCount)
   private val memTagW = ctxW + 1
   private val lineSelW = math.max(1, log2Ceil(c.cacheLineTriangles))
 
@@ -83,7 +84,7 @@ class TriPE(val c: TriPeConfig) extends Module {
     activeEpoch(idx) := !activeEpoch(idx)
   }
 
-  private val outSel = Mux(resultValidReg(0), 0.U(ctxW.W), 1.U(ctxW.W))
+  private val outSel = PriorityEncoder(resultValidReg.asUInt)
 
   for (ctx <- 0 until ctxCount) {
     when(io.clear_ctx(ctx)) {
@@ -147,9 +148,13 @@ class TriPE(val c: TriPeConfig) extends Module {
     memCanEnq(ctx) := batchInProgress(ctx) && batchTrisRemaining(ctx) =/= 0.U
   }
 
-  private val memRr = RegInit(false.B)
-  private val memSel = Wire(UInt(ctxW.W))
-  memSel := Mux(memCanEnq(0) && (!memRr || !memCanEnq(1)), 0.U, 1.U)
+  private val memRr = RegInit(0.U(ctxW.W))
+  private val memEligibleRotated = Wire(Vec(ctxCount, Bool()))
+  for (offset <- 0 until ctxCount) {
+    val idx = (memRr + offset.U)(ctxW-1,0)
+    memEligibleRotated(offset) := memCanEnq(idx)
+  }
+  private val memSel = (memRr + PriorityEncoder(memEligibleRotated.asUInt))(ctxW-1,0)
 
   private val laneBase = batchTriIdx(memSel)(lineSelW - 1, 0)
   private val blockAddr = batchTriIdx(memSel) >> lineSelW
@@ -171,7 +176,7 @@ class TriPE(val c: TriPeConfig) extends Module {
   when(memReqQ.io.enq.fire) {
     batchTriIdx(memSel) := batchTriIdx(memSel) + blockIssueCount
     batchTrisRemaining(memSel) := batchTrisRemaining(memSel) - blockIssueCount
-    memRr := !memSel(0)
+    memRr := Mux(memSel === (ctxCount - 1).U, 0.U, memSel + 1.U)
   }
 
   val memReqStale = memReqQ.io.deq.valid &&
@@ -197,8 +202,8 @@ class TriPE(val c: TriPeConfig) extends Module {
   when(io.mem_resp.fire) {
     lineValid := true.B
     lineBlock := io.mem_resp.bits.block
-    lineCtx := io.mem_resp.bits.tag(0)
-    lineEpoch := io.mem_resp.bits.tag(1)
+    lineCtx := io.mem_resp.bits.tag(ctxW - 1, 0)
+    lineEpoch := io.mem_resp.bits.tag(memTagW - 1)
     lineLane := 0.U
   }.elsewhen(lineValid && !lineLive) {
     lineValid := false.B
@@ -284,7 +289,8 @@ class TriPE(val c: TriPeConfig) extends Module {
       triOutstanding(ctx) === 0.U &&
       hitUpdatesDrained
     val resultDoneNow =
-      (hitStop(ctx) || io.dda_done(ctx)) &&
+      ctxBusy(ctx) &&
+        (hitStop(ctx) || io.dda_done(ctx)) &&
         !batchInProgress(ctx) &&
         triOutstanding(ctx) === 0.U &&
         hitUpdatesDrained

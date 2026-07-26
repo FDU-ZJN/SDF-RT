@@ -7,8 +7,11 @@ object GlobalConfig {
   val frameWidth =1920
   val frameHeight = 1080
   val traceNumWorkers = 4
+  val traceContextsPerWorker = 4
+  val traceContextCount = traceNumWorkers * traceContextsPerWorker
   val triMemNumPEs = 1
-  val triMemCacheLineTriangles = 4
+  // One BRAM36-native 512-deep row per way: 2 triangles (576 bits) per line.
+  val triMemCacheLineTriangles = 2
   val triMemNumBanks = 4
   private var useBlackBoxState = 0
   def memImplMode: Int = synchronized { useBlackBoxState }
@@ -55,6 +58,8 @@ object GlobalConfig {
   val frontendContextBits = log2Ceil(frontendContextCount)
   val backendContextCount = 16
   val backendContextBits = log2Ceil(backendContextCount)
+  require(traceContextCount == backendContextCount,
+    "trace context count must cover backend contexts exactly")
   // Compatibility aliases for the existing Trace interfaces.  Backend and
   // frontend IDs are independent even though both are five bits wide.
   val ddaTraceSlotCount = backendContextCount
@@ -90,8 +95,8 @@ object GlobalConfig {
   val triMemAddrWidth = 32
   // Triangle data width per TriPE request block.
   val triMemDataWidth = triMemCacheLineTriangles * 9 * 32
-  val triMemCacheSets = 256
-  val triMemCacheWays = 1
+  val triMemCacheSets = 512
+  val triMemCacheWays = 2
   val triMemReqQueueDepth = 8
   val triMemMergeQueueDepth = 8
   val triMemMshrEntries = 4
@@ -127,15 +132,13 @@ object GlobalConfig {
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 32
+  val ddaMaxSteps = 64
   // Conservative handoff to DDA: the scene sweep shows full coverage with no
   // surface overshoot at this threshold for all three SDF hierarchy levels.
-  val sdfThreshold1 = 0.04f
-  val sdfThreshold2 = 0.08f
-  val sdfThreshold3 = 0.16f
+  val sdfThreshold1 = 0.01f
+  val sdfThreshold2 = 0.02f
+  val sdfThreshold3 = 0.04f
   val sdfStepScale = 0.6f
-
-
-  val ddaMaxSteps = 32
 
   private def alignUp(value: Int, quantum: Int): Int = {
     require(quantum > 0, s"alignment quantum must be > 0, got $quantum")

@@ -56,7 +56,6 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.step_out.valid.poke(true.B)
     pokeState(dut.io.step_out.bits.state, id, iter = base + 1)
     dut.io.step_out.bits.done.poke(false.B)
-    dut.io.step_out.bits.watchdog.poke(false.B)
     dut.io.step_out.bits.emitCmd.poke(true.B)
     dut.io.step_out.bits.tri.base_addr.poke(base.U)
     dut.io.step_out.bits.tri.count.poke(1.U)
@@ -159,7 +158,6 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.step_out.valid.poke(true.B)
       pokeState(dut.io.step_out.bits.state, 0, iter = 0)
       dut.io.step_out.bits.done.poke(false.B)
-      dut.io.step_out.bits.watchdog.poke(false.B)
       dut.io.step_out.bits.emitCmd.poke(true.B)
       dut.io.step_out.bits.tri.base_addr.poke(99.U)
       dut.io.step_out.bits.tri.count.poke(1.U)
@@ -171,7 +169,6 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.init_alloc.ready.poke(false.B)
       dut.io.init_alloc.valid.expect(true.B)
       dut.io.init_alloc.bits.expect(0.U)
-      dut.io.watchdog_error.expect(false.B)
     }
   }
 
@@ -203,7 +200,6 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.step_out.valid.poke(true.B)
       pokeState(dut.io.step_out.bits.state, 0, iter = 0)
       dut.io.step_out.bits.done.poke(true.B)
-      dut.io.step_out.bits.watchdog.poke(false.B)
       dut.io.step_out.bits.emitCmd.poke(false.B)
       dut.clock.step()
       dut.io.step_out.valid.poke(false.B)
