@@ -11,7 +11,7 @@ object GlobalConfig {
   val traceContextCount = traceNumWorkers * traceContextsPerWorker
   val triMemNumPEs = 1
   // One BRAM36-native 512-deep row per way: 2 triangles (576 bits) per line.
-  val triMemCacheLineTriangles = 2
+  val triMemCacheLineTriangles = 4
   val triMemNumBanks = 4
   private var useBlackBoxState = 0
   def memImplMode: Int = synchronized { useBlackBoxState }
@@ -96,7 +96,7 @@ object GlobalConfig {
   // Triangle data width per TriPE request block.
   val triMemDataWidth = triMemCacheLineTriangles * 9 * 32
   val triMemCacheSets = 512
-  val triMemCacheWays = 2
+  val triMemCacheWays = 1
   val triMemReqQueueDepth = 8
   val triMemMergeQueueDepth = 8
   val triMemMshrEntries = 4
