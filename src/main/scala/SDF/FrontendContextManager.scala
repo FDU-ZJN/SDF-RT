@@ -35,15 +35,9 @@ class FrontendContextManager(
   val free = VecInit(active.map(!_))
   val allocOH = PriorityEncoderOH(free)
   val allocId = OHToUInt(allocOH)
-  // Allocation writes the ray table first and only forwards a registered,
-  // narrow context ID to Init.  The slot can be replaced when Init consumes
-  // the previous ID, preserving one allocation per cycle in steady state.
-  val initIssueValid = RegInit(false.B)
-  val initIssueId = Reg(UInt(idBits.W))
-  val initIssueReady = !initIssueValid || io.init_issue.ready
-  io.init_issue.valid := initIssueValid
-  io.init_issue.bits := initIssueId
-  io.ingress.ready := free.asUInt.orR && initIssueReady
+  io.init_issue.valid := io.ingress.valid && free.asUInt.orR
+  io.init_issue.bits := allocId
+  io.ingress.ready := free.asUInt.orR && io.init_issue.ready
 
   when(io.ingress.fire) {
     assert(!active(allocId), "Frontend allocator selected an active context")
@@ -53,10 +47,6 @@ class FrontendContextManager(
     immutableTable(allocId).meta.rayId := io.ingress.bits.rayId
     stateTable(allocId) := 0.U.asTypeOf(new FrontendSdfState(cfg))
     sdfReady(allocId) := false.B
-    initIssueId := allocId
-    initIssueValid := true.B
-  }.elsewhen(io.init_issue.fire) {
-    initIssueValid := false.B
   }
 
   when(io.init_complete.valid) {
@@ -119,6 +109,17 @@ class FrontendContextManager(
   for (port <- 0 until readPorts) {
     io.immutable(port) := immutableTable(io.read_id(port))
     io.sdf_state(port) := stateTable(io.read_id(port))
+    // Only Init consumes a context in its allocation cycle. Keeping ingress
+    // off later read ports prevents allocator control and the full ray payload
+    // from becoming combinational inputs to the SDF datapath.
+    if (port == 0) {
+      when(io.ingress.fire && allocId === io.read_id(port)) {
+        io.immutable(port).origin := io.ingress.bits.origin
+        io.immutable(port).dir := io.ingress.bits.dir
+        io.immutable(port).meta.rayId := io.ingress.bits.rayId
+        io.sdf_state(port) := 0.U.asTypeOf(new FrontendSdfState(cfg))
+      }
+    }
     for (writePort <- 0 until stateWritePorts) {
       when(io.state_write(writePort).valid &&
         io.state_write(writePort).bits.contextId === io.read_id(port)) {

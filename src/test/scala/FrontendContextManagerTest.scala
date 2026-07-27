@@ -29,14 +29,14 @@ class FrontendContextManagerTest extends AnyFlatSpec with ChiselScalatestTester 
         dut.io.ingress.bits.rayId.poke((200 + id).U)
         dut.io.ingress.valid.poke(true.B)
         dut.io.ingress.ready.expect(true.B)
-        dut.clock.step()
         dut.io.init_issue.valid.expect(true.B)
         dut.io.init_issue.bits.expect(id.U)
+        // The table bypass makes the just-allocated record visible to Init.
         dut.io.read_id(0).poke(id.U)
         dut.io.immutable(0).meta.rayId.expect((200 + id).U)
+        dut.clock.step()
       }
       dut.io.ingress.valid.poke(false.B)
-      dut.clock.step()
       dut.io.active_count.expect(GlobalConfig.frontendContextCount.U)
       dut.io.ingress.ready.expect(false.B)
 
@@ -52,10 +52,9 @@ class FrontendContextManagerTest extends AnyFlatSpec with ChiselScalatestTester 
       dut.io.release(0).valid.poke(false.B)
       dut.io.ingress.bits.rayId.poke(999.U)
       dut.io.ingress.valid.poke(true.B)
+      dut.io.init_issue.bits.expect(7.U)
       dut.clock.step()
       dut.io.ingress.valid.poke(false.B)
-      dut.io.init_issue.valid.expect(true.B)
-      dut.io.init_issue.bits.expect(7.U)
       dut.io.read_id(0).poke(7.U)
       dut.io.immutable(0).meta.rayId.expect(999.U)
     }
@@ -90,7 +89,7 @@ class FrontendContextManagerTest extends AnyFlatSpec with ChiselScalatestTester 
     }
   }
 
-  it should "read a newly allocated immutable record only after the registered ID stage" in {
+  it should "limit same-cycle ingress bypass to the Init read port" in {
     test(new FrontendContextManager(FloatConfig.FP32, 32,
       readPorts = 2, releasePorts = 1, stateWritePorts = 1)) { dut =>
       dut.io.init_issue.ready.poke(true.B)
@@ -121,15 +120,11 @@ class FrontendContextManagerTest extends AnyFlatSpec with ChiselScalatestTester 
       dut.io.ingress.bits.rayId.poke(20.U)
       dut.io.ingress.valid.poke(true.B)
       dut.io.ingress.ready.expect(true.B)
-      dut.io.immutable(0).meta.rayId.expect(10.U)
+      dut.io.immutable(0).meta.rayId.expect(20.U)
       dut.io.immutable(1).meta.rayId.expect(10.U)
       dut.io.immutable(1).origin.x.expect(1.U)
       dut.clock.step()
       dut.io.ingress.valid.poke(false.B)
-      dut.io.init_issue.valid.expect(true.B)
-      dut.io.init_issue.bits.expect(0.U)
-      dut.io.immutable(0).meta.rayId.expect(20.U)
-      dut.io.immutable(0).origin.x.expect(11.U)
       dut.io.immutable(1).meta.rayId.expect(20.U)
       dut.io.immutable(1).origin.x.expect(11.U)
     }
@@ -196,20 +191,16 @@ class FrontendContextManagerTest extends AnyFlatSpec with ChiselScalatestTester 
       dut.io.ingress.bits.rayId.poke(7.U)
       dut.io.ingress.valid.poke(true.B)
 
-      dut.io.init_issue.valid.expect(false.B)
-      dut.io.ingress.ready.expect(true.B)
-      dut.clock.step()
       dut.io.init_issue.valid.expect(true.B)
       dut.io.init_issue.bits.expect(0.U)
-      dut.io.active_count.expect(1.U)
       dut.io.ingress.ready.expect(false.B)
-      dut.clock.step(2)
+      dut.clock.step(3)
       dut.io.init_issue.valid.expect(true.B)
       dut.io.init_issue.bits.expect(0.U)
-      dut.io.active_count.expect(1.U)
+      dut.io.active_count.expect(0.U)
 
-      dut.io.ingress.valid.poke(false.B)
       dut.io.init_issue.ready.poke(true.B)
+      dut.io.ingress.ready.expect(true.B)
       dut.clock.step()
       dut.io.active_count.expect(1.U)
     }
