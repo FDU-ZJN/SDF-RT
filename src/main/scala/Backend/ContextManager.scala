@@ -51,8 +51,7 @@ class ContextManager(
   val cmdFifos = Seq.fill(contextCount)(Module(new Queue(
     new TriBatch(addrWidth),
     GlobalConfig.backendContextCmdFifoDepth,
-    hasFlush = true,
-    useSyncReadMem = true
+    hasFlush = true
   )))
   private val cmdCountWidth = log2Ceil(GlobalConfig.backendContextCmdFifoDepth + 1)
   val cmdOccupancy = RegInit(VecInit(Seq.fill(contextCount)(0.U(cmdCountWidth.W))))

@@ -46,10 +46,10 @@ class Backend(
     useSyncReadMem = true
   ))
   val traceStopEventQs = Seq.fill(numWorkers)(Module(new Queue(
-    UInt(GlobalConfig.backendContextBits.W), entries = 2, useSyncReadMem = true
+    UInt(GlobalConfig.backendContextBits.W), entries = 2
   )))
   val traceReleaseEventQs = Seq.fill(numWorkers)(Module(new Queue(
-    UInt(GlobalConfig.backendContextBits.W), entries = 2, useSyncReadMem = true
+    UInt(GlobalConfig.backendContextBits.W), entries = 2
   )))
 
   io.init_alloc <> contexts.io.init_alloc

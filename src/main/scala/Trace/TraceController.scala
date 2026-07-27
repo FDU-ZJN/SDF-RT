@@ -43,14 +43,10 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   io.triAxiOutstandingCount := mem.io.axiOutstandingCount
   val results = Seq.fill(numWorkers)(Reg(Vec(contextsPerWorker, new TraceResult(c.cfg, c.addrWidth))))
   val resultValid = Seq.fill(numWorkers)(RegInit(VecInit(Seq.fill(contextsPerWorker)(false.B))))
-  // A result may be accepted while its lifecycle event waits for the Backend
-  // event router.  Keep the narrow notification locally until that router
-  // accepts it; Trace never writes ContextManager state directly.
+  // Early-stop is independent of result acceptance, so retain its narrow
+  // notification locally until the Backend event router accepts it.
   val stopEventQs = Seq.fill(numWorkers)(Module(new Queue(
-    UInt(contextBits.W), entries = 2, useSyncReadMem = true
-  )))
-  val releaseEventQs = Seq.fill(numWorkers)(Module(new Queue(
-    UInt(contextBits.W), entries = 2, useSyncReadMem = true
+    UInt(contextBits.W), entries = 2
   )))
   for (w <- 0 until numWorkers) {
     val p = workers(w); p.io.ray_in := 0.U.asTypeOf(new Ray(c.cfg)); p.io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth)); p.io.ray_ctx := 0.U; p.io.ray_valid := false.B
@@ -75,12 +71,16 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     mem.io.req(w) <> p.io.mem_req; p.io.mem_resp <> mem.io.resp(w)
     val arb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), contextsPerWorker))
     for (l <- 0 until contextsPerWorker) { arb.io.in(l).valid := resultValid(w)(l); arb.io.in(l).bits := results(w)(l) }
-    io.result_out(w).valid := arb.io.out.valid
+    // A result and its release notification are one atomic transaction.  The
+    // external result must not fire unless the narrow release event can also
+    // fire; otherwise the same buffered result may be observed more than once.
+    io.result_out(w).valid := arb.io.out.valid && io.trace_release(w).ready
     io.result_out(w).bits := arb.io.out.bits
-    releaseEventQs(w).io.enq.valid := arb.io.out.valid && io.result_out(w).ready
-    releaseEventQs(w).io.enq.bits := (w * contextsPerWorker).U + arb.io.chosen
-    arb.io.out.ready := io.result_out(w).ready && releaseEventQs(w).io.enq.ready
-    io.trace_release(w) <> releaseEventQs(w).io.deq
+    io.trace_release(w).valid := arb.io.out.valid && io.result_out(w).ready
+    io.trace_release(w).bits := (w * contextsPerWorker).U + arb.io.chosen
+    arb.io.out.ready := io.result_out(w).ready && io.trace_release(w).ready
+    assert(io.result_out(w).fire === io.trace_release(w).fire,
+      "Trace result and release event must retire atomically")
     stopEventQs(w).io.enq.valid := false.B
     stopEventQs(w).io.enq.bits := 0.U
     io.trace_stop(w) <> stopEventQs(w).io.deq
