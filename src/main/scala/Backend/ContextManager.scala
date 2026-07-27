@@ -22,9 +22,7 @@ class ContextManager(
     val init_alloc = Decoupled(UInt(contextBits.W))
     val context_in = Flipped(Decoupled(new BackendContextInit(cfg, addrWidth)))
     val step_in = Decoupled(new DdaTraversalState(cfg))
-    // DDA and Trace are event producers.  Context state is changed only by
-    // the context owner after these registered Decoupled event boundaries.
-    val dda_event = Flipped(Decoupled(new DdaStepResult(cfg, addrWidth)))
+    val step_out = Flipped(Decoupled(new DdaStepResult(cfg, addrWidth)))
 
     val trace_start = Vec(contextCount, Decoupled(new TraceContextDesc(cfg, addrWidth)))
     val trace_cmd = Vec(contextCount, Decoupled(new TriBatch(addrWidth)))
@@ -34,8 +32,8 @@ class ContextManager(
     val trace_cmd_context = Input(Vec(traceLanes, UInt(contextBits.W)))
     val trace_cmd_active = Input(Vec(traceLanes, Bool()))
     val trace_cmd_legacy = Vec(traceLanes, Decoupled(new TriBatch(addrWidth)))
-    val trace_stop_event = Vec(numWorkers, Flipped(Decoupled(UInt(contextBits.W))))
-    val trace_release_event = Vec(numWorkers, Flipped(Decoupled(UInt(contextBits.W))))
+    val trace_stop = Vec(numWorkers, Flipped(Valid(UInt(contextBits.W))))
+    val trace_release = Vec(numWorkers, Flipped(Valid(UInt(contextBits.W))))
   })
 
   val immutableTable = Reg(Vec(contextCount, new ImmutableRayRecord(cfg, addrWidth)))
@@ -53,22 +51,16 @@ class ContextManager(
     GlobalConfig.backendContextCmdFifoDepth,
     hasFlush = true
   )))
-  private val cmdCountWidth = log2Ceil(GlobalConfig.backendContextCmdFifoDepth + 1)
-  val cmdOccupancy = RegInit(VecInit(Seq.fill(contextCount)(0.U(cmdCountWidth.W))))
 
   val stopNow = Wire(Vec(contextCount, Bool()))
   val releaseNow = Wire(Vec(contextCount, Bool()))
   val initCommit = Wire(Vec(contextCount, Bool()))
   for (ctx <- 0 until contextCount) {
-    stopNow(ctx) := io.trace_stop_event.map { event =>
-      event.valid && event.bits === ctx.U
-    }.reduce(_ || _)
-    releaseNow(ctx) := io.trace_release_event.map { event =>
-      event.valid && event.bits === ctx.U
-    }.reduce(_ || _)
+    stopNow(ctx) := io.trace_stop.map(s => s.valid && s.bits === ctx.U).reduce(_ || _)
+    releaseNow(ctx) := io.trace_release.map(r => r.valid && r.bits === ctx.U).reduce(_ || _)
     initCommit(ctx) := io.context_in.fire && io.context_in.bits.contextId === ctx.U
     cmdFifos(ctx).io.enq.valid := false.B
-    cmdFifos(ctx).io.enq.bits := io.dda_event.bits.tri
+    cmdFifos(ctx).io.enq.bits := io.step_out.bits.tri
     cmdFifos(ctx).io.deq.ready := false.B
     cmdFifos(ctx).io.flush.get := stopNow(ctx) || releaseNow(ctx) || initCommit(ctx)
   }
@@ -104,9 +96,7 @@ class ContextManager(
   val stepEligible = Wire(Vec(contextCount, Bool()))
   for (ctx <- 0 until contextCount) {
     stepEligible(ctx) := active(ctx) && !ddaDone(ctx) && !traceStopped(ctx) &&
-      !resultAccepted(ctx) && !stepInFlight(ctx) && !stopNow(ctx) &&
-      !releaseNow(ctx) && !initCommit(ctx) &&
-      cmdOccupancy(ctx) < GlobalConfig.backendContextCmdFifoDepth.U
+      !resultAccepted(ctx) && !stepInFlight(ctx) && cmdFifos(ctx).io.enq.ready
   }
   val stepRr = RegInit(0.U(contextBits.W))
   val stepRotated = Wire(Vec(contextCount, Bool()))
@@ -116,44 +106,17 @@ class ContextManager(
   }
   val stepPickOH = PriorityEncoderOH(stepRotated)
   val stepPickId = (OHToUInt(stepPickOH) + stepRr)(contextBits - 1, 0)
-  // The scheduler first reserves only a context ID.  A second registered
-  // stage uses that ID to read the traversal table into the DDA issue
-  // register.  This keeps FIFO credit and the 16-way eligibility selector off
-  // the wide traversal-state register inputs while retaining one step/cycle.
-  val stepSelectValid = RegInit(false.B)
-  val stepSelectId = Reg(UInt(contextBits.W))
-  val stepPendingValid = RegInit(false.B)
-  val stepPendingState = Reg(new DdaTraversalState(cfg))
-  io.step_in.valid := stepPendingValid
-  io.step_in.bits := stepPendingState
-
-  val stepPendingCanAdvance = !stepPendingValid || io.step_in.ready
-  val stepSelectCanAdvance = !stepSelectValid || stepPendingCanAdvance
-  when(stepPendingCanAdvance) {
-    stepPendingValid := stepSelectValid
-    when(stepSelectValid) {
-      stepPendingState := traversalTable(stepSelectId)
-    }
-  }
-  when(stepSelectCanAdvance) {
-    when(stepRotated.asUInt.orR) {
-      assert(stepEligible(stepPickId), "Backend selected an ineligible context")
-      stepSelectValid := true.B
-      stepSelectId := stepPickId
-      stepInFlight(stepPickId) := true.B
-      stepRr := stepPickId + 1.U
-    }.otherwise {
-      stepSelectValid := false.B
-    }
+  io.step_in.valid := stepRotated.asUInt.orR
+  io.step_in.bits := traversalTable(stepPickId)
+  when(io.step_in.fire) {
+    assert(stepEligible(stepPickId), "Backend issued an ineligible context")
+    stepInFlight(stepPickId) := true.B
+    stepRr := stepPickId + 1.U
   }
 
-  val responseId = io.dda_event.bits.state.contextId
-  // Eligibility reserves the only possible command slot before issuing a
-  // step.  With at most one step in flight per context, every live DDA event
-  // is therefore commit-ready and the non-stallable DDA pipeline never sees
-  // backpressure from Trace.
-  io.dda_event.ready := true.B
-  val responseFire = io.dda_event.fire
+  io.step_out.ready := true.B
+  val responseFire = io.step_out.fire
+  val responseId = io.step_out.bits.state.contextId
   val responseLive = responseFire && !resultAccepted(responseId) &&
     !traceStopped(responseId) && !stopNow(responseId) && !releaseNow(responseId)
   when(responseFire) {
@@ -166,15 +129,15 @@ class ContextManager(
       traceStopped(responseId) := false.B
       resultAccepted(responseId) := false.B
     }.elsewhen(responseLive) {
-      traversalTable(responseId) := io.dda_event.bits.state
-      when(io.dda_event.bits.done) {
+      traversalTable(responseId) := io.step_out.bits.state
+      when(io.step_out.bits.done) {
         ddaDone(responseId) := true.B
       }
     }
   }
   for (ctx <- 0 until contextCount) {
     val enqueue = responseLive && responseId === ctx.U &&
-      !io.dda_event.bits.done && io.dda_event.bits.emitCmd
+      !io.step_out.bits.done && io.step_out.bits.emitCmd
     cmdFifos(ctx).io.enq.valid := enqueue
     when(enqueue) {
       assert(cmdFifos(ctx).io.enq.ready, "Backend context command FIFO overflow")
@@ -185,11 +148,6 @@ class ContextManager(
   for (ctx <- 0 until contextCount) {
     claimEligible(ctx) := active(ctx) && !claimed(ctx) && !traceStopped(ctx) &&
       (cmdFifos(ctx).io.deq.valid || ddaDone(ctx))
-  }
-
-  for (worker <- 0 until numWorkers) {
-    io.trace_stop_event(worker).ready := true.B
-    io.trace_release_event(worker).ready := true.B
   }
   io.trace_claim.valid := false.B
   io.trace_claim.bits := 0.U.asTypeOf(io.trace_claim.bits)
@@ -204,21 +162,7 @@ class ContextManager(
     io.trace_cmd(ctx).valid := claimed(ctx) && !traceStopped(ctx) && cmdFifos(ctx).io.deq.valid
     io.trace_cmd(ctx).bits := cmdFifos(ctx).io.deq.bits
     cmdFifos(ctx).io.deq.ready := io.trace_cmd(ctx).ready
-    io.trace_dda_done(ctx) := claimed(ctx) && ddaDone(ctx) && cmdOccupancy(ctx) === 0.U
-
-    val cmdEnqueue = cmdFifos(ctx).io.enq.fire
-    val cmdDequeue = cmdFifos(ctx).io.deq.fire
-    when(stopNow(ctx) || releaseNow(ctx) || initCommit(ctx)) {
-      cmdOccupancy(ctx) := 0.U
-    }.elsewhen(cmdEnqueue =/= cmdDequeue) {
-      cmdOccupancy(ctx) := Mux(cmdEnqueue,
-        cmdOccupancy(ctx) + 1.U,
-        cmdOccupancy(ctx) - 1.U)
-    }
-    assert(cmdOccupancy(ctx) <= GlobalConfig.backendContextCmdFifoDepth.U,
-      "Backend command occupancy exceeded FIFO depth")
-    assert(cmdFifos(ctx).io.deq.valid === (cmdOccupancy(ctx) =/= 0.U),
-      "Backend command occupancy shadow disagrees with FIFO")
+    io.trace_dda_done(ctx) := claimed(ctx) && ddaDone(ctx) && !cmdFifos(ctx).io.deq.valid
   }
   for (lane <- 0 until traceLanes) { io.trace_cmd_legacy(lane).valid := false.B; io.trace_cmd_legacy(lane).bits := 0.U.asTypeOf(new TriBatch(addrWidth)) }
 
