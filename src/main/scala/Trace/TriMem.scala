@@ -1386,46 +1386,26 @@ class TriangleMemMultiPort(
         io.req(p).ready := reqReady(p)
       }
 
-      // Select a bank using only its narrow ID, then immediately dequeue and
-      // capture that bank's response in one central payload register.  This
-      // keeps the TriangleBlock out of the round-robin decision and prevents a
-      // selected bank head from remaining live across a downstream stall.
+      // Select one bank with a narrow arbiter, then select its wide
+      // TriangleBlock once.  Per-port arbiters replicated a four-way wide
+      // response mux for every destination port, consuming several thousand
+      // LUTs and making all cache response data high-fanout.
       val respArb = Module(new RRArbiter(UInt(bankSelW.W), numBanks))
-      val respBufValid = RegInit(false.B)
-      val respBufSrc = Reg(UInt(srcW.W))
-      val respBufData = Reg(new TriMemResp(c, tagWidth))
       for (b <- 0 until numBanks) {
         respArb.io.in(b).valid := banks(b).io.resp.valid
         respArb.io.in(b).bits := b.U
-      }
-
-      val respBufReady = Mux1H(
-        UIntToOH(respBufSrc, numPorts).asBools,
-        io.resp.map(_.ready)
-      )
-      val respBufFire = respBufValid && respBufReady
-      respArb.io.out.ready := !respBufValid || respBufReady
-      for (b <- 0 until numBanks) {
         banks(b).io.resp.ready := respArb.io.in(b).ready
       }
-      when(respArb.io.out.fire) {
-        val selectedBankOH = UIntToOH(respArb.io.out.bits, numBanks)
-        respBufValid := true.B
-        respBufSrc := Mux1H(
-          selectedBankOH.asBools,
-          banks.map(_.io.resp.bits.src)
-        )
-        respBufData := Mux1H(
-          selectedBankOH.asBools,
-          banks.map(_.io.resp.bits.resp)
-        )
-      }.elsewhen(respBufFire) {
-        respBufValid := false.B
-      }
+
+      val selectedBankOH = UIntToOH(respArb.io.out.bits, numBanks)
+      val selectedResp = Mux1H(selectedBankOH.asBools, banks.map(_.io.resp.bits.resp))
+      val selectedSrc = Mux1H(selectedBankOH.asBools, banks.map(_.io.resp.bits.src))
+      val selectedPortReady = Mux1H(UIntToOH(selectedSrc, numPorts).asBools, io.resp.map(_.ready))
+      respArb.io.out.ready := selectedPortReady
 
       for (p <- 0 until numPorts) {
-        io.resp(p).valid := respBufValid && respBufSrc === p.U
-        io.resp(p).bits := respBufData
+        io.resp(p).valid := respArb.io.out.valid && selectedSrc === p.U
+        io.resp(p).bits := selectedResp
       }
 
     case _ =>
