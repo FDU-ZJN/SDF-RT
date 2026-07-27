@@ -1396,7 +1396,11 @@ class TriangleMemMultiPort(
       val respSelectBank = Reg(UInt(bankSelW.W))
       val respSelectSrc = Reg(UInt(srcW.W))
       for (b <- 0 until numBanks) {
-        respArb.io.in(b).valid := banks(b).io.resp.valid
+        // While a selected bank is being consumed its visible head is still
+        // the old response.  Do not reselect that bank in the same cycle;
+        // another bank may still take over without a bubble.
+        respArb.io.in(b).valid := banks(b).io.resp.valid &&
+          (!respSelectValid || respSelectBank =/= b.U)
         respArb.io.in(b).bits := b.U
       }
 
