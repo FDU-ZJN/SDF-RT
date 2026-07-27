@@ -1186,8 +1186,13 @@ class TriangleMemMultiPort(
       // Four 1152-bit lines are small enough to make the ownership explicit.
       val refillLines = Reg(Vec(mshrEntries,
         UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W)))
-      val refillReadValid = RegInit(false.B)
-      val refillReadId = Reg(UInt(mshrIdW.W))
+      // Register the selected completion before it fans into the banks. This
+      // keeps mshrValid/mshrBank scans out of the bank tag-RAM enable path;
+      // refill delivery is off the hit path and can absorb one cycle.
+      val refillDispatchValid = RegInit(false.B)
+      val refillDispatchId = Reg(UInt(mshrIdW.W))
+      val refillDispatchBank = Reg(UInt(bankSelW.W))
+      val refillDispatchData = Reg(UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W))
 
       backend.io.triangleBaseAddress := io.triangleBaseAddress
       io.dmaCmd <> backend.io.dmaCmd
@@ -1215,18 +1220,12 @@ class TriangleMemMultiPort(
         releaseArb.io.in(b).bits := banks(b).io.release.bits.id
         banks(b).io.release.ready := releaseArb.io.in(b).ready
 
-        val doneMatches = Wire(Vec(mshrEntries, Bool()))
-        for (i <- 0 until mshrEntries) {
-          doneMatches(i) := refillReadValid && mshrValid(i) && mshrDone(i) &&
-            !mshrDelivered(i) && refillReadId === i.U && mshrBank(i) === b.U
-        }
-        val doneSelOH = PriorityEncoderOH(doneMatches)
-        val doneSel = OHToUInt(doneSelOH)
-        banks(b).io.refillDone.valid := doneMatches.asUInt.orR
-        banks(b).io.refillDone.bits.id := doneSel
-        banks(b).io.refillDone.bits.data := Mux(mshrError(doneSel), 0.U, refillLines(doneSel))
+        banks(b).io.refillDone.valid := refillDispatchValid &&
+          refillDispatchBank === b.U
+        banks(b).io.refillDone.bits.id := refillDispatchId
+        banks(b).io.refillDone.bits.data := refillDispatchData
         when(banks(b).io.refillDone.fire) {
-          mshrDelivered(doneSel) := true.B
+          mshrDelivered(refillDispatchId) := true.B
         }
 
       }
@@ -1335,13 +1334,17 @@ class TriangleMemMultiPort(
       val refillReadyVec = VecInit((0 until mshrEntries).map(i =>
         mshrValid(i) && mshrDone(i) && !mshrDelivered(i)
       ))
-      val refillReadReq = !refillReadValid && refillReadyVec.asUInt.orR
-      when(refillReadReq) {
-        refillReadId := OHToUInt(PriorityEncoderOH(refillReadyVec))
-        refillReadValid := true.B
+      val refillDispatchFire = VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR
+      when(refillDispatchFire) {
+        refillDispatchValid := false.B
       }
-      when(refillReadValid && VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR) {
-        refillReadValid := false.B
+      when(!refillDispatchValid && refillReadyVec.asUInt.orR) {
+        val dispatchOH = PriorityEncoderOH(refillReadyVec)
+        val dispatchId = OHToUInt(dispatchOH)
+        refillDispatchValid := true.B
+        refillDispatchId := dispatchId
+        refillDispatchBank := mshrBank(dispatchId)
+        refillDispatchData := Mux(mshrError(dispatchId), 0.U, refillLines(dispatchId))
       }
 
       val refillFire = backend.io.req.fire
