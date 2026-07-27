@@ -15,8 +15,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
       dut.io.allocResp.valid.poke(false.B)
       dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(false.B)
       dut.clock.step(2)
       dut.clock.step(5)
 
@@ -34,6 +37,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       while (!dut.io.allocReq.valid.peekBoolean()) {
         dut.clock.step()
       }
+      dut.clock.step()
       dut.io.allocResp.bits.id.poke(0.U)
       dut.io.allocResp.bits.merged.poke(false.B)
       dut.io.allocResp.valid.poke(true.B)
@@ -55,6 +59,14 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       }
       dut.io.resp.bits.resp.tag.expect(9.U)
       dut.io.resp.bits.resp.block.tris(0).v0.x.expect("h40400000".U)
+      dut.clock.step()
+
+      while (!dut.io.release.valid.peekBoolean()) dut.clock.step()
+      dut.io.release.bits.id.expect(0.U)
+      dut.clock.step(3)
+      dut.io.release.valid.expect(true.B)
+      dut.io.release.bits.id.expect(0.U)
+      dut.io.release.ready.poke(true.B)
       dut.clock.step()
 
       dut.io.req.bits.addr.poke(3.U)
@@ -91,8 +103,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
       dut.io.allocResp.valid.poke(false.B)
       dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(true.B)
       dut.clock.step(5)
 
       dut.io.req.bits.addr.poke(2.U)
@@ -104,26 +119,37 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.clock.step()
       }
       dut.clock.step()
+      dut.io.req.valid.poke(false.B)
+
+      // Establish the bank-local MSHR for the first miss. Requests arriving
+      // after this point must compare against pendingAddr before missQ.
+      while (!dut.io.allocReq.valid.peekBoolean()) {
+        dut.clock.step()
+      }
+      dut.io.allocReq.bits.addr.expect(2.U)
+      dut.clock.step()
+      dut.io.allocResp.bits.id.poke(0.U)
+      dut.io.allocResp.bits.merged.poke(false.B)
+      dut.io.allocResp.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.allocResp.valid.poke(false.B)
 
       for (tag <- 11 until 14) {
         dut.io.req.bits.tag.poke(tag.U)
+        dut.io.req.valid.poke(true.B)
         while (!dut.io.req.ready.peekBoolean()) {
           dut.clock.step()
         }
         dut.clock.step()
+        dut.io.req.valid.poke(false.B)
       }
-      dut.io.req.valid.poke(false.B)
 
-      for (index <- 0 until 4) {
-        while (!dut.io.allocReq.valid.peekBoolean()) {
-          dut.clock.step()
-        }
-        dut.io.allocReq.bits.addr.expect(2.U)
-        dut.io.allocResp.bits.id.poke(0.U)
-        dut.io.allocResp.bits.merged.poke((index != 0).B)
-        dut.io.allocResp.valid.poke(true.B)
+      // Allow every duplicate to reach the first tag-miss decision. None of
+      // them may enter missQ and request another global allocation.
+      for (_ <- 0 until 12) {
+        assert(!dut.io.allocReq.valid.peekBoolean(),
+          "bank-local duplicate miss requested another MSHR")
         dut.clock.step()
-        dut.io.allocResp.valid.poke(false.B)
       }
 
       val line = BigInt("3f8000004000000040400000", 16) | (BigInt("4080000040a0000040c00000", 16) << 288)
@@ -148,7 +174,72 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "recheck a parked hit when a refill replaces the same direct-mapped set" in {
+  it should "merge a duplicate miss before missQ when an MSHR already covers its line" in {
+    val c = TriPeConfig(cacheLineTriangles = 1)
+    test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
+      numSets = 2, ways = 1, reqQueueDepth = 4, mergeQueueDepth = 2, mshrEntries = 1,
+      useXpmCacheOverride = Some(false))) { dut =>
+      dut.io.bankId.poke(0.U)
+      dut.io.req.valid.poke(false.B)
+      dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
+      dut.io.allocResp.valid.poke(false.B)
+      dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(true.B)
+      dut.clock.step(5)
+
+      def request(tag: Int): Unit = {
+        dut.io.req.bits.addr.poke(0.U)
+        dut.io.req.bits.mask.poke(1.U)
+        dut.io.req.bits.src.poke(0.U)
+        dut.io.req.bits.tag.poke(tag.U)
+        dut.io.req.valid.poke(true.B)
+        while (!dut.io.req.ready.peekBoolean()) dut.clock.step()
+        dut.clock.step()
+        dut.io.req.valid.poke(false.B)
+      }
+
+      request(tag = 1)
+      while (!dut.io.allocReq.valid.peekBoolean()) dut.clock.step()
+      dut.clock.step()
+      dut.io.allocResp.bits.id.poke(0.U)
+      dut.io.allocResp.bits.merged.poke(false.B)
+      dut.io.allocResp.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.allocResp.valid.poke(false.B)
+
+      // The duplicate first-level miss must join the active local MSHR before
+      // missQ, without another global allocation or tag-array read.
+      dut.io.allocReq.ready.poke(false.B)
+      request(tag = 2)
+      while (!(dut.io.stat.valid.peekBoolean() && !dut.io.stat.bits.peekBoolean())) {
+        dut.clock.step()
+      }
+
+      val line = BigInt("3f800000", 16)
+      dut.io.refillDone.bits.id.poke(0.U)
+      dut.io.refillDone.bits.data.poke(line.U)
+      dut.io.refillDone.valid.poke(true.B)
+      while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()
+      dut.clock.step()
+      dut.io.refillDone.valid.poke(false.B)
+
+      var responseTags = Set.empty[BigInt]
+      for (_ <- 0 until 30 if responseTags.size < 2) {
+        assert(!dut.io.allocReq.valid.peekBoolean(), "early-merged miss requested another MSHR")
+        if (dut.io.resp.valid.peekBoolean()) {
+          responseTags += dut.io.resp.bits.resp.tag.peek().litValue
+          dut.io.resp.bits.resp.block.tris(0).v0.x.expect(line.U)
+        }
+        dut.clock.step()
+      }
+      assert(responseTags == Set(BigInt(1), BigInt(2)),
+        s"refill and early-merge responses were incomplete: $responseTags")
+    }
+  }
+
+  it should "drain a same-set hit before committing a replacing refill" in {
     val c = TriPeConfig(cacheLineTriangles = 1)
     test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 1,
       numSets = 2, ways = 1, reqQueueDepth = 4, mergeQueueDepth = 2, mshrEntries = 2,
@@ -156,8 +247,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
       dut.io.allocResp.valid.poke(false.B)
       dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(true.B)
       dut.clock.step(5)
 
       def request(addr: Int, tag: Int): Unit = {
@@ -174,6 +268,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       def allocate(expectedAddr: Int, id: Int): Unit = {
         while (!dut.io.allocReq.valid.peekBoolean()) dut.clock.step()
         dut.io.allocReq.bits.addr.expect(expectedAddr.U)
+        dut.clock.step()
         dut.io.allocResp.bits.id.poke(id.U)
         dut.io.allocResp.bits.merged.poke(false.B)
         dut.io.allocResp.valid.poke(true.B)
@@ -215,11 +310,6 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.refillDone.valid.poke(false.B)
 
-      // The parked request must be replayed as an addr-0 miss, never returned
-      // with addr-1's newly written data.
-      allocate(expectedAddr = 0, id = 0)
-      refill(id = 0, data = lineA)
-
       var sawTag3 = false
       for (_ <- 0 until 20 if !sawTag3) {
         if (dut.io.resp.valid.peekBoolean() && dut.io.resp.bits.resp.tag.peek().litValue == 3) {
@@ -228,7 +318,21 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
         }
         dut.clock.step()
       }
-      assert(sawTag3, "parked hit was not replayed after the conflicting refill")
+      assert(sawTag3, "in-flight hit did not drain with the pre-refill line")
+
+      // Once the replacement commits, a new request for addr 0 must miss.
+      request(addr = 0, tag = 4)
+      allocate(expectedAddr = 0, id = 0)
+      refill(id = 0, data = lineA)
+      var sawTag4 = false
+      for (_ <- 0 until 20 if !sawTag4) {
+        if (dut.io.resp.valid.peekBoolean() && dut.io.resp.bits.resp.tag.peek().litValue == 4) {
+          dut.io.resp.bits.resp.block.tris(0).v0.x.expect(lineA.U)
+          sawTag4 = true
+        }
+        dut.clock.step()
+      }
+      assert(sawTag4, "post-commit request did not refill the replaced line")
     }
   }
 
@@ -240,8 +344,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.bankId.poke(0.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
       dut.io.allocResp.valid.poke(false.B)
       dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(true.B)
       dut.clock.step(5)
 
       def request(addr: Int, tag: Int): Unit = {
@@ -258,6 +365,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       def allocate(expectedAddr: Int, id: Int): Unit = {
         while (!dut.io.allocReq.valid.peekBoolean()) dut.clock.step()
         dut.io.allocReq.bits.addr.expect(expectedAddr.U)
+        dut.clock.step()
         dut.io.allocResp.bits.id.poke(id.U)
         dut.io.allocResp.bits.merged.poke(false.B)
         dut.io.allocResp.valid.poke(true.B)
@@ -320,20 +428,23 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "use the runtime bank ID for allocation and global triangle IDs" in {
-    val c = TriPeConfig(cacheLineTriangles = 1)
+  it should "rebuild the highest compact triangle ID from bank-local address bits" in {
+    val c = TriPeConfig(cacheLineTriangles = 4)
     test(new TriangleMemCachedBank(c, srcWidth = 1, tagWidth = 4, numBanks = 4,
       numSets = 2, ways = 1, reqQueueDepth = 2, mergeQueueDepth = 2, mshrEntries = 1,
       useXpmCacheOverride = Some(false))) { dut =>
-      dut.io.bankId.poke(2.U)
+      dut.io.bankId.poke(3.U)
       dut.io.req.valid.poke(false.B)
       dut.io.resp.ready.poke(true.B)
+      dut.io.allocReq.ready.poke(true.B)
+      dut.io.allocProbeId.poke(0.U)
       dut.io.allocResp.valid.poke(false.B)
       dut.io.refillDone.valid.poke(false.B)
+      dut.io.release.ready.poke(true.B)
       dut.clock.step(5)
 
-      dut.io.req.bits.addr.poke(3.U)
-      dut.io.req.bits.mask.poke(1.U)
+      dut.io.req.bits.addr.poke(8191.U)
+      dut.io.req.bits.mask.poke(15.U)
       dut.io.req.bits.src.poke(0.U)
       dut.io.req.bits.tag.poke(7.U)
       dut.io.req.valid.poke(true.B)
@@ -342,8 +453,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.req.valid.poke(false.B)
 
       while (!dut.io.allocReq.valid.peekBoolean()) dut.clock.step()
-      dut.io.allocReq.bits.bank.expect(2.U)
-      dut.io.allocReq.bits.addr.expect(3.U)
+      dut.io.allocReq.bits.bank.expect(3.U)
+      dut.io.allocReq.bits.addr.expect(8191.U)
+      dut.clock.step()
       dut.io.allocResp.bits.id.poke(0.U)
       dut.io.allocResp.bits.merged.poke(false.B)
       dut.io.allocResp.valid.poke(true.B)
@@ -351,15 +463,15 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.allocResp.valid.poke(false.B)
 
       dut.io.refillDone.bits.id.poke(0.U)
-      dut.io.refillDone.bits.data.poke(BigInt("3f800000", 16).U)
+      dut.io.refillDone.bits.data.poke(0.U)
       dut.io.refillDone.valid.poke(true.B)
       while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()
       dut.clock.step()
       dut.io.refillDone.valid.poke(false.B)
 
       while (!dut.io.resp.valid.peekBoolean()) dut.clock.step()
-      // local block 3 in bank 2 of 4 maps to global block/triangle 14.
-      dut.io.resp.bits.resp.block.tris(0).id.expect(14.U)
+      dut.io.resp.bits.resp.block.tris(0).id.expect(131068.U)
+      dut.io.resp.bits.resp.block.tris(3).id.expect(131071.U)
     }
   }
 
