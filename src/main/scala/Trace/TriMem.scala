@@ -1394,7 +1394,7 @@ class TriangleMemMultiPort(
       val respArb = Module(new RRArbiter(UInt(bankSelW.W), numBanks))
       val respSelectValid = RegInit(false.B)
       val respSelectBank = Reg(UInt(bankSelW.W))
-      val respSelectSrc = Reg(UInt(srcWidth.W))
+      val respSelectSrc = Reg(UInt(srcW.W))
       for (b <- 0 until numBanks) {
         respArb.io.in(b).valid := banks(b).io.resp.valid
         respArb.io.in(b).bits := b.U
