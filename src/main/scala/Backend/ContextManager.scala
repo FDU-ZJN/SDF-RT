@@ -49,8 +49,11 @@ class ContextManager(
   val cmdFifos = Seq.fill(contextCount)(Module(new Queue(
     new TriBatch(addrWidth),
     GlobalConfig.backendContextCmdFifoDepth,
-    hasFlush = true
+    hasFlush = true,
+    useSyncReadMem = true
   )))
+  private val cmdCountWidth = log2Ceil(GlobalConfig.backendContextCmdFifoDepth + 1)
+  val cmdOccupancy = RegInit(VecInit(Seq.fill(contextCount)(0.U(cmdCountWidth.W))))
 
   val stopNow = Wire(Vec(contextCount, Bool()))
   val releaseNow = Wire(Vec(contextCount, Bool()))
@@ -106,12 +109,35 @@ class ContextManager(
   }
   val stepPickOH = PriorityEncoderOH(stepRotated)
   val stepPickId = (OHToUInt(stepPickOH) + stepRr)(contextBits - 1, 0)
-  io.step_in.valid := stepRotated.asUInt.orR
-  io.step_in.bits := traversalTable(stepPickId)
-  when(io.step_in.fire) {
-    assert(stepEligible(stepPickId), "Backend issued an ineligible context")
-    stepInFlight(stepPickId) := true.B
-    stepRr := stepPickId + 1.U
+  // The scheduler first reserves only a context ID.  A second registered
+  // stage uses that ID to read the traversal table into the DDA issue
+  // register.  This keeps FIFO credit and the 16-way eligibility selector off
+  // the wide traversal-state register inputs while retaining one step/cycle.
+  val stepSelectValid = RegInit(false.B)
+  val stepSelectId = Reg(UInt(contextBits.W))
+  val stepPendingValid = RegInit(false.B)
+  val stepPendingState = Reg(new DdaTraversalState(cfg))
+  io.step_in.valid := stepPendingValid
+  io.step_in.bits := stepPendingState
+
+  val stepPendingCanAdvance = !stepPendingValid || io.step_in.ready
+  val stepSelectCanAdvance = !stepSelectValid || stepPendingCanAdvance
+  when(stepPendingCanAdvance) {
+    stepPendingValid := stepSelectValid
+    when(stepSelectValid) {
+      stepPendingState := traversalTable(stepSelectId)
+    }
+  }
+  when(stepSelectCanAdvance) {
+    when(stepRotated.asUInt.orR) {
+      assert(stepEligible(stepPickId), "Backend selected an ineligible context")
+      stepSelectValid := true.B
+      stepSelectId := stepPickId
+      stepInFlight(stepPickId) := true.B
+      stepRr := stepPickId + 1.U
+    }.otherwise {
+      stepSelectValid := false.B
+    }
   }
 
   io.step_out.ready := true.B
@@ -149,6 +175,7 @@ class ContextManager(
     claimEligible(ctx) := active(ctx) && !claimed(ctx) && !traceStopped(ctx) &&
       (cmdFifos(ctx).io.deq.valid || ddaDone(ctx))
   }
+
   io.trace_claim.valid := false.B
   io.trace_claim.bits := 0.U.asTypeOf(io.trace_claim.bits)
   for (ctx <- 0 until contextCount) {
@@ -162,7 +189,21 @@ class ContextManager(
     io.trace_cmd(ctx).valid := claimed(ctx) && !traceStopped(ctx) && cmdFifos(ctx).io.deq.valid
     io.trace_cmd(ctx).bits := cmdFifos(ctx).io.deq.bits
     cmdFifos(ctx).io.deq.ready := io.trace_cmd(ctx).ready
-    io.trace_dda_done(ctx) := claimed(ctx) && ddaDone(ctx) && !cmdFifos(ctx).io.deq.valid
+    io.trace_dda_done(ctx) := claimed(ctx) && ddaDone(ctx) && cmdOccupancy(ctx) === 0.U
+
+    val cmdEnqueue = cmdFifos(ctx).io.enq.fire
+    val cmdDequeue = cmdFifos(ctx).io.deq.fire
+    when(stopNow(ctx) || releaseNow(ctx) || initCommit(ctx)) {
+      cmdOccupancy(ctx) := 0.U
+    }.elsewhen(cmdEnqueue =/= cmdDequeue) {
+      cmdOccupancy(ctx) := Mux(cmdEnqueue,
+        cmdOccupancy(ctx) + 1.U,
+        cmdOccupancy(ctx) - 1.U)
+    }
+    assert(cmdOccupancy(ctx) <= GlobalConfig.backendContextCmdFifoDepth.U,
+      "Backend command occupancy exceeded FIFO depth")
+    assert(cmdFifos(ctx).io.deq.valid === (cmdOccupancy(ctx) =/= 0.U),
+      "Backend command occupancy shadow disagrees with FIFO")
   }
   for (lane <- 0 until traceLanes) { io.trace_cmd_legacy(lane).valid := false.B; io.trace_cmd_legacy(lane).bits := 0.U.asTypeOf(new TriBatch(addrWidth)) }
 

@@ -66,6 +66,16 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.step_out.valid.poke(false.B)
   }
 
+  private def acceptStep(dut: DdaScheduler, id: Int): Unit = {
+    dut.io.step_in.ready.poke(true.B)
+    while (!dut.io.step_in.valid.peekBoolean()) {
+      dut.clock.step()
+    }
+    dut.io.step_in.bits.contextId.expect(id.U)
+    dut.clock.step()
+    dut.io.step_in.ready.poke(false.B)
+  }
+
   it should "reserve all 32 context IDs before applying backpressure" in {
     test(new DdaScheduler(cfg, 32, GlobalConfig.ddaMaxSteps)) { dut =>
       clearInputs(dut)
@@ -96,6 +106,9 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       }
 
       dut.io.step_in.ready.poke(true.B)
+      while (!dut.io.step_in.valid.peekBoolean()) {
+        dut.clock.step()
+      }
       for (id <- 0 until GlobalConfig.backendContextCount) {
         dut.io.step_in.valid.expect(true.B)
         dut.io.step_in.bits.contextId.expect(id.U)
@@ -118,11 +131,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
 
       // With no consumer, eight DDA returns fill the context-local FIFO.
       for (cmd <- 0 until GlobalConfig.backendContextCmdFifoDepth) {
-        dut.io.step_in.ready.poke(true.B)
-        dut.io.step_in.valid.expect(true.B)
-        dut.io.step_in.bits.contextId.expect(0.U)
-        dut.clock.step()
-        dut.io.step_in.ready.poke(false.B)
+        acceptStep(dut, id = 0)
         returnCommand(dut, id = 0, base = cmd)
       }
       dut.io.step_in.ready.poke(true.B)
@@ -145,10 +154,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
 
       // DDA may run again. Stop arriving while that step is in flight must
       // discard its return instead of appending a ninth command.
-      dut.io.step_in.ready.poke(true.B)
-      dut.io.step_in.valid.expect(true.B)
-      dut.clock.step()
-      dut.io.step_in.ready.poke(false.B)
+      acceptStep(dut, id = 0)
       dut.io.trace_stop(0).valid.poke(true.B)
       dut.io.trace_stop(0).bits.poke(0.U)
       dut.clock.step()
@@ -185,9 +191,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
       commitContext(dut, id = 0, rayId = 31)
 
       // Produce one command, then bind the context to Trace without consuming it.
-      dut.io.step_in.ready.poke(true.B)
-      dut.clock.step()
-      dut.io.step_in.ready.poke(false.B)
+      acceptStep(dut, id = 0)
       returnCommand(dut, id = 0, base = 7)
       dut.io.trace_start(0).ready.poke(true.B)
       dut.clock.step()
@@ -197,9 +201,7 @@ class DdaContextPoolTest extends AnyFlatSpec with ChiselScalatestTester {
 
       // The following DDA step terminates traversal while command 7 remains
       // in the context FIFO.
-      dut.io.step_in.ready.poke(true.B)
-      dut.clock.step()
-      dut.io.step_in.ready.poke(false.B)
+      acceptStep(dut, id = 0)
       dut.io.step_out.valid.poke(true.B)
       pokeState(dut.io.step_out.bits.state, 0, iter = 0)
       dut.io.step_out.bits.done.poke(true.B)
