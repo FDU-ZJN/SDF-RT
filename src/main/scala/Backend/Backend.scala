@@ -37,10 +37,26 @@ class Backend(
   val dda = Module(new DDA(c.cfg, c.addrWidth, globalRes, subRes, maxTraversalSteps))
   val trace = Module(new TraceController(c))
 
+  // These queues are architectural boundaries, not merely timing registers:
+  // neither DDA nor Trace can directly change context state.  The context
+  // owner consumes their registered events and is the sole state writer.
+  val ddaEventQ = Module(new Queue(
+    new DdaStepResult(c.cfg, c.addrWidth),
+    entries = GlobalConfig.backendContextCmdFifoDepth,
+    useSyncReadMem = true
+  ))
+  val traceStopEventQs = Seq.fill(numWorkers)(Module(new Queue(
+    UInt(GlobalConfig.backendContextBits.W), entries = 2, useSyncReadMem = true
+  )))
+  val traceReleaseEventQs = Seq.fill(numWorkers)(Module(new Queue(
+    UInt(GlobalConfig.backendContextBits.W), entries = 2, useSyncReadMem = true
+  )))
+
   io.init_alloc <> contexts.io.init_alloc
   contexts.io.context_in <> io.context_in
   dda.io.in <> contexts.io.step_in
-  contexts.io.step_out <> dda.io.out
+  ddaEventQ.io.enq <> dda.io.out
+  contexts.io.dda_event <> ddaEventQ.io.deq
 
   for (ctx <- 0 until GlobalConfig.backendContextCount) {
     trace.io.trace_start(ctx) <> contexts.io.trace_start(ctx)
@@ -53,8 +69,12 @@ class Backend(
     contexts.io.trace_cmd_legacy(lane).ready := false.B
   }
   trace.io.trace_dda_done := contexts.io.trace_dda_done
-  contexts.io.trace_stop := trace.io.trace_stop
-  contexts.io.trace_release := trace.io.trace_release
+  for (worker <- 0 until numWorkers) {
+    traceStopEventQs(worker).io.enq <> trace.io.trace_stop(worker)
+    contexts.io.trace_stop_event(worker) <> traceStopEventQs(worker).io.deq
+    traceReleaseEventQs(worker).io.enq <> trace.io.trace_release(worker)
+    contexts.io.trace_release_event(worker) <> traceReleaseEventQs(worker).io.deq
+  }
 
   trace.io.triangleBaseAddress := io.triangleBaseAddress
   io.triDmaCmd <> trace.io.triDmaCmd

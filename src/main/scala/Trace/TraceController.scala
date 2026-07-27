@@ -17,8 +17,8 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     val trace_start = Flipped(Vec(contextCount, Decoupled(new TraceContextDesc(c.cfg, c.addrWidth))))
     val trace_cmd = Flipped(Vec(contextCount, Decoupled(new TriBatch(c.addrWidth))))
     val trace_dda_done = Input(Vec(contextCount, Bool()))
-    val trace_stop = Vec(numWorkers, Valid(UInt(contextBits.W)))
-    val trace_release = Vec(numWorkers, Valid(UInt(contextBits.W)))
+    val trace_stop = Vec(numWorkers, Decoupled(UInt(contextBits.W)))
+    val trace_release = Vec(numWorkers, Decoupled(UInt(contextBits.W)))
     val result_out = Vec(numWorkers, Decoupled(new TraceResult(c.cfg, c.addrWidth)))
     val triangleBaseAddress = Input(UInt(64.W))
     val triDmaCmd = Decoupled(UInt(80.W))
@@ -43,6 +43,15 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   io.triAxiOutstandingCount := mem.io.axiOutstandingCount
   val results = Seq.fill(numWorkers)(Reg(Vec(contextsPerWorker, new TraceResult(c.cfg, c.addrWidth))))
   val resultValid = Seq.fill(numWorkers)(RegInit(VecInit(Seq.fill(contextsPerWorker)(false.B))))
+  // A result may be accepted while its lifecycle event waits for the Backend
+  // event router.  Keep the narrow notification locally until that router
+  // accepts it; Trace never writes ContextManager state directly.
+  val stopEventQs = Seq.fill(numWorkers)(Module(new Queue(
+    UInt(contextBits.W), entries = 2, useSyncReadMem = true
+  )))
+  val releaseEventQs = Seq.fill(numWorkers)(Module(new Queue(
+    UInt(contextBits.W), entries = 2, useSyncReadMem = true
+  )))
   for (w <- 0 until numWorkers) {
     val p = workers(w); p.io.ray_in := 0.U.asTypeOf(new Ray(c.cfg)); p.io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth)); p.io.ray_ctx := 0.U; p.io.ray_valid := false.B
     p.io.tri_batch_in := 0.U.asTypeOf(new TriBatch(c.addrWidth)); p.io.tri_batch_ctx := 0.U; p.io.tri_batch_valid := false.B
@@ -66,17 +75,28 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     mem.io.req(w) <> p.io.mem_req; p.io.mem_resp <> mem.io.resp(w)
     val arb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), contextsPerWorker))
     for (l <- 0 until contextsPerWorker) { arb.io.in(l).valid := resultValid(w)(l); arb.io.in(l).bits := results(w)(l) }
-    io.result_out(w) <> arb.io.out
-    io.trace_release(w).valid := arb.io.out.fire; io.trace_release(w).bits := (w * contextsPerWorker).U + arb.io.chosen
-    io.trace_stop(w).valid := false.B; io.trace_stop(w).bits := 0.U
+    io.result_out(w).valid := arb.io.out.valid
+    io.result_out(w).bits := arb.io.out.bits
+    releaseEventQs(w).io.enq.valid := arb.io.out.valid && io.result_out(w).ready
+    releaseEventQs(w).io.enq.bits := (w * contextsPerWorker).U + arb.io.chosen
+    arb.io.out.ready := io.result_out(w).ready && releaseEventQs(w).io.enq.ready
+    io.trace_release(w) <> releaseEventQs(w).io.deq
+    stopEventQs(w).io.enq.valid := false.B
+    stopEventQs(w).io.enq.bits := 0.U
+    io.trace_stop(w) <> stopEventQs(w).io.deq
     // Capture a PE result exactly once.  TriPE keeps out_done asserted until
     // its context is cleared; without this guard a backpressured result can
     // be re-enqueued every cycle and later appear as duplicate RayIDs.
-    when(p.io.out_done && !resultValid(w)(p.io.out_ctx)) {
+    val mustQueueStop = p.io.out_done && p.io.out_early_stop
+    val canCaptureResult = !mustQueueStop || stopEventQs(w).io.enq.ready
+    when(p.io.out_done && !resultValid(w)(p.io.out_ctx) && canCaptureResult) {
       val l = p.io.out_ctx
       results(w)(l).meta := p.io.out_meta; results(w)(l).hit := p.io.out_best_hit; results(w)(l).hitId := p.io.hit_id; results(w)(l).hitT := p.io.t_best
       resultValid(w)(l) := true.B; p.io.clear_ctx(l) := true.B
-      io.trace_stop(w).valid := p.io.out_early_stop; io.trace_stop(w).bits := (w * contextsPerWorker).U + l
+      when(p.io.out_early_stop) {
+        stopEventQs(w).io.enq.valid := true.B
+        stopEventQs(w).io.enq.bits := (w * contextsPerWorker).U + l
+      }
     }
     when(arb.io.out.fire) { resultValid(w)(arb.io.chosen) := false.B }
   }
