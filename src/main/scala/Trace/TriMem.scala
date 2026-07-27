@@ -1386,49 +1386,46 @@ class TriangleMemMultiPort(
         io.req(p).ready := reqReady(p)
       }
 
-      // Select one bank with a narrow arbiter and register that selection
-      // before touching the wide TriangleBlock.  The registered selector can
-      // be replaced in the same cycle a response is consumed, preserving one
-      // response per cycle after startup without putting the block payload in
-      // the arbitration/fanout cone.
+      // Select a bank using only its narrow ID, then immediately dequeue and
+      // capture that bank's response in one central payload register.  This
+      // keeps the TriangleBlock out of the round-robin decision and prevents a
+      // selected bank head from remaining live across a downstream stall.
       val respArb = Module(new RRArbiter(UInt(bankSelW.W), numBanks))
-      val respSelectValid = RegInit(false.B)
-      val respSelectBank = Reg(UInt(bankSelW.W))
-      val respSelectSrc = Reg(UInt(srcW.W))
+      val respBufValid = RegInit(false.B)
+      val respBufSrc = Reg(UInt(srcW.W))
+      val respBufData = Reg(new TriMemResp(c, tagWidth))
       for (b <- 0 until numBanks) {
-        // While a selected bank is being consumed its visible head is still
-        // the old response.  Do not reselect that bank in the same cycle;
-        // another bank may still take over without a bubble.
-        respArb.io.in(b).valid := banks(b).io.resp.valid &&
-          (!respSelectValid || respSelectBank =/= b.U)
+        respArb.io.in(b).valid := banks(b).io.resp.valid
         respArb.io.in(b).bits := b.U
       }
 
-      val selectedBankOH = UIntToOH(respSelectBank, numBanks)
-      val selectedResp = Mux1H(selectedBankOH.asBools, banks.map(_.io.resp.bits.resp))
-      val selectedPortReady = Mux1H(
-        UIntToOH(respSelectSrc, numPorts).asBools,
+      val respBufReady = Mux1H(
+        UIntToOH(respBufSrc, numPorts).asBools,
         io.resp.map(_.ready)
       )
-      val selectedDone = respSelectValid && selectedPortReady
-      respArb.io.out.ready := !respSelectValid || selectedPortReady
+      val respBufFire = respBufValid && respBufReady
+      respArb.io.out.ready := !respBufValid || respBufReady
       for (b <- 0 until numBanks) {
-        banks(b).io.resp.ready := selectedDone && respSelectBank === b.U
+        banks(b).io.resp.ready := respArb.io.in(b).ready
       }
       when(respArb.io.out.fire) {
-        respSelectValid := true.B
-        respSelectBank := respArb.io.out.bits
-        respSelectSrc := Mux1H(
-          UIntToOH(respArb.io.out.bits, numBanks).asBools,
+        val selectedBankOH = UIntToOH(respArb.io.out.bits, numBanks)
+        respBufValid := true.B
+        respBufSrc := Mux1H(
+          selectedBankOH.asBools,
           banks.map(_.io.resp.bits.src)
         )
-      }.elsewhen(selectedDone) {
-        respSelectValid := false.B
+        respBufData := Mux1H(
+          selectedBankOH.asBools,
+          banks.map(_.io.resp.bits.resp)
+        )
+      }.elsewhen(respBufFire) {
+        respBufValid := false.B
       }
 
       for (p <- 0 until numPorts) {
-        io.resp(p).valid := respSelectValid && respSelectSrc === p.U
-        io.resp(p).bits := selectedResp
+        io.resp(p).valid := respBufValid && respBufSrc === p.U
+        io.resp(p).bits := respBufData
       }
 
     case _ =>
