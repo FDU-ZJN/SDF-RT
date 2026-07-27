@@ -32,21 +32,56 @@ class FrontendContextManager(
   val sdfReady = RegInit(VecInit(Seq.fill(count)(false.B)))
   val immutableTable = Reg(Vec(count, new ImmutableRayRecord(cfg, addrWidth)))
   val stateTable = Reg(Vec(count, new FrontendSdfState(cfg)))
-  val free = VecInit(active.map(!_))
-  val allocOH = PriorityEncoderOH(free)
-  val allocId = OHToUInt(allocOH)
-  io.init_issue.valid := io.ingress.valid && free.asUInt.orR
-  io.init_issue.bits := allocId
-  io.ingress.ready := free.asUInt.orR && io.init_issue.ready
+  // Keep one already-reserved context ID at the ingress boundary.  The
+  // active-vector priority encoder only refills this reservation for a future
+  // allocation, so it cannot combine with the incoming ray and Init's AABB
+  // reciprocal datapath in the same cycle.
+  val allocReserveValid = RegInit(true.B)
+  val allocReserveId = RegInit(0.U(idBits.W))
+  val releaseWillFree = Wire(Vec(count, Bool()))
+  releaseWillFree := VecInit(Seq.fill(count)(false.B))
+  for (port <- 0 until releasePorts) {
+    when(io.release(port).valid) {
+      releaseWillFree(io.release(port).bits) := true.B
+    }
+  }
+  val releaseWillFreeOH = PriorityEncoderOH(releaseWillFree)
+  val releaseWillFreeValid = releaseWillFree.asUInt.orR
+  val releaseWillFreeId = OHToUInt(releaseWillFreeOH)
+  val reserveCandidates = Wire(Vec(count, Bool()))
+  for (ctx <- 0 until count) {
+    reserveCandidates(ctx) :=
+      ((!active(ctx) && (!allocReserveValid || allocReserveId =/= ctx.U)) ||
+        releaseWillFree(ctx))
+  }
+  val reserveCandidateOH = PriorityEncoderOH(reserveCandidates)
+  val reserveCandidateValid = reserveCandidates.asUInt.orR
+  val reserveCandidateId = OHToUInt(reserveCandidateOH)
+
+  io.init_issue.valid := io.ingress.valid && allocReserveValid
+  io.init_issue.bits := allocReserveId
+  io.ingress.ready := allocReserveValid && io.init_issue.ready
 
   when(io.ingress.fire) {
-    assert(!active(allocId), "Frontend allocator selected an active context")
-    active(allocId) := true.B
-    immutableTable(allocId).origin := io.ingress.bits.origin
-    immutableTable(allocId).dir := io.ingress.bits.dir
-    immutableTable(allocId).meta.rayId := io.ingress.bits.rayId
-    stateTable(allocId) := 0.U.asTypeOf(new FrontendSdfState(cfg))
-    sdfReady(allocId) := false.B
+    assert(!active(allocReserveId), "Frontend allocator selected an active context")
+    active(allocReserveId) := true.B
+    immutableTable(allocReserveId).origin := io.ingress.bits.origin
+    immutableTable(allocReserveId).dir := io.ingress.bits.dir
+    immutableTable(allocReserveId).meta.rayId := io.ingress.bits.rayId
+    stateTable(allocReserveId) := 0.U.asTypeOf(new FrontendSdfState(cfg))
+    sdfReady(allocReserveId) := false.B
+    allocReserveValid := reserveCandidateValid
+    when(reserveCandidateValid) {
+      allocReserveId := reserveCandidateId
+    }
+  }.otherwise {
+    when(releaseWillFreeValid) {
+      allocReserveValid := true.B
+      allocReserveId := releaseWillFreeId
+    }.elsewhen(!allocReserveValid && reserveCandidateValid) {
+      allocReserveValid := true.B
+      allocReserveId := reserveCandidateId
+    }
   }
 
   when(io.init_complete.valid) {
@@ -113,7 +148,7 @@ class FrontendContextManager(
     // off later read ports prevents allocator control and the full ray payload
     // from becoming combinational inputs to the SDF datapath.
     if (port == 0) {
-      when(io.ingress.fire && allocId === io.read_id(port)) {
+      when(io.ingress.fire && allocReserveId === io.read_id(port)) {
         io.immutable(port).origin := io.ingress.bits.origin
         io.immutable(port).dir := io.ingress.bits.dir
         io.immutable(port).meta.rayId := io.ingress.bits.rayId
