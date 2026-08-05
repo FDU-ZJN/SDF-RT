@@ -2,7 +2,7 @@ module SubgridMetaMemResourceBB #(
   parameter int ADDR_WIDTH = 32,
   parameter int GLOBALRES = 16,
   parameter int SUBRES = 2,
-  parameter int LATENCY = 2,
+  parameter int LATENCY = 3,
   parameter int MAX_ENTRIES = 32768,
   parameter int BLOCK_DIR_DEPTH = 1024,
   parameter int COMPACT_META_DEPTH = 4096
@@ -16,7 +16,7 @@ module SubgridMetaMemResourceBB #(
   output logic [9:0] triCount,
   output logic valid
 );
-  localparam int FIXED_LATENCY = 2;
+  localparam int FIXED_LATENCY = 3;
   localparam int GLOBAL_ADDR_WIDTH = $clog2(GLOBALRES) * 3;
   localparam int SUB_ADDR_WIDTH = $clog2(SUBRES) * 3;
   localparam int LOOKUP_ADDR_WIDTH = GLOBAL_ADDR_WIDTH + SUB_ADDR_WIDTH;
@@ -76,26 +76,31 @@ module SubgridMetaMemResourceBB #(
   logic [47:0] dir_s1;
   logic [4:0] lane_s1;
   logic range_s1;
+  logic [META_ADDR_WIDTH-1:0] meta_addr_s2;
   logic hit_s2;
-  logic [31:0] meta_s2;
+  logic hit_s3;
+  logic [31:0] meta_s3;
   logic [FIXED_LATENCY-1:0] valid_pipe;
 
   always_ff @(posedge clk) begin
     dir_s1 <= block_dir_mem[lookup[DIR_ADDR_WIDTH+4:5]];
     lane_s1 <= lookup[4:0];
     range_s1 <= lookup < MAX_ENTRIES;
+    meta_addr_s2 <= compact_address(dir_s1, lane_s1);
     hit_s2 <= range_s1 && dir_s1[{1'b0, lane_s1}];
-    meta_s2 <= compact_meta_mem[compact_address(dir_s1, lane_s1)];
+    hit_s3 <= hit_s2;
+    meta_s3 <= compact_meta_mem[meta_addr_s2];
 
     if (reset) begin
       valid_pipe <= '0;
       hit_s2 <= 1'b0;
+      hit_s3 <= 1'b0;
     end else begin
       valid_pipe <= {valid_pipe[FIXED_LATENCY-2:0], en};
     end
   end
 
-  assign triStart = hit_s2 ? meta_s2[31:10] : 22'h0;
-  assign triCount = hit_s2 ? meta_s2[9:0] : 10'h0;
+  assign triStart = hit_s3 ? meta_s3[31:10] : 22'h0;
+  assign triCount = hit_s3 ? meta_s3[9:0] : 10'h0;
   assign valid = valid_pipe[FIXED_LATENCY-1];
 endmodule

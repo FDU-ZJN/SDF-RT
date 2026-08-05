@@ -729,6 +729,44 @@ inline uint32_t floatToRawU32Early(float value) {
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
 }
+
+// Custom SDF storage format: sign | E2 | M6, bias 5.  E=0 carries
+// subnormals in multiples of 2^-10; values above the finite E=3 range are
+// saturated toward zero at +/-0.4921875 for conservative positive steps.
+inline uint16_t floatToSdf9(float value) {
+    const uint32_t bits = floatToRawU32Early(value);
+    const uint32_t sign = bits >> 31;
+    const uint32_t exp = (bits >> 23) & 0xffu;
+    const uint32_t frac = bits & 0x7fffffu;
+    if (exp == 0) return 0;
+    if (exp == 0xff) return static_cast<uint16_t>((sign << 8) | 0xffu);
+    const int sdfExp = static_cast<int>(exp) - 127 + 5;
+    if (sdfExp >= 4) return static_cast<uint16_t>((sign << 8) | 0xffu);
+    if (sdfExp >= 1) {
+        return static_cast<uint16_t>((sign << 8) | (static_cast<uint32_t>(sdfExp) << 6) |
+                                     (frac >> 17));
+    }
+    const uint32_t significand = (1u << 23) | frac;
+    const int subnormalShift = 140 - static_cast<int>(exp);
+    const uint32_t mantissa = subnormalShift >= 24 ? 0u : (significand >> subnormalShift);
+    return static_cast<uint16_t>((sign << 8) | (mantissa & 0x3fu));
+}
+
+inline float sdf9ToFloat(uint16_t value) {
+    const uint32_t sign = value & 0x100u;
+    const uint32_t exp = (value >> 6) & 0x3u;
+    const uint32_t mantissa = value & 0x3fu;
+    if (exp == 0) {
+        const float subnormal = std::ldexp(static_cast<float>(mantissa), -10);
+        return sign ? -subnormal : subnormal;
+    }
+    const uint32_t bits = (sign << 23) |
+                          ((exp + 122u) << 23) |
+                          (mantissa << 17);
+    float result = 0.0f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
 } // namespace
 
 extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx) {
@@ -770,7 +808,8 @@ extern "C" int sdf_mem_read(unsigned int global_idx, unsigned int local_idx) {
     //         static_cast<int>((local_idx / local_sdf_shape[1]) % local_sdf_shape[2]),
     //         static_cast<int>(local_idx / (local_sdf_shape[1] * local_sdf_shape[2])),
     //         value);
-    return static_cast<int>(floatToRawU32Early(value));
+    // DPI models the same lossy memory boundary as the FPGA implementation.
+    return static_cast<int>(floatToRawU32Early(sdf9ToFloat(floatToSdf9(value))));
 }
 
 namespace {

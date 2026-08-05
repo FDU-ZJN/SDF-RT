@@ -13,7 +13,12 @@ class BufferedRRArbiter[T <: Data](gen: T, numInputs: Int, fifoDepth: Int = 2) e
     val occupancy = Output(UInt(occupancyWidth.W))
   })
 
-  val fifos = Seq.fill(numInputs)(Module(new Queue(gen, fifoDepth, pipe = true)))
+  val fifos = Seq.fill(numInputs)(Module(new Queue(
+    gen,
+    fifoDepth,
+    pipe = true,
+    useSyncReadMem = true
+  )))
   val arbiter = Module(new RRArbiter(gen, numInputs))
   for (i <- 0 until numInputs) {
     fifos(i).io.enq <> io.enq(i)
@@ -22,4 +27,3 @@ class BufferedRRArbiter[T <: Data](gen: T, numInputs: Int, fifoDepth: Int = 2) e
   io.occupancy := fifos.map(_.io.count).foldLeft(0.U(occupancyWidth.W))(_ +& _)
   io.deq <> arbiter.io.out
 }
-

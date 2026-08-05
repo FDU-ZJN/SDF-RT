@@ -234,9 +234,10 @@ int main(int argc, char** argv) {
         std::cerr << "SDF cache is empty." << endl;
         return 2;
     }
-    if (num_cells > 2048) {
+    if (num_cells > kSDFLocalCellCapacity) {
         std::cerr << "Active SDF cell count " << num_cells
-                  << " exceeds the 2048-entry hardware limit." << std::endl;
+                  << " exceeds the " << kSDFLocalCellCapacity
+                  << "-entry hardware limit." << std::endl;
         return 2;
     }
 

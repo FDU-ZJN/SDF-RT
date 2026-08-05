@@ -50,18 +50,25 @@ class SdfSchedulerUnit(
   }
 
   val issueRr = RegInit(0.U(idBits.W))
+  val issueCtxReg = RegInit(0.U(idBits.W))
+  val issueValidReg = RegInit(false.B)
   val issueRotated = Wire(Vec(contextCount, Bool()))
   for (offset <- 0 until contextCount) {
     val ctx = (issueRr + offset.U)(idBits - 1, 0)
-    issueRotated(offset) := issueCandidates(ctx)
+    // Do not select the context already held in the one-entry PE launch
+    // register.  It remains owned until the registered launch fires.
+    issueRotated(offset) := issueCandidates(ctx) &&
+      !(issueValidReg && issueCtxReg === ctx)
   }
   val issuePickOH = PriorityEncoderOH(issueRotated)
   val issuePickId = (OHToUInt(issuePickOH) + issueRr)(idBits - 1, 0)
   val issueValid = issueRotated.asUInt.orR
-  io.context_id := issuePickId
+  // Context selection is a small-signal pipeline.  The wide immutable/state
+  // payload is read only after the registered ID reaches the context table.
+  io.context_id := issueCtxReg
 
-  io.pe_in.valid := issueValid
-  io.pe_in.bits.contextId := issuePickId
+  io.pe_in.valid := issueValidReg
+  io.pe_in.bits.contextId := issueCtxReg
   io.pe_in.bits.origin := io.immutable.origin
   io.pe_in.bits.dir := io.immutable.dir
   io.pe_in.bits.state := io.sdf_state
@@ -71,10 +78,17 @@ class SdfSchedulerUnit(
     stepReady(issueId) := true.B
   }
   when(io.pe_in.fire) {
-    assert(issueCandidates(issuePickId), "SDF issued a non-runnable context")
-    stepReady(issuePickId) := false.B
-    stepInFlight(issuePickId) := true.B
-    issueRr := issuePickId + 1.U
+    assert(issueCandidates(issueCtxReg), "SDF issued a non-runnable context")
+    stepReady(issueCtxReg) := false.B
+    stepInFlight(issueCtxReg) := true.B
+    issueRr := issueCtxReg + 1.U
+    issueValidReg := false.B
+  }
+  when(!issueValidReg || io.pe_in.fire) {
+    when(issueValid) {
+      issueCtxReg := issuePickId
+      issueValidReg := true.B
+    }
   }
 
   io.pe_out.ready := true.B
@@ -97,22 +111,38 @@ class SdfSchedulerUnit(
 
   val finalRr = RegInit(0.U(idBits.W))
   val finalRotated = Wire(Vec(contextCount, Bool()))
+  val finalCtxReg = RegInit(0.U(idBits.W))
+  val finalValidReg = RegInit(false.B)
+  val finalHitReg = RegInit(false.B)
   for (offset <- 0 until contextCount) {
     val ctx = (finalRr + offset.U)(idBits - 1, 0)
-    finalRotated(offset) := finalPending(ctx)
+    finalRotated(offset) := finalPending(ctx) &&
+      !(finalValidReg && finalCtxReg === ctx)
   }
   val finalPickOH = PriorityEncoderOH(finalRotated)
   val finalPickId = (OHToUInt(finalPickOH) + finalRr)(idBits - 1, 0)
-  io.final_context_id := finalPickId
-  io.out.valid := finalRotated.asUInt.orR
-  io.out.bits.contextId := finalPickId
-  io.out.bits.hit := finalHit(finalPickId)
+  val finalValid = finalRotated.asUInt.orR
+
+  // Final arbitration uses the same small-signal pipeline.  The wide final
+  // state is selected from the registered context ID below.
+  io.final_context_id := finalCtxReg
+  io.out.valid := finalValidReg
+  io.out.bits.contextId := finalCtxReg
+  io.out.bits.hit := finalHitReg
   io.out.bits.dist := io.final_state.dist
 
   when(io.out.fire) {
-    assert(finalPending(finalPickId), "SDF completed a non-terminal context")
-    finalPending(finalPickId) := false.B
-    finalRr := finalPickId + 1.U
+    assert(finalPending(finalCtxReg), "SDF completed a non-terminal context")
+    finalPending(finalCtxReg) := false.B
+    finalRr := finalCtxReg + 1.U
+    finalValidReg := false.B
+  }
+  when(!finalValidReg || io.out.fire) {
+    when(finalValid) {
+      finalCtxReg := finalPickId
+      finalHitReg := finalHit(finalPickId)
+      finalValidReg := true.B
+    }
   }
 
   for (ctx <- 0 until contextCount) {

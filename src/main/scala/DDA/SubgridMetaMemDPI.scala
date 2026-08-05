@@ -39,6 +39,8 @@ private class SubgridMetaMemDPICore(
        |);
        |  int dpi_start;
        |  int dpi_count;
+       |  wire [31:0] global_idx_dpi = {{${32 - addrWidth}{1'b0}}, globalIdx};
+       |  wire [31:0] sub_idx_dpi = {{${32 - addrWidth}{1'b0}}, subIdx};
        |  reg [${GlobalConfig.subgridMetaMemTriStartWidth - 1}:0] triStart_pipe[0:${latency - 1}];
        |  reg [${GlobalConfig.subgridMetaMemTriCountWidth - 1}:0] triCount_pipe[0:${latency - 1}];
        |  reg [${latency - 1}:0] valid_pipe;
@@ -54,8 +56,8 @@ private class SubgridMetaMemDPICore(
        |    end else begin
        |      valid_pipe[0] <= en;
        |      if (en) begin
-       |        dpi_start = subgrid_tri_start_read(globalIdx, subIdx);
-       |        dpi_count = subgrid_tri_count_read(globalIdx, subIdx);
+       |        dpi_start = subgrid_tri_start_read(global_idx_dpi, sub_idx_dpi);
+       |        dpi_count = subgrid_tri_count_read(global_idx_dpi, sub_idx_dpi);
        |        triStart_pipe[0] <= dpi_start[${GlobalConfig.subgridMetaMemTriStartWidth - 1}:0];
        |        triCount_pipe[0] <= dpi_count[${GlobalConfig.subgridMetaMemTriCountWidth - 1}:0];
        |      end

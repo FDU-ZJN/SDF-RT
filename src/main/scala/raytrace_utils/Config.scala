@@ -4,9 +4,11 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
-  val frameWidth =1920
-  val frameHeight = 1080
+  val frameWidth =100
+  val frameHeight = 100
   val traceNumWorkers = 4
+  // TraceController owns backend contexts statically as four slots per
+  // worker.  Keep this in lockstep with backendContextCount (4 * 4 = 16).
   val traceContextsPerWorker = 4
   val traceContextCount = traceNumWorkers * traceContextsPerWorker
   val triMemNumPEs = 1
@@ -70,7 +72,7 @@ object GlobalConfig {
   val triMemCacheHitLatency = 1
   val triMemMissPenalty = 60
   val sdfMemDpiLatency = 3
-  val subgridMemDpiLatency = 2
+  val subgridMemDpiLatency = 3
   val fsqrtLatency = 11
   val fmulLatency = 4
   val faddLatency = 5
@@ -81,10 +83,19 @@ object GlobalConfig {
 
   val Trinum = 33205
   val TriOriginalNum = 16000
+  // Compact triangle indices are the architectural triangle address space.
+  // Keep all triangle IDs, batch bases, cache block addresses, and normal
+  // addresses derived from this single capacity contract.
+  val maxCompactTriangles = 131072
+  val triangleAddrWidth = log2Ceil(maxCompactTriangles)
+  require(maxCompactTriangles == (1 << triangleAddrWidth),
+    "maxCompactTriangles must be a power of two")
 
-  val GlobalSdfRes = 16
+  val GlobalSdfRes = 32
   val LocalSdfRes = 4
-  val LocalCell = 2048
+  // The 32^3 hybrid SDF cache for Killeroo currently activates 16059 cells.
+  // Mapping stores a 14-bit cell index, so retain the full 16384-entry range.
+  val LocalCell = 16384
 
   val GlobalDdaRes = 16
   val SubDdaRes = 4
@@ -92,7 +103,20 @@ object GlobalConfig {
   // Signed range must include the two traversal sentinels -1 and DdaRes.
   val ddaCoordWidth = log2Ceil(DdaRes + 1) + 1
 
-  val triMemAddrWidth = 32
+  // A cache request addresses a compact triangle cache line, not an
+  // individual triangle.  Four triangles share a line, so 131072 compact
+  // triangles require 32768 line addresses (15 bits).  Keep the full
+  // 17-bit triangleAddrWidth for architectural triangle IDs.
+  val triMemBlockAddrWidth = log2Ceil(maxCompactTriangles / triMemCacheLineTriangles)
+  val triMemAddrWidth = triMemBlockAddrWidth
+  def triMemBankAddrWidthFor(numBanks: Int): Int = {
+    require(numBanks > 0 && (numBanks & (numBanks - 1)) == 0,
+      s"triangle memory bank count must be a power of two, got $numBanks")
+    triMemAddrWidth - log2Ceil(numBanks)
+  }
+  val triMemBankAddrWidth = triMemBankAddrWidthFor(triMemNumBanks)
+  require(triMemBankAddrWidth == 13,
+    s"four-bank triangle cache requires 13-bit bank-local addresses, got $triMemBankAddrWidth")
   // Triangle data width per TriPE request block.
   val triMemDataWidth = triMemCacheLineTriangles * 9 * 32
   val triMemCacheSets = 512
@@ -102,12 +126,12 @@ object GlobalConfig {
   val triMemMshrEntries = 4
 
   // Normal memory: address width (triangle index)
-  val normalMemAddrWidth = 16
+  val normalMemAddrWidth = triangleAddrWidth
   // Normal data: 3 floats (x, y, z)
   val normalMemDataWidth = 3 * 32  // = 96 bits
 
   val subgridMetaMemAddrWidth = 32
-  val subgridMetaMemTriStartWidth = 22
+  val subgridMetaMemTriStartWidth = triangleAddrWidth
   val subgridMetaMemTriCountWidth = 10
   val subgridBlockSize = 32
   val subgridBlockShift = 5
@@ -115,9 +139,13 @@ object GlobalConfig {
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
-  val sdfMemGlobalAddrWidth = 12   // 2^12 = 4096 global entries
+  val sdfMemGlobalAddrWidth = 15   // 32^3 = 32768 global entries
   val sdfMemLocalAddrWidth = 20    // 2^20 = 1M local entries
-  val sdfMemDataWidth = 32         // Single FP32 per access
+  // SDF samples are stored as custom 9-bit E2M6 (bias 5, subnormal support).
+  // Values above the finite range saturate toward zero.  The read-side
+  // codec expands them back to FP32 before they enter SdfPE.
+  val sdfMemStoredDataWidth = 9
+  val sdfMemDataWidth = 32         // FP32 after the SDF-memory read codec
 
   // SDF memory internal banking (for synthesis BlackBox)
   val sdfMemBankDepth = 4096
@@ -126,19 +154,16 @@ object GlobalConfig {
   val sdfMemLocalLaneBits = log2Ceil(sdfMemLocalPerCell)
   val sdfMemLocalGridSize = sdfMemLocalPerCell
 
-  val addrWidth = 32
+  val addrWidth = triangleAddrWidth
 
   // ============================================================
   // SDF PE algorithm parameters
   // ============================================================
   val sdfMaxSteps = 32
   val ddaMaxSteps = 64
-  // Conservative handoff to DDA: the scene sweep shows full coverage with no
-  // surface overshoot at this threshold for all three SDF hierarchy levels.
   val sdfThreshold1 = 0.01f
   val sdfThreshold2 = 0.02f
   val sdfThreshold3 = 0.04f
-  val sdfStepScale = 0.6f
 
   private def alignUp(value: Int, quantum: Int): Int = {
     require(quantum > 0, s"alignment quantum must be > 0, got $quantum")
@@ -150,7 +175,7 @@ object GlobalConfig {
   def triMemDepthFor(numBanks: Int, lineTriangles: Int = triMemCacheLineTriangles): Int = {
     require(numBanks > 0, s"triMem numBanks must be > 0, got $numBanks")
     require(lineTriangles > 0, s"triMem cache line must contain triangles, got $lineTriangles")
-    val totalDepth = (TriOriginalNum + lineTriangles - 1) / lineTriangles
+    val totalDepth = (maxCompactTriangles + lineTriangles - 1) / lineTriangles
     alignUp((totalDepth + numBanks - 1) / numBanks, bramDepthAlign)
   }
 
@@ -218,13 +243,13 @@ case class SdfPeConfig(
   threshold3: Float = GlobalConfig.sdfThreshold3,
   threshold2: Float = GlobalConfig.sdfThreshold2,
   threshold1: Float = GlobalConfig.sdfThreshold1,
-  StepScale: Float = GlobalConfig.sdfStepScale
+  nearSurfaceBackoffThreshold: Float = 0.005f,
 ) {
   val addrWidth = GlobalConfig.addrWidth
-  require(StepScale > 0.0f, s"StepScale must be > 0, got $StepScale")
   val threshold1Bits = java.lang.Float.floatToRawIntBits(threshold1)
   val threshold2Bits = java.lang.Float.floatToRawIntBits(threshold2)
   val threshold3Bits = java.lang.Float.floatToRawIntBits(threshold3)
+  val nearSurfaceBackoffThresholdBits =
+    java.lang.Float.floatToRawIntBits(nearSurfaceBackoffThreshold)
   val thresholdBits = threshold1Bits
-  val stepScaleBits = java.lang.Float.floatToRawIntBits(StepScale)
 }

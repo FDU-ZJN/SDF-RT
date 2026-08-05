@@ -88,6 +88,27 @@ void testMarch() {
     require(hit.hit && hit.iterations == 1, "positive SDF threshold should hit on step one");
     requireNear(hit.hitT, positiveTrace.entryT, 0.0f, "positive hit must retain current distance");
 
+    configureConstantSdf(0.0f);
+    const sdf_cmodel::RayTrace zeroTrace = model.trace(ray, 4);
+    const sdf_cmodel::MarchResult zeroBackoff = model.evaluate(zeroTrace, {4, 0.01f, 0.02f, 0.04f});
+    require(!zeroBackoff.hit && zeroBackoff.termination == sdf_cmodel::Termination::MaxSteps,
+            "zero SDF should remain on the near-surface backoff path");
+
+    configureConstantSdf(0.004f);
+    const sdf_cmodel::RayTrace nearSurfaceTrace = model.trace(ray, 4);
+    const sdf_cmodel::MarchResult nearSurfaceBackoff =
+        model.evaluate(nearSurfaceTrace, {4, 0.01f, 0.02f, 0.04f});
+    require(!nearSurfaceBackoff.hit && nearSurfaceBackoff.termination == sdf_cmodel::Termination::MaxSteps,
+            "sub-0.005 SDF should remain on the near-surface backoff path");
+
+    configureConstantSdf(0.006f);
+    const sdf_cmodel::RayTrace aboveBackoffTrace = model.trace(ray, 4);
+    const sdf_cmodel::MarchResult aboveBackoffHit =
+        model.evaluate(aboveBackoffTrace, {4, 0.01f, 0.02f, 0.04f});
+    require(aboveBackoffHit.hit && aboveBackoffHit.iterations == 1,
+            "SDF at or above 0.005 should retain the normal hit path");
+
+    configureConstantSdf(0.25f);
     const sdf_cmodel::MarchResult miss = model.evaluate(positiveTrace, {4, 0.1f, 0.1f, 0.1f});
     require(!miss.hit, "small threshold should not hit constant positive SDF");
     require(miss.termination == sdf_cmodel::Termination::OutOfBounds ||

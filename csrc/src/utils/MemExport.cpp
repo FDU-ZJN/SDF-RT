@@ -39,6 +39,51 @@ static inline std::string u32ToHex(uint32_t value) {
     return oss.str();
 }
 
+// SDF storage format: sign | E2 | M6, bias 5.  E=0 carries subnormals in
+// multiples of 2^-10; positive values saturate toward zero at 0.4921875.
+static inline uint16_t floatToSdf9(float value) {
+    const uint32_t bits = floatToRawU32(value);
+    const uint32_t sign = bits >> 31;
+    const uint32_t exp = (bits >> 23) & 0xffu;
+    const uint32_t frac = bits & 0x7fffffu;
+    if (exp == 0) return 0;
+    if (exp == 0xff) return static_cast<uint16_t>((sign << 8) | 0xffu);
+    const int sdfExp = static_cast<int>(exp) - 127 + 5;
+    if (sdfExp >= 4) return static_cast<uint16_t>((sign << 8) | 0xffu);
+    if (sdfExp >= 1) {
+        return static_cast<uint16_t>((sign << 8) | (static_cast<uint32_t>(sdfExp) << 6) |
+                                     (frac >> 17));
+    }
+    const uint32_t significand = (1u << 23) | frac;
+    const int subnormalShift = 140 - static_cast<int>(exp);
+    const uint32_t mantissa = subnormalShift >= 24 ? 0u : (significand >> subnormalShift);
+    return static_cast<uint16_t>((sign << 8) | (mantissa & 0x3fu));
+}
+
+static void writePackedSdf9Rows(
+    std::ofstream& out, const std::vector<uint16_t>& samples, size_t samplesPerRow) {
+    static constexpr char hex[] = "0123456789ABCDEF";
+    const size_t hexDigits = (samplesPerRow * 9) / 4;
+    for (size_t base = 0; base < samples.size(); base += samplesPerRow) {
+        // $readmemh consumes most-significant hex digit first.  Build that
+        // representation directly, avoiding a non-standard 288-bit integer.
+        std::string line(hexDigits, '0');
+        for (size_t hexDigit = 0; hexDigit < hexDigits; ++hexDigit) {
+            unsigned nibble = 0;
+            const size_t highBit = (hexDigits - 1 - hexDigit) * 4;
+            for (unsigned bit = 0; bit < 4; ++bit) {
+                const size_t packedBit = highBit + bit;
+                const size_t lane = packedBit / 9;
+                const size_t laneBit = packedBit % 9;
+                if (base + lane < samples.size())
+                    nibble |= ((samples[base + lane] >> laneBit) & 1u) << bit;
+            }
+            line[hexDigit] = hex[nibble];
+        }
+        out << line << std::endl;
+    }
+}
+
 namespace {
 std::array<float, 9> triangleHardwareValues(const Triangle& tri) {
     return {
@@ -227,8 +272,8 @@ void export_normal_mem(const std::string& filename) {
 // Export SDF memory to .mem files
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename) {
     // Export global SDF
-    // BlackBox expects: each address holds 2 FP32 values packed into [63:32] and [31:0]
-    // Address = global_idx >> 1, with global_idx[0] selecting the lane
+    // SdfMem packs eight custom E2M6 values into every 72-bit global row and
+    // 32 values into every 288-bit local row.
     {
         std::ofstream out(global_filename);
         if (!out.is_open()) {
@@ -237,7 +282,7 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         }
 
         out << "// Global SDF Memory Initialization File" << std::endl;
-        out << "// Format: Each line = 1 SDF value (1 hex float)" << std::endl;
+        out << "// Format: each line = eight packed 9-bit E2M6 SDF values" << std::endl;
         out << "// $readmemh fills sequentially (no @address for 1D array linear mapping)" << std::endl;
         out << std::endl;
 
@@ -246,7 +291,8 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         size_t K = global_sdf_shape[2];
         size_t totalEntries = I * J * K;
 
-        // Write sequentially: one 32-bit SDF value per line
+        std::vector<uint16_t> packedSamples;
+        packedSamples.reserve(totalEntries);
         for (size_t global_idx = 0; global_idx < totalEntries; ++global_idx) {
             const int gi = static_cast<int>(global_idx % I);
             const int gj = static_cast<int>((global_idx / I) % J);
@@ -254,8 +300,9 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
             float value = get_global_sdf(gi, gj, gk);
 
-            out << u32ToHex(floatToRawU32(value)) << std::endl;
+            packedSamples.push_back(floatToSdf9(value));
         }
+        writePackedSdf9Rows(out, packedSamples, 8);
 
         out.close();
         std::cout << "[MemExport] Exported global SDF (" << I << "x" << J << "x" << K
@@ -271,7 +318,7 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         }
 
         out << "// Local SDF Memory Initialization File" << std::endl;
-        out << "// Format: Each line = 1 SDF value (1 hex float)" << std::endl;
+        out << "// Format: each line = 32 packed 9-bit E2M6 SDF values" << std::endl;
         out << "// $readmemh fills sequentially (no @address for 1D array linear mapping)" << std::endl;
         out << std::endl;
 
@@ -282,6 +329,8 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
         uint32_t entryCount = 0;
         size_t localPerCell = LI * LJ * LK;
+        std::vector<uint16_t> packedSamples;
+        packedSamples.reserve(C * localPerCell);
         for (size_t cell_idx = 0; cell_idx < C; ++cell_idx) {
             for (size_t local_idx = 0; local_idx < localPerCell; ++local_idx) {
                 const int li = static_cast<int>(local_idx % LI);
@@ -290,10 +339,12 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
                 float value = get_local_sdf(static_cast<int>(cell_idx), li, lj, lk);
 
-                out << u32ToHex(floatToRawU32(value)) << std::endl;
+                packedSamples.push_back(floatToSdf9(value));
                 ++entryCount;
             }
         }
+        // Each local row contains four eight-sample groups: 9 * 8 * 4 = 288 bits.
+        writePackedSdf9Rows(out, packedSamples, 32);
 
         out.close();
         std::cout << "[MemExport] Exported local SDF (" << C << " cells x " 
@@ -317,7 +368,7 @@ void export_sdf_local_mapping(const std::string& filename) {
 
     out << "// SDF Local Mapping File" << std::endl;
     out << "// Format: Each address = Global SDF Index (0..4095)" << std::endl;
-    out << "// Data: [15]=valid, [11:0]=cell_idx" << std::endl;
+    out << "// Data: [15]=valid, [13:0]=cell_idx" << std::endl;
     out << "// Linear $readmemh/XPM format: one 16-bit word per address, no @address markers" << std::endl;
     out << std::endl;
 
@@ -335,8 +386,8 @@ void export_sdf_local_mapping(const std::string& filename) {
         int cell_idx = mapping[globalLinear];
         uint16_t entry = 0;
         if (cell_idx >= 0) {
-            // valid bit (15) | cell_idx (11:0)
-            entry = (1 << 15) | (cell_idx & 0x0FFF);
+            // valid bit (15) | cell_idx (13:0)
+            entry = (1 << 15) | (cell_idx & 0x3FFF);
         }
 
         out << std::hex << std::uppercase << std::setfill('0') << std::setw(4)
@@ -542,7 +593,7 @@ void export_sdf_local_mapping_coe(const std::string& filename) {
 
     // COE file format for Xilinx block RAM
     out << "; SDF Local Mapping COE File for Vivado" << std::endl;
-    out << "; Format: 16-bit width per entry [15]=valid, [10:0]=cell_idx" << std::endl;
+    out << "; Format: 16-bit width per entry [15]=valid, [13:0]=cell_idx" << std::endl;
     out << "; Total entries: " << totalGlobals << std::endl;
     out << "memory_initialization_radix=16;" << std::endl;
     out << "memory_initialization_vector=" << std::endl;
@@ -553,8 +604,8 @@ void export_sdf_local_mapping_coe(const std::string& filename) {
         int cell_idx = mapping[globalLinear];
         uint16_t entry = 0;
         if (cell_idx >= 0) {
-            // valid bit (15) | cell_idx (10:0)
-            entry = (1 << 15) | (cell_idx & 0x0FFF);
+            // valid bit (15) | cell_idx (13:0)
+            entry = (1 << 15) | (cell_idx & 0x3FFF);
         }
 
         std::ostringstream oss;

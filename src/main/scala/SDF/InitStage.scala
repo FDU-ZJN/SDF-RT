@@ -13,16 +13,13 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
     val in = Flipped(Decoupled(UInt(GlobalConfig.frontendContextBits.W)))
     val context_id = Output(UInt(GlobalConfig.frontendContextBits.W))
     val immutable = Input(new ImmutableRayRecord(cfg, addrWidth))
-    val out = Decoupled(new FrontendInitResp(cfg))
+    val out = Valid(new FrontendInitResp(cfg))
   })
 
   val aabb = Module(new RayAABBIntersection(cfg))
 
   val aabbLatency = 4 + cfg.fdivLatency + cfg.fmulLatency + (4 * cfg.fcmpLatency)
   val entryLatency = 1
-  private val outputQueueDepth = GlobalConfig.frontendContextCount
-  private val reservationCapacity = outputQueueDepth
-  private val reservationWidth = log2Ceil(reservationCapacity + 1)
   val entryAdvanceShift = 14
   val fracWidth = cfg.precision - 1
   require(cfg.totalWidth == 32 && cfg.expWidth == 8 && cfg.precision == 24,
@@ -59,9 +56,9 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   aabb.io.aabb.min := io.setup_grid_min
   aabb.io.aabb.max := io.setup_grid_max
 
-  val outputQ = Module(new Queue(new FrontendInitResp(cfg), outputQueueDepth))
-  val reservations = RegInit(0.U(reservationWidth.W))
-  io.in.ready := reservations < reservationCapacity.U
+  // Every input already owns a frontend context, so the fixed-latency AABB
+  // result can write that context directly without an Init-to-SDF queue.
+  io.in.ready := true.B
   val inFire = io.in.fire
   aabb.io.in_valid := inFire
 
@@ -74,16 +71,8 @@ class InitStage(cfg: FloatConfig, addrWidth: Int) extends Module {
   val outHit = PipeUtils.pipeData(aabb.io.hit, outAlignLatency)
   val outContextId = PipeUtils.pipeData(contextAtAabb, entryLatency)
 
-  outputQ.io.enq.valid := outValid
-  outputQ.io.enq.bits.hit := outHit
-  outputQ.io.enq.bits.contextId := outContextId
-  outputQ.io.enq.bits.entryT := tEntry
-  assert(!outValid || outputQ.io.enq.ready, "InitStage reservation overflow")
-  io.out <> outputQ.io.deq
-
-  val outFire = io.out.fire
-  when(inFire || outFire) {
-    reservations := reservations + inFire.asUInt - outFire.asUInt
-  }
-  assert(reservations <= reservationCapacity.U, "InitStage reservation counter overflow")
+  io.out.valid := outValid
+  io.out.bits.hit := outHit
+  io.out.bits.contextId := outContextId
+  io.out.bits.entryT := tEntry
 }

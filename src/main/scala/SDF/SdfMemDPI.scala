@@ -52,6 +52,8 @@ private class SdfMemDPICore(
        |  input  [31:0] wr_data
        |);
        |  int dpi_data;
+       |  wire [31:0] global_idx_dpi = {{${32 - addrWidth}{1'b0}}, globalIdx};
+       |  wire [31:0] local_idx_dpi = {{${32 - addrWidth}{1'b0}}, localIdx};
        |  reg [${dataWidth - 1}:0] data_pipe[0:${latency - 1}];
        |  reg [${latency - 1}:0] valid_pipe;
        |  integer i;
@@ -65,7 +67,7 @@ private class SdfMemDPICore(
        |    end else begin
        |      valid_pipe[0] <= en;
        |      if (en) begin
-       |        dpi_data = sdf_mem_read(globalIdx, localIdx);
+       |        dpi_data = sdf_mem_read(global_idx_dpi, local_idx_dpi);
        |        data_pipe[0] <= dpi_data[${dataWidth - 1}:0];
        |      end
        |      for (i = 1; i < ${latency}; i = i + 1) begin
@@ -92,6 +94,7 @@ private class SdfMemResourceBB(
         "ADDR_WIDTH"       -> addrWidth,
         "DATA_WIDTH"       -> dataWidth,
         "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
+        "GLOBAL_SDF_SIZE"  -> GlobalConfig.sdfGlobalMemDepth,
         "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
         "LOCAL_CELL_COUNT" -> GlobalConfig.LocalCell,
         "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell
@@ -121,6 +124,7 @@ private class SdfMemIpBB(
         "ADDR_WIDTH"       -> addrWidth,
         "DATA_WIDTH"       -> dataWidth,
         "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
+        "GLOBAL_SDF_SIZE"  -> GlobalConfig.sdfGlobalMemDepth,
         "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
         "LOCAL_CELL_COUNT" -> GlobalConfig.LocalCell,
         "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell,

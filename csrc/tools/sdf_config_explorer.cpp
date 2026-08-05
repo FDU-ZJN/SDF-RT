@@ -200,7 +200,8 @@ void writeBestJson(const std::filesystem::path& path, const Options& options,
         << "  \"oracle_hits\": " << best.oracleHits << ", \"oracle_misses\": " << oracleMisses << ",\n"
         << "  \"hardware_compatible\": " << (hardwareCompatible ? "true" : "false") << ",\n"
         << "  \"rtl_shape_compatible\": " << (rtlShapeCompatible ? "true" : "false") << ",\n"
-        << "  \"active_local_cells\": " << num_cells << ", \"active_local_cell_limit\": 2048,\n"
+        << "  \"active_local_cells\": " << num_cells << ", \"active_local_cell_limit\": "
+        << rt::config::kSDFLocalCellCapacity << ",\n"
         << "  \"config\": {\"max_steps\": " << best.config.maxSteps
         << ", \"threshold1\": " << best.config.threshold1 << ", \"threshold2\": "
         << best.config.threshold2 << ", \"threshold3\": " << best.config.threshold3 << "},\n"
@@ -333,7 +334,8 @@ int main(int argc, char** argv) {
         const size_t bestIndex = ranking.front();
         const ConfigStats& best = stats[bestIndex];
         const bool fullCoverage = best.sdfMisses == 0;
-        const bool hardwareCompatible = rtlShapeCompatible && num_cells <= 2048;
+        const bool hardwareCompatible = rtlShapeCompatible &&
+            num_cells <= rt::config::kSDFLocalCellCapacity;
 
         const std::filesystem::path reportDir(options.outputDir);
         writeSummary(reportDir / "summary.csv", stats, bestIndex, hardwareCompatible, rtlShapeCompatible);
@@ -395,7 +397,8 @@ int main(int argc, char** argv) {
                   << ',' << best.config.threshold2 << ',' << best.config.threshold3 << ") misses="
                   << best.sdfMisses << " overshoots=" << best.overshoots << " max_front_gap="
                   << best.maxFrontGap << " p99_abs_error=" << best.p99AbsError << '\n'
-                  << "SDF local cells: " << num_cells << "/2048 (hardware compatible: "
+                  << "SDF local cells: " << num_cells << "/"
+                  << rt::config::kSDFLocalCellCapacity << " (hardware compatible: "
                   << (hardwareCompatible ? "yes" : "no") << ")\nReports: "
                   << std::filesystem::absolute(reportDir) << '\n';
         return fullCoverage ? 0 : 2;

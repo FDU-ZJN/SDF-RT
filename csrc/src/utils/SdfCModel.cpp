@@ -349,7 +349,7 @@ RayTrace SdfCModel::trace(const host_renderer::Ray& ray, int maxSteps) const {
         trace.steps.push_back(step);
         if (!step.inBounds || !step.finite) break;
 
-        if (std::signbit(step.sample)) {
+        if (std::signbit(step.sample) || step.sample < 0.005f) {
             dist = step.negativeHitDist;
             prevSdf = prevHalf;
         } else {
@@ -382,7 +382,10 @@ MarchResult SdfCModel::evaluate(const RayTrace& trace, const MarchConfig& config
         }
         const float threshold = iter < half ? config.threshold1
             : (iter < threeQuarter ? config.threshold2 : config.threshold3);
-        if (step.sample > 0.0f && step.sample < threshold) {
+        constexpr float kNearSurfaceBackoffThreshold = 0.005f;
+        // Keep near-surface values on the existing negative-sample backoff
+        // path; only [0.005, threshold) is an early hit.
+        if (step.sample >= kNearSurfaceBackoffThreshold && step.sample < threshold) {
             result.hit = true;
             result.hitT = step.dist;
             result.termination = std::isfinite(result.hitT) ? Termination::Hit : Termination::NonFinite;

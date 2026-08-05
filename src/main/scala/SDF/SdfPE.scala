@@ -33,6 +33,8 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val hitThreshold1 = BigInt(c.threshold1Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold2 = BigInt(c.threshold2Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val hitThreshold3 = BigInt(c.threshold3Bits & 0xffffffffL).U(c.cfg.totalWidth.W)
+  val nearSurfaceBackoffThreshold =
+    BigInt(c.nearSurfaceBackoffThresholdBits & 0xffffffffL).U(c.cfg.totalWidth.W)
   val fpZero = 0.U(c.cfg.totalWidth.W)
   val maxStepsU = c.maxSteps.U(16.W)
   val halfStepsU = (c.maxSteps / 2).U(16.W)
@@ -242,17 +244,19 @@ class SdfPE(val c: SdfPeConfig = SdfPeConfig()) extends Module {
   val bInBoundsCmp = bCtxCmp.inBounds
   val bSampleCmp = pipeUInt(bSample, cmpLatency)
   val bSampleNegCmp = pipeBool(bSampleNeg, cmpLatency)
-  // Positive samples use the normal threshold test.  A negative sample does
-  // not hit early; it becomes a terminal hit only when this sample consumes
-  // the final march step.
-  val bSamplePositive = !bSampleNegCmp && (bSampleCmp =/= fpZero)
-  val positiveHit = bSamplePositive && cmpHit.io.lt
+  // Constant-bound check is a combinational IEEE-754 bit comparison.  The
+  // dynamic stage threshold below stays on the FCMP path.  Near-surface
+  // samples (including +0) reuse the negative-sample backoff.
+  val sampleAboveBackoffThreshold = SimpleFPCompare.gtPositiveConst(
+    bSampleCmp, nearSurfaceBackoffThreshold, c.cfg.totalWidth)
+  val sampleNeedsBackoff = !sampleAboveBackoffThreshold
+  val positiveHit = !sampleNeedsBackoff && cmpHit.io.lt
   val finalStepNegativeHit = bSampleNegCmp && (bCtxCmp.iter + 1.U >= maxStepsU)
   val bHit = bInBoundsCmp && (positiveHit || finalStepNegativeHit)
 
   val prevSdfHalf = fpHalf(bCtxCmp.prevSdf)
   val negPrevSdfHalf = neg(prevSdfHalf)
-  val sampleIsNeg = bSampleNegCmp
+  val sampleIsNeg = sampleNeedsBackoff
 
   val posDistAdd = Module(new FADD(c.cfg))
   posDistAdd.io.a := bCtxCmp.dist
