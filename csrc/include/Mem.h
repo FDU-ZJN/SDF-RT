@@ -113,6 +113,8 @@ void export_triangle_ddr_binary(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
 void export_sdf_local_mapping(const std::string& filename);
+// Packed runtime image consumed by software/sdf_loader/sdf_uram_loader.
+void export_sdf_uram_binary(const std::string& filename);
 void export_subgrid_sparse_mems(
     const std::string& block_dir_filename,
     const std::string& compact_meta_filename);

@@ -89,6 +89,8 @@ class TriangleMemMultiPort(
       val refillStatMon = Module(new TriCacheRefillStatsMonitor)
       val reqArbs = Seq.fill(numBanks)(Module(new RRArbiter(new BankReq, numPorts)))
       val allocArb = Module(new RRArbiter(new TriMemAllocReq(c, numBanks, GlobalConfig.triMemCacheSets, mshrIdW), numBanks))
+      val allocQ = Module(new Queue(new TriMemAllocReq(c, numBanks, GlobalConfig.triMemCacheSets, mshrIdW), 2))
+      val allocInFlight = RegInit(VecInit(Seq.fill(numBanks)(false.B)))
       val backend = Module(new TriangleMemRefillBackend(c, numBanks, mshrIdW))
       val mshrValid = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
       val mshrIssued = RegInit(VecInit(Seq.fill(mshrEntries)(false.B)))
@@ -104,8 +106,11 @@ class TriangleMemMultiPort(
       // Four 1152-bit lines are small enough to make the ownership explicit.
       val refillLines = Reg(Vec(mshrEntries,
         UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W)))
-      val refillReadValid = RegInit(false.B)
-      val refillReadId = Reg(UInt(mshrIdW.W))
+      val refillDispatchValid = RegInit(false.B)
+      val refillDispatchId = Reg(UInt(mshrIdW.W))
+      val refillDispatchBank = Reg(UInt(bankSelW.W))
+      val refillDispatchError = RegInit(false.B)
+      val refillDispatchData = Reg(UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W))
 
       backend.io.triangleBaseAddress := io.triangleBaseAddress
       io.dmaCmd <> backend.io.dmaCmd
@@ -126,74 +131,68 @@ class TriangleMemMultiPort(
         statMons(b).io.valid := banks(b).io.stat.valid
         statMons(b).io.hit := banks(b).io.stat.bits
         statMons(b).io.bank := b.U
-        allocArb.io.in(b) <> banks(b).io.allocReq
+        allocArb.io.in(b).valid := banks(b).io.allocReq.valid && !allocInFlight(b)
+        allocArb.io.in(b).bits := banks(b).io.allocReq.bits
+        banks(b).io.allocReq.ready := allocArb.io.in(b).ready && !allocInFlight(b)
 
-        val doneMatches = Wire(Vec(mshrEntries, Bool()))
-        for (i <- 0 until mshrEntries) {
-          doneMatches(i) := refillReadValid && mshrValid(i) && mshrDone(i) &&
-            !mshrDelivered(i) && refillReadId === i.U && mshrBank(i) === b.U
-        }
-        val doneSelOH = PriorityEncoderOH(doneMatches)
-        val doneSel = OHToUInt(doneSelOH)
-        banks(b).io.refillDone.valid := doneMatches.asUInt.orR
-        banks(b).io.refillDone.bits.id := doneSel
-        banks(b).io.refillDone.bits.data := Mux(mshrError(doneSel), 0.U, refillLines(doneSel))
-        when(banks(b).io.refillDone.fire) {
-          mshrDelivered(doneSel) := true.B
-        }
+        banks(b).io.refillDone.valid := refillDispatchValid && refillDispatchBank === b.U
+        banks(b).io.refillDone.bits.id := refillDispatchId
+        banks(b).io.refillDone.bits.data := Mux(refillDispatchError, 0.U, refillDispatchData)
+      }
 
-        val allocMatches = Wire(Vec(mshrEntries, Bool()))
-        for (i <- 0 until mshrEntries) {
-          allocMatches(i) := mshrValid(i) &&
-            mshrBank(i) === allocArb.io.out.bits.bank &&
-            mshrAddr(i) === allocArb.io.out.bits.addr
-        }
-        val allocSelOH = PriorityEncoderOH(allocMatches)
-        val allocSel = OHToUInt(allocSelOH)
-        val freeVec = VecInit((0 until mshrEntries).map(i => !mshrValid(i)))
-        val freeOH = PriorityEncoderOH(freeVec)
-        val freeValid = freeVec.asUInt.orR
-        val freeSel = OHToUInt(freeOH)
-        val bankGranted = allocArb.io.out.valid && allocArb.io.out.bits.bank === b.U
-        val bankMerge = allocMatches.asUInt.orR
-        val bankAllocValid = bankGranted && (bankMerge || freeValid)
-        banks(b).io.allocResp.valid := bankAllocValid
-        banks(b).io.allocResp.bits.id := Mux(bankMerge, allocSel, freeSel)
-        banks(b).io.allocResp.bits.merged := bankMerge
-
-        when(bankGranted && banks(b).io.allocResp.fire && !bankMerge) {
-          mshrValid(freeSel) := true.B
-          mshrIssued(freeSel) := false.B
-          mshrDone(freeSel) := false.B
-          mshrDelivered(freeSel) := false.B
-          mshrError(freeSel) := false.B
-          mshrBank(freeSel) := b.U
-          mshrAddr(freeSel) := allocArb.io.out.bits.addr
-        }
-
-        when(banks(b).io.release.valid) {
-          val relId = banks(b).io.release.bits.id
-          mshrValid(relId) := false.B
-          mshrIssued(relId) := false.B
-          mshrDone(relId) := false.B
-          mshrDelivered(relId) := false.B
-          mshrError(relId) := false.B
-          mshrAddr(relId) := 0.U
-        }
+      allocQ.io.enq <> allocArb.io.out
+      when(allocQ.io.enq.fire) {
+        allocInFlight(allocArb.io.out.bits.bank) := true.B
       }
 
       val mergeHits = Wire(Vec(mshrEntries, Bool()))
       for (i <- 0 until mshrEntries) {
         mergeHits(i) := mshrValid(i) &&
-          mshrBank(i) === allocArb.io.out.bits.bank &&
-          mshrAddr(i) === allocArb.io.out.bits.addr
+          mshrBank(i) === allocQ.io.deq.bits.bank &&
+          mshrAddr(i) === allocQ.io.deq.bits.addr
       }
+      val allocSelOH = PriorityEncoderOH(mergeHits)
+      val allocSel = OHToUInt(allocSelOH)
       val freeVec = VecInit((0 until mshrEntries).map(i => !mshrValid(i)))
       val freeOH = PriorityEncoderOH(freeVec)
+      val freeSel = OHToUInt(freeOH)
       val freeExists = freeVec.asUInt.orR
       val mergeExists = mergeHits.asUInt.orR
       val allocCanServe = mergeExists || freeExists
-      allocArb.io.out.ready := allocCanServe
+      allocQ.io.deq.ready := false.B
+      for (b <- 0 until numBanks) {
+        val selected = allocQ.io.deq.valid && allocQ.io.deq.bits.bank === b.U
+        val bankMerge = selected && mergeExists
+        banks(b).io.allocResp.valid := bankMerge || (selected && freeExists)
+        banks(b).io.allocResp.bits.id := Mux(mergeExists, allocSel, freeSel)
+        banks(b).io.allocResp.bits.merged := mergeExists
+        when(banks(b).io.allocResp.fire) {
+          allocInFlight(b) := false.B
+        }
+        when(selected && banks(b).io.allocResp.ready && allocCanServe) {
+          allocQ.io.deq.ready := true.B
+        }
+      }
+
+      val allocFire = allocQ.io.deq.fire
+      val allocId = Mux(mergeExists, allocSel, freeSel)
+      val allocNew = allocFire && !mergeExists
+      val allocBank = allocQ.io.deq.bits.bank
+      val allocAddr = allocQ.io.deq.bits.addr
+      val releaseForId = VecInit((0 until mshrEntries).map(i =>
+        VecInit(banks.map(bank => bank.io.release.valid && bank.io.release.bits.id === i.U)).asUInt.orR
+      ))
+      for (b <- 0 until numBanks) {
+        when(banks(b).io.release.valid) {
+          assert(mshrValid(banks(b).io.release.bits.id),
+            "TriangleMemMultiPort release hit invalid MSHR entry")
+        }
+        for (other <- b + 1 until numBanks) {
+          assert(!(banks(b).io.release.valid && banks(other).io.release.valid &&
+            banks(b).io.release.bits.id === banks(other).io.release.bits.id),
+            "TriangleMemMultiPort received conflicting releases for one MSHR")
+        }
+      }
 
       val issueCandidates = Wire(Vec(mshrEntries, Bool()))
       for (i <- 0 until mshrEntries) {
@@ -206,15 +205,10 @@ class TriangleMemMultiPort(
       backend.io.req.bits.bank := Mux(issueValid, mshrBank(issueSel), 0.U)
       backend.io.req.bits.addr := Mux(issueValid, mshrAddr(issueSel), 0.U)
       backend.io.req.bits.id := issueSel
-      when(backend.io.req.fire) {
-        mshrIssued(issueSel) := true.B
-      }
       backend.io.resp.ready := true.B
       when(backend.io.resp.fire) {
         val respId = backend.io.resp.bits.id
         assert(mshrValid(respId), "TriangleMemMultiPort refill response hit invalid MSHR entry")
-        mshrDone(respId) := true.B
-        mshrError(respId) := backend.io.resp.bits.error
       }
 
       when(backend.io.refillWrite.valid) {
@@ -223,13 +217,52 @@ class TriangleMemMultiPort(
       val refillReadyVec = VecInit((0 until mshrEntries).map(i =>
         mshrValid(i) && mshrDone(i) && !mshrDelivered(i)
       ))
-      val refillReadReq = !refillReadValid && refillReadyVec.asUInt.orR
-      when(refillReadReq) {
-        refillReadId := OHToUInt(PriorityEncoderOH(refillReadyVec))
-        refillReadValid := true.B
+      when(!refillDispatchValid && refillReadyVec.asUInt.orR) {
+        val dispatchId = OHToUInt(PriorityEncoderOH(refillReadyVec))
+        refillDispatchValid := true.B
+        refillDispatchId := dispatchId
+        refillDispatchBank := mshrBank(dispatchId)
+        refillDispatchError := mshrError(dispatchId)
+        refillDispatchData := refillLines(dispatchId)
       }
-      when(refillReadValid && VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR) {
-        refillReadValid := false.B
+      when(refillDispatchValid && VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR) {
+        refillDispatchValid := false.B
+      }
+
+      // All MSHR mutations are resolved per ID here.  A release has priority
+      // over any impossible concurrent completion/delivery and assertions
+      // below make such ownership violations visible in simulation.
+      val dispatchFire = refillDispatchValid && VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR
+      for (i <- 0 until mshrEntries) {
+        val isAlloc = allocNew && allocId === i.U
+        val isIssue = backend.io.req.fire && issueSel === i.U
+        val isResp = backend.io.resp.fire && backend.io.resp.bits.id === i.U
+        val isDispatch = dispatchFire && refillDispatchId === i.U
+        assert(!(releaseForId(i) && (isAlloc || isIssue || isResp || isDispatch)),
+          "TriangleMemMultiPort received conflicting updates for one MSHR")
+        when(releaseForId(i)) {
+          mshrValid(i) := false.B
+          mshrIssued(i) := false.B
+          mshrDone(i) := false.B
+          mshrDelivered(i) := false.B
+          mshrError(i) := false.B
+          mshrAddr(i) := 0.U
+        }.elsewhen(isAlloc) {
+          mshrValid(i) := true.B
+          mshrIssued(i) := false.B
+          mshrDone(i) := false.B
+          mshrDelivered(i) := false.B
+          mshrError(i) := false.B
+          mshrBank(i) := allocBank
+          mshrAddr(i) := allocAddr
+        }.otherwise {
+          when(isIssue) { mshrIssued(i) := true.B }
+          when(isResp) {
+            mshrDone(i) := true.B
+            mshrError(i) := backend.io.resp.bits.error
+          }
+          when(isDispatch) { mshrDelivered(i) := true.B }
+        }
       }
 
       val refillFire = backend.io.req.fire
@@ -381,4 +414,3 @@ class TriangleMemMultiPort(
       }
   }
 }
-

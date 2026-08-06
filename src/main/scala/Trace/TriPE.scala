@@ -63,25 +63,18 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
   private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
   private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultEarlyStopReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
+  private val clearDataPending = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
 
   private def clearContext(idx: Int): Unit = {
     ctxBusy(idx) := false.B
-    batchTriIdx(idx) := 0.U
-    batchTrisRemaining(idx) := 0.U
     batchInProgress(idx) := false.B
     resultCapturePending(idx) := false.B
-    bestT(idx) := missT
-    bestId(idx) := 0.U
-    hasHit(idx) := false.B
     hitStop(idx) := false.B
     triOutstanding(idx) := 0.U
-    resultHitReg(idx) := false.B
-    resultIdReg(idx) := 0.U
-    resultTReg(idx) := missT
-    resultMetaReg(idx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
     resultValidReg(idx) := false.B
     resultEarlyStopReg(idx) := false.B
     activeEpoch(idx) := !activeEpoch(idx)
+    clearDataPending(idx) := true.B
   }
 
   private val outSel = PriorityEncoder(resultValidReg.asUInt)
@@ -89,6 +82,20 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
   for (ctx <- 0 until ctxCount) {
     when(io.clear_ctx(ctx)) {
       clearContext(ctx)
+    }
+    when(clearDataPending(ctx) && !io.clear_ctx(ctx)) {
+      rayReg(ctx) := 0.U.asTypeOf(new Ray(c.cfg))
+      rayMetaReg(ctx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+      batchTriIdx(ctx) := 0.U
+      batchTrisRemaining(ctx) := 0.U
+      bestT(ctx) := missT
+      bestId(ctx) := 0.U
+      hasHit(ctx) := false.B
+      resultHitReg(ctx) := false.B
+      resultIdReg(ctx) := 0.U
+      resultTReg(ctx) := missT
+      resultMetaReg(ctx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
+      clearDataPending(ctx) := false.B
     }
   }
 

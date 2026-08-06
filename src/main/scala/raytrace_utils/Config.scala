@@ -146,6 +146,12 @@ object GlobalConfig {
   // codec expands them back to FP32 before they enter SdfPE.
   val sdfMemStoredDataWidth = 9
   val sdfMemDataWidth = 32         // FP32 after the SDF-memory read codec
+  val sdfMemGlobalRowSamples = 8
+  val sdfMemLocalRowSamples = 64
+  val sdfMemGlobalWriteStrideWords = 4
+  val sdfMemLocalWriteStrideWords = 32
+  val sdfMemLocalWriteBase = 0x10000
+  val sdfMemMappingWriteBase = 0xC0000
 
   // SDF memory internal banking (for synthesis BlackBox)
   val sdfMemBankDepth = 4096

@@ -46,23 +46,34 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
   for (w <- 0 until numWorkers) {
     val p = workers(w); p.io.ray_in := 0.U.asTypeOf(new Ray(c.cfg)); p.io.ray_meta := 0.U.asTypeOf(new RayMeta(c.addrWidth)); p.io.ray_ctx := 0.U; p.io.ray_valid := false.B
     p.io.tri_batch_in := 0.U.asTypeOf(new TriBatch(c.addrWidth)); p.io.tri_batch_ctx := 0.U; p.io.tri_batch_valid := false.B
-    val startArb = Module(new RRArbiter(new TraceContextDesc(c.cfg, c.addrWidth), contextsPerWorker))
-    val cmdArb = Module(new RRArbiter(new TriBatch(c.addrWidth), contextsPerWorker))
+    val startArb = Module(new RRArbiter(UInt(1.W), contextsPerWorker))
+    val cmdArb = Module(new RRArbiter(UInt(1.W), contextsPerWorker))
+    val startPayloads = VecInit((0 until contextsPerWorker).map(l => io.trace_start(w * contextsPerWorker + l).bits))
+    val cmdPayloads = VecInit((0 until contextsPerWorker).map(l => io.trace_cmd(w * contextsPerWorker + l).bits))
     for (l <- 0 until contextsPerWorker) {
       val ctx = w * contextsPerWorker + l
       startArb.io.in(l).valid := io.trace_start(ctx).valid && p.io.start_ready(l)
-      startArb.io.in(l).bits := io.trace_start(ctx).bits
+      startArb.io.in(l).bits := 1.U
       io.trace_start(ctx).ready := startArb.io.in(l).ready && p.io.start_ready(l)
       cmdArb.io.in(l).valid := io.trace_cmd(ctx).valid && p.io.output_ready(l)
-      cmdArb.io.in(l).bits := io.trace_cmd(ctx).bits
+      cmdArb.io.in(l).bits := 1.U
       io.trace_cmd(ctx).ready := cmdArb.io.in(l).ready && p.io.output_ready(l)
       p.io.dda_done(l) := io.trace_dda_done(ctx)
       p.io.clear_ctx(l) := false.B
     }
     startArb.io.out.ready := true.B
-    when(startArb.io.out.fire) { p.io.ray_in := startArb.io.out.bits.ray; p.io.ray_meta := startArb.io.out.bits.meta; p.io.ray_ctx := startArb.io.chosen; p.io.ray_valid := true.B }
+    when(startArb.io.out.fire) {
+      p.io.ray_in := startPayloads(startArb.io.chosen).ray
+      p.io.ray_meta := startPayloads(startArb.io.chosen).meta
+      p.io.ray_ctx := startArb.io.chosen
+      p.io.ray_valid := true.B
+    }
     cmdArb.io.out.ready := true.B
-    when(cmdArb.io.out.fire) { p.io.tri_batch_in := cmdArb.io.out.bits; p.io.tri_batch_ctx := cmdArb.io.chosen; p.io.tri_batch_valid := true.B }
+    when(cmdArb.io.out.fire) {
+      p.io.tri_batch_in := cmdPayloads(cmdArb.io.chosen)
+      p.io.tri_batch_ctx := cmdArb.io.chosen
+      p.io.tri_batch_valid := true.B
+    }
     mem.io.req(w) <> p.io.mem_req; p.io.mem_resp <> mem.io.resp(w)
     val arb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), contextsPerWorker))
     for (l <- 0 until contextsPerWorker) { arb.io.in(l).valid := resultValid(w)(l); arb.io.in(l).bits := results(w)(l) }

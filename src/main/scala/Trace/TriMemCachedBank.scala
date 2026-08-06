@@ -215,6 +215,7 @@ class TriangleMemCachedBank(
     (respQ.io.count + dataPipeBusy < respQueueDepth.U)
   val tagPipeCanAdvance = !tagPipeValid || Mux(lookupHit, dataCanIssue, missQ.io.enq.ready)
   val reqFire = reqQ.io.deq.valid && tagPipeCanAdvance && !refillAccept
+  val dataReadAttempt = tagPipeValid && dataCanIssue
   val dataReadFire = tagPipeValid && lookupHit && dataCanIssue
   val missEnqFire = tagPipeValid && !lookupHit && missQ.io.enq.ready
 
@@ -303,10 +304,10 @@ class TriangleMemCachedBank(
       tagReadEn(w) := reqFire
     }
     tagReadSetIdx := headSet
-    when(dataReadFire) {
+    when(dataReadAttempt) {
       dataReadSetIdx := lookupSet
       for (w <- 0 until ways) {
-        wayReadEn(w) := lookupHitWayOH(w)
+        wayReadEn(w) := true.B
       }
     }
 

@@ -8,8 +8,8 @@ import raytrace_utils.GlobalConfig
 
 class SdfMemWriteIO extends Bundle {
   val wr_en   = Output(Bool())
-  val wr_addr = Output(UInt(32.W))    // Full 32-bit address (auto-decoded)
-  val wr_data = Output(UInt(32.W))    // 32-bit wide: single entry write
+  val wr_addr = Output(UInt(32.W))    // Packed-loader 32-bit word address
+  val wr_data = Output(UInt(32.W))    // One packed row fragment or mapping pair
 }
 
 private class SdfMemDPICore(
@@ -161,7 +161,7 @@ class SdfMemDPI(
     val en = Input(Bool())
     val data = Output(UInt(dataWidth.W))
     val valid = Output(Bool())
-    // Simplified write port for PS initialization
+    // Packed row loader used by the PS before rendering starts.
     val wr = Flipped(new SdfMemWriteIO)
   })
 
