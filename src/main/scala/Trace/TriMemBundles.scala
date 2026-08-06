@@ -66,8 +66,17 @@ class TriMemAllocResp(val idWidth: Int) extends Bundle {
   val merged = Bool()
 }
 
-class TriMemRefillDone(val c: TriPeConfig, val idWidth: Int) extends Bundle {
+class TriMemRefillDone(
+  val c: TriPeConfig,
+  val idWidth: Int,
+  val numSets: Int = GlobalConfig.triMemCacheSets
+) extends Bundle {
+  private val setWidth = math.max(1, log2Ceil(numSets))
+  private val tagWidth = GlobalConfig.triMemAddrWidth - setWidth
   val id = UInt(idWidth.W)
+  val addr = UInt(GlobalConfig.triMemAddrWidth.W)
+  val set = UInt(setWidth.W)
+  val tag = UInt(tagWidth.W)
   val data = UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W)
 }
 

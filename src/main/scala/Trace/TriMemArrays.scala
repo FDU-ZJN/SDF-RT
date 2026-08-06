@@ -112,10 +112,14 @@ class TriCacheTagArray(
     ram.io.wr_data := io.wr_data
     io.rd_data := ram.io.rd_data
   } else {
-    val mem = SyncReadMem(depth, UInt(dataWidth.W))
-    io.rd_data := mem.read(io.rd_addr, io.rd_en)
+    val mem = RegInit(VecInit(Seq.fill(depth)(0.U(dataWidth.W))))
+    val rdData = Reg(UInt(dataWidth.W))
+    when(io.rd_en) {
+      rdData := mem(io.rd_addr)
+    }
+    io.rd_data := rdData
     when(io.wr_en) {
-      mem.write(io.wr_addr, io.wr_data)
+      mem(io.wr_addr) := io.wr_data
     }
   }
 }
@@ -187,4 +191,3 @@ class TriCacheRefillStatsMonitor extends BlackBox with HasBlackBoxInline {
       |""".stripMargin
   )
 }
-

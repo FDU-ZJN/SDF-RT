@@ -75,9 +75,17 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
       p.io.tri_batch_valid := true.B
     }
     mem.io.req(w) <> p.io.mem_req; p.io.mem_resp <> mem.io.resp(w)
-    val arb = Module(new RRArbiter(new TraceResult(c.cfg, c.addrWidth), contextsPerWorker))
-    for (l <- 0 until contextsPerWorker) { arb.io.in(l).valid := resultValid(w)(l); arb.io.in(l).bits := results(w)(l) }
-    io.result_out(w) <> arb.io.out
+    val arb = Module(new RRArbiter(UInt(1.W), contextsPerWorker))
+    for (l <- 0 until contextsPerWorker) {
+      arb.io.in(l).valid := resultValid(w)(l)
+      arb.io.in(l).bits := 1.U
+    }
+    io.result_out(w).valid := arb.io.out.valid
+    io.result_out(w).bits := Mux1H(
+      UIntToOH(arb.io.chosen, contextsPerWorker).asBools,
+      (0 until contextsPerWorker).map(l => results(w)(l))
+    )
+    arb.io.out.ready := io.result_out(w).ready
     io.trace_release(w).valid := arb.io.out.fire; io.trace_release(w).bits := (w * contextsPerWorker).U + arb.io.chosen
     io.trace_stop(w).valid := false.B; io.trace_stop(w).bits := 0.U
     // Capture a PE result exactly once.  TriPE keeps out_done asserted until

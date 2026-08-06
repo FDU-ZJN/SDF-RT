@@ -21,11 +21,13 @@ from pynq import MMIO, Overlay, allocate
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_DIR = SCRIPT_DIR.parent
-DEFAULT_BITSTREAM = REPO_DIR / "KV260_vivado/sdf-rt.runs/impl_1/design_1_wrapper.bit"
-DEFAULT_MEM_DIR = REPO_DIR / "csrc/vivado_mem/mem_killeroo_gold"
-DEFAULT_OUTPUT = REPO_DIR / "render_kv260.png"
-DEFAULT_RESULTS = REPO_DIR / "render_kv260_results.npz"
+# The deployment directory is self-contained: copy PYNQ/ to the board and
+# invoke this script from any working directory.
+DEFAULT_BITSTREAM = SCRIPT_DIR / "KV260.bit"
+DEFAULT_HWH = SCRIPT_DIR / "KV260.hwh"
+DEFAULT_MEM_DIR = SCRIPT_DIR / "mem"
+DEFAULT_OUTPUT = SCRIPT_DIR / "render_kv260.png"
+DEFAULT_RESULTS = SCRIPT_DIR / "render_kv260_results.npz"
 
 IP_NAME = "fpga_top_0"
 DMA_NAME = "ray_dma"
@@ -364,7 +366,10 @@ def save_hit_image(hit, hit_t_bits, width, height, path):
 def main():
     parser = argparse.ArgumentParser(description="Run SDF-RT on a KV260 with PYNQ")
     parser.add_argument("--bitstream", default=str(DEFAULT_BITSTREAM))
-    parser.add_argument("--hwh", default=None, help="Vivado design_1.hwh; copied next to a .bit if needed")
+    parser.add_argument(
+        "--hwh", default=str(DEFAULT_HWH),
+        help="Vivado HWH metadata; the packaged default matches KV260.bit",
+    )
     parser.add_argument("--ip-name", default=IP_NAME)
     parser.add_argument("--dma-name", default=DMA_NAME)
     parser.add_argument("--mem-dir", default=str(DEFAULT_MEM_DIR))

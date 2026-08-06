@@ -109,6 +109,9 @@ class TriangleMemMultiPort(
       val refillDispatchValid = RegInit(false.B)
       val refillDispatchId = Reg(UInt(mshrIdW.W))
       val refillDispatchBank = Reg(UInt(bankSelW.W))
+      val refillDispatchAddr = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
+      val refillDispatchSet = Reg(UInt(log2Ceil(GlobalConfig.triMemCacheSets).W))
+      val refillDispatchTag = Reg(UInt((GlobalConfig.triMemAddrWidth - log2Ceil(GlobalConfig.triMemCacheSets)).W))
       val refillDispatchError = RegInit(false.B)
       val refillDispatchData = Reg(UInt((c.cacheLineTriangles * 9 * c.cfg.totalWidth).W))
 
@@ -137,6 +140,9 @@ class TriangleMemMultiPort(
 
         banks(b).io.refillDone.valid := refillDispatchValid && refillDispatchBank === b.U
         banks(b).io.refillDone.bits.id := refillDispatchId
+        banks(b).io.refillDone.bits.addr := refillDispatchAddr
+        banks(b).io.refillDone.bits.set := refillDispatchSet
+        banks(b).io.refillDone.bits.tag := refillDispatchTag
         banks(b).io.refillDone.bits.data := Mux(refillDispatchError, 0.U, refillDispatchData)
       }
 
@@ -218,12 +224,21 @@ class TriangleMemMultiPort(
         mshrValid(i) && mshrDone(i) && !mshrDelivered(i)
       ))
       when(!refillDispatchValid && refillReadyVec.asUInt.orR) {
-        val dispatchId = OHToUInt(PriorityEncoderOH(refillReadyVec))
+        val dispatchOH = PriorityEncoderOH(refillReadyVec)
+        val dispatchId = OHToUInt(dispatchOH)
+        val dispatchAddr = Mux1H(dispatchOH, mshrAddr)
         refillDispatchValid := true.B
         refillDispatchId := dispatchId
-        refillDispatchBank := mshrBank(dispatchId)
-        refillDispatchError := mshrError(dispatchId)
-        refillDispatchData := refillLines(dispatchId)
+        refillDispatchBank := Mux1H(dispatchOH, mshrBank)
+        refillDispatchAddr := dispatchAddr
+        refillDispatchSet := dispatchAddr(log2Ceil(GlobalConfig.triMemCacheSets) - 1, 0)
+        refillDispatchTag := dispatchAddr(
+          GlobalConfig.triMemAddrWidth - 1,
+          log2Ceil(GlobalConfig.triMemCacheSets)
+        )
+        refillDispatchError := Mux1H(dispatchOH, mshrError)
+        // The wide line is selected only after the small one-hot arbitration.
+        refillDispatchData := Mux1H(dispatchOH, refillLines)
       }
       when(refillDispatchValid && VecInit(banks.map(_.io.refillDone.fire)).asUInt.orR) {
         refillDispatchValid := false.B

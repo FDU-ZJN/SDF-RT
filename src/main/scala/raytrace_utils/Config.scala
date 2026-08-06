@@ -71,7 +71,7 @@ object GlobalConfig {
   val triMemDpiLatency = 3
   val triMemCacheHitLatency = 1
   val triMemMissPenalty = 60
-  val sdfMemDpiLatency = 3
+  val sdfMemDpiLatency = 4
   val subgridMemDpiLatency = 3
   val fsqrtLatency = 11
   val fmulLatency = 4

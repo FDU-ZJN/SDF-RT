@@ -147,7 +147,10 @@ class TriangleMemRefillBackend(
 
       val globalTriangle = (io.req.bits.addr << bankSelW) | io.req.bits.bank
       val blockBytes = dmaLineBits / 8
-      val byteAddress = io.triangleBaseAddress + (globalTriangle * blockBytes.U)
+      require(blockBytes == 144,
+        s"DataMover address generation requires a 144-byte cache line, got $blockBytes")
+      val blockOffset = (globalTriangle << 7) +& (globalTriangle << 4)
+      val byteAddress = io.triangleBaseAddress + blockOffset
       // PG022 Full command, 40-bit address: RSVD, TAG, SADDR, EOF/DSA/TYPE/BTT.
       val commandLow = Cat(0.U(1.W), 1.U(1.W), 0.U(6.W), 1.U(1.W), blockBytes.U(23.W))
       val commandTag = io.req.bits.id.pad(dmaTagWidth)
@@ -241,4 +244,3 @@ class TriangleMemRefillBackend(
       io.outstandingCount := PopCount(idBusy)
   }
 }
-

@@ -17,6 +17,9 @@ class ContextManager(
   private val contextBits = GlobalConfig.backendContextBits
   private val traceLanes = GlobalConfig.traceNumWorkers * 2 // legacy width
   private val numWorkers = GlobalConfig.traceNumWorkers
+  private val contextsPerWorker = GlobalConfig.traceContextsPerWorker
+  require(contextCount == numWorkers * contextsPerWorker,
+    "Backend contexts must be evenly and statically owned by trace workers")
 
   val io = IO(new Bundle {
     val init_alloc = Decoupled(UInt(contextBits.W))
@@ -59,8 +62,9 @@ class ContextManager(
   val releaseNow = Wire(Vec(contextCount, Bool()))
   val initCommit = Wire(Vec(contextCount, Bool()))
   for (ctx <- 0 until contextCount) {
-    stopNow(ctx) := io.trace_stop.map(s => s.valid && s.bits === ctx.U).reduce(_ || _)
-    releaseNow(ctx) := io.trace_release.map(r => r.valid && r.bits === ctx.U).reduce(_ || _)
+    val owner = ctx / contextsPerWorker
+    stopNow(ctx) := io.trace_stop(owner).valid && io.trace_stop(owner).bits === ctx.U
+    releaseNow(ctx) := io.trace_release(owner).valid && io.trace_release(owner).bits === ctx.U
     initCommit(ctx) := io.context_in.fire && io.context_in.bits.contextId === ctx.U
     cmdFifos(ctx).io.enq.valid := false.B
     cmdFifos(ctx).io.enq.bits := io.step_out.bits.tri
@@ -143,26 +147,29 @@ class ContextManager(
   io.step_out.ready := true.B
   val responseFire = io.step_out.fire
   val responseId = io.step_out.bits.state.contextId
-  val responseLive = responseFire && !resultAccepted(responseId) &&
-    !traceStopped(responseId) && !stopNow(responseId) && !releaseNow(responseId)
-  when(responseFire) {
-    assert(stepInFlight(responseId), "DDA step returned for a context with no request in flight")
-    stepInFlight(responseId) := false.B
-    when(resultAccepted(responseId)) {
-      active(responseId) := false.B
-      claimed(responseId) := false.B
-      ddaDone(responseId) := false.B
-      traceStopped(responseId) := false.B
-      resultAccepted(responseId) := false.B
-    }.elsewhen(responseLive) {
-      traversalTable(responseId) := io.step_out.bits.state
-      when(io.step_out.bits.done) {
-        ddaDone(responseId) := true.B
+  val responseMatches = Wire(Vec(contextCount, Bool()))
+  val responseLive = Wire(Vec(contextCount, Bool()))
+  for (ctx <- 0 until contextCount) {
+    responseMatches(ctx) := responseFire && responseId === ctx.U
+    responseLive(ctx) := responseMatches(ctx) && !resultAccepted(ctx) &&
+      !traceStopped(ctx) && !stopNow(ctx) && !releaseNow(ctx)
+    when(responseMatches(ctx)) {
+      assert(stepInFlight(ctx), "DDA step returned for a context with no request in flight")
+      stepInFlight(ctx) := false.B
+      when(resultAccepted(ctx)) {
+        active(ctx) := false.B
+        claimed(ctx) := false.B
+        ddaDone(ctx) := false.B
+        traceStopped(ctx) := false.B
+        resultAccepted(ctx) := false.B
+      }.elsewhen(responseLive(ctx)) {
+        traversalTable(ctx) := io.step_out.bits.state
+        when(io.step_out.bits.done) {
+          ddaDone(ctx) := true.B
+        }
       }
     }
-  }
-  for (ctx <- 0 until contextCount) {
-    val enqueue = responseLive && responseId === ctx.U &&
+    val enqueue = responseLive(ctx) &&
       !io.step_out.bits.done && io.step_out.bits.emitCmd
     cmdFifos(ctx).io.enq.valid := enqueue
     when(enqueue) {
@@ -214,7 +221,7 @@ class ContextManager(
     when(releaseNow(ctx)) {
       when(active(ctx) && claimed(ctx)) {
         resultAccepted(ctx) := true.B
-        val returningNow = responseFire && responseId === ctx.U
+        val returningNow = responseMatches(ctx)
         when(!stepInFlight(ctx) || returningNow) {
           active(ctx) := false.B
           claimed(ctx) := false.B

@@ -42,6 +42,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
       val line = BigInt("3f8000004000000040400000", 16) | (BigInt("4080000040a0000040c00000", 16) << 288)
       dut.io.refillDone.bits.id.poke(0.U)
+      dut.io.refillDone.bits.addr.poke(3.U)
+      dut.io.refillDone.bits.set.poke(3.U)
+      dut.io.refillDone.bits.tag.poke(0.U)
       dut.io.refillDone.bits.data.poke(line.U)
       dut.io.refillDone.valid.poke(true.B)
       while (!dut.io.refillDone.ready.peekBoolean()) {
@@ -128,6 +131,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
       val line = BigInt("3f8000004000000040400000", 16) | (BigInt("4080000040a0000040c00000", 16) << 288)
       dut.io.refillDone.bits.id.poke(0.U)
+      dut.io.refillDone.bits.addr.poke(2.U)
+      dut.io.refillDone.bits.set.poke(2.U)
+      dut.io.refillDone.bits.tag.poke(0.U)
       dut.io.refillDone.bits.data.poke(line.U)
       dut.io.refillDone.valid.poke(true.B)
       while (!dut.io.refillDone.ready.peekBoolean()) {
@@ -181,8 +187,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.allocResp.valid.poke(false.B)
       }
 
-      def refill(id: Int, data: BigInt): Unit = {
+      def refill(id: Int, addr: Int, data: BigInt): Unit = {
         dut.io.refillDone.bits.id.poke(id.U)
+        dut.io.refillDone.bits.addr.poke(addr.U)
+        dut.io.refillDone.bits.set.poke((addr & 1).U)
+        dut.io.refillDone.bits.tag.poke((addr >> 1).U)
         dut.io.refillDone.bits.data.poke(data.U)
         dut.io.refillDone.valid.poke(true.B)
         while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()
@@ -195,7 +204,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
 
       request(addr = 0, tag = 1)
       allocate(expectedAddr = 0, id = 0)
-      refill(id = 0, data = lineA)
+      refill(id = 0, addr = 0, data = lineA)
       while (!dut.io.resp.valid.peekBoolean()) dut.clock.step()
       dut.io.resp.bits.resp.block.tris(0).v0.x.expect(lineA.U)
       dut.clock.step()
@@ -210,6 +219,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       }
 
       dut.io.refillDone.bits.id.poke(1.U)
+      dut.io.refillDone.bits.addr.poke(2.U)
+      dut.io.refillDone.bits.set.poke(0.U)
+      dut.io.refillDone.bits.tag.poke(1.U)
       dut.io.refillDone.bits.data.poke(lineB.U)
       dut.io.refillDone.valid.poke(true.B)
       dut.clock.step()
@@ -218,7 +230,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       // The parked request must be replayed as an addr-0 miss, never returned
       // with addr-1's newly written data.
       allocate(expectedAddr = 0, id = 0)
-      refill(id = 0, data = lineA)
+      refill(id = 0, addr = 0, data = lineA)
 
       var sawTag3 = false
       for (_ <- 0 until 20 if !sawTag3) {
@@ -265,8 +277,11 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.allocResp.valid.poke(false.B)
       }
 
-      def refill(id: Int, data: BigInt): Unit = {
+      def refill(id: Int, addr: Int, data: BigInt): Unit = {
         dut.io.refillDone.bits.id.poke(id.U)
+        dut.io.refillDone.bits.addr.poke(addr.U)
+        dut.io.refillDone.bits.set.poke((addr & 1).U)
+        dut.io.refillDone.bits.tag.poke((addr >> 1).U)
         dut.io.refillDone.bits.data.poke(data.U)
         dut.io.refillDone.valid.poke(true.B)
         while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()
@@ -281,7 +296,7 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       // (set 0, tag 1).
       request(addr = 1, tag = 1)
       allocate(expectedAddr = 1, id = 0)
-      refill(id = 0, data = lineSet1)
+      refill(id = 0, addr = 1, data = lineSet1)
       while (!dut.io.resp.valid.peekBoolean()) dut.clock.step()
       dut.clock.step()
 
@@ -308,6 +323,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.clock.step()
       }
       dut.io.refillDone.bits.id.poke(1.U)
+      dut.io.refillDone.bits.addr.poke(2.U)
+      dut.io.refillDone.bits.set.poke(0.U)
+      dut.io.refillDone.bits.tag.poke(1.U)
       dut.io.refillDone.bits.data.poke(lineSet0.U)
       dut.io.refillDone.valid.poke(true.B)
       dut.clock.step()
@@ -351,6 +369,9 @@ class TriCacheBankTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.allocResp.valid.poke(false.B)
 
       dut.io.refillDone.bits.id.poke(0.U)
+      dut.io.refillDone.bits.addr.poke(3.U)
+      dut.io.refillDone.bits.set.poke(1.U)
+      dut.io.refillDone.bits.tag.poke(1.U)
       dut.io.refillDone.bits.data.poke(BigInt("3f800000", 16).U)
       dut.io.refillDone.valid.poke(true.B)
       while (!dut.io.refillDone.ready.peekBoolean()) dut.clock.step()

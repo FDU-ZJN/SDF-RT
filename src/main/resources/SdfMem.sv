@@ -2,7 +2,7 @@ module SdfMem #(
   parameter int ADDR_WIDTH = 32,
   parameter int DATA_WIDTH = 32,
   parameter int GLOBAL_ADDR_BITS = 15,
-  parameter int LATENCY = 3,
+  parameter int LATENCY = 4,
   parameter int GLOBAL_SDF_SIZE = 32768,
   parameter int LOCAL_CELL_COUNT = 16384,
   parameter int LOCAL_PER_CELL = 64,
@@ -14,8 +14,8 @@ module SdfMem #(
   input logic wr_en, input logic [31:0] wr_addr, wr_data,
   output logic [DATA_WIDTH-1:0] data, output logic valid
 );
-  localparam int FIXED_LATENCY = 3;
-  localparam int URAM_READ_LATENCY = FIXED_LATENCY - 1;
+  localparam int FIXED_LATENCY = 4;
+  localparam int URAM_READ_LATENCY = FIXED_LATENCY - 2;
   // wr_addr is a 32-bit *word* address in the packed loader aperture:
   //   global: 0x00000 + row*4, slots 0..2, slot 3 is the row commit
   //   local : 0x10000 + row*32, slots 0..17, slot 31 is the row commit
@@ -63,6 +63,8 @@ module SdfMem #(
   logic [15:0] mapping_we;
   logic has_local;
   logic [CELL_INDEX_BITS-1:0] cell_idx;
+  logic [CELL_INDEX_BITS-1:0] cell_idx_q;
+  logic [$clog2(GLOBAL_ROWS)-1:0] global_row_q;
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:MAPPING_PACK_BITS+1];
   assign mapping_wr_addr = (wr_addr - MAPPING_WRITE_BASE) >> MAPPING_PACK_BITS;
   assign mapping_lane = wr_addr - MAPPING_WRITE_BASE;
@@ -93,7 +95,7 @@ module SdfMem #(
   );
   logic [31:0] mapping_word;
   always_comb begin
-    case (globalIdx[2:1])
+    case (global_idx_q[2:1])
       2'd0: mapping_word = mapping_dout[31:0];
       2'd1: mapping_word = mapping_dout[63:32];
       2'd2: mapping_word = mapping_dout[95:64];
@@ -101,7 +103,7 @@ module SdfMem #(
     endcase
   end
   logic [15:0] mapping_entry;
-  assign mapping_entry = globalIdx[0] ? mapping_word[31:16] : mapping_word[15:0];
+  assign mapping_entry = global_idx_q[0] ? mapping_word[31:16] : mapping_word[15:0];
   assign has_local = mapping_entry[15];
   assign cell_idx = mapping_entry[CELL_INDEX_BITS-1:0];
 
@@ -137,8 +139,11 @@ module SdfMem #(
       global_stage_row <= '0; local_stage_row <= '0;
       global_stage_mask <= '0; local_stage_mask <= '0;
       global_idx_q <= 0; local_idx_q <= 0;
+      cell_idx_q <= 0; global_row_q <= 0;
     end else begin
       global_idx_q <= globalIdx; local_idx_q <= localIdx;
+      cell_idx_q <= cell_idx;
+      global_row_q <= global_idx_q[GLOBAL_ADDR_BITS-1:3];
       if (wr_en && wr_addr >= GLOBAL_WRITE_BASE &&
           wr_addr < GLOBAL_WRITE_BASE + GLOBAL_ROWS * GLOBAL_WRITE_STRIDE &&
           global_write_offset[1:0] != GLOBAL_WRITE_COMMIT) begin
@@ -181,8 +186,8 @@ module SdfMem #(
   assign local_we = local_write_commit;
   assign global_dina = global_stage[71:0];
   assign local_dina = local_stage;
-  assign global_uram_addr = global_write_commit ? global_write_row : global_idx_q[GLOBAL_ADDR_BITS-1:3];
-  assign local_uram_addr = local_write_commit ? local_write_row : cell_idx;
+  assign global_uram_addr = global_write_commit ? global_write_row : global_row_q;
+  assign local_uram_addr = local_write_commit ? local_write_row : cell_idx_q;
 
   xpm_memory_spram #(
     .ADDR_WIDTH_A($clog2(GLOBAL_ROWS)), .MEMORY_SIZE(GLOBAL_ROWS * 72),
@@ -208,33 +213,39 @@ module SdfMem #(
     .sbiterra(), .dbiterra()
   );
 
-  logic [2:0] valid_pipe;
-  logic [1:0] local_pipe, global_ok_pipe, local_ok_pipe;
-  logic [LOCAL_LANE_W-1:0] lane_pipe [0:1];
-  logic [ADDR_WIDTH-1:0] global_idx_pipe [0:1];
+  logic [3:0] valid_pipe;
+  logic [2:0] local_pipe, global_ok_pipe, local_ok_pipe;
+  logic [LOCAL_LANE_W-1:0] lane_pipe [0:2];
+  logic [ADDR_WIDTH-1:0] global_idx_pipe [0:2];
   always_ff @(posedge clk) begin
     if (reset) begin
       valid_pipe <= 0; local_pipe <= 0; global_ok_pipe <= 0; local_ok_pipe <= 0;
-      lane_pipe[0] <= 0; lane_pipe[1] <= 0;
-      global_idx_pipe[0] <= 0; global_idx_pipe[1] <= 0;
+      lane_pipe[0] <= 0; lane_pipe[1] <= 0; lane_pipe[2] <= 0;
+      global_idx_pipe[0] <= 0; global_idx_pipe[1] <= 0; global_idx_pipe[2] <= 0;
     end else begin
-      valid_pipe[0] <= en; valid_pipe[1] <= valid_pipe[0]; valid_pipe[2] <= valid_pipe[1];
+      valid_pipe[0] <= en; valid_pipe[1] <= valid_pipe[0];
+      valid_pipe[2] <= valid_pipe[1]; valid_pipe[3] <= valid_pipe[2];
       local_pipe[0] <= has_local; local_pipe[1] <= local_pipe[0];
+      local_pipe[2] <= local_pipe[1];
       global_ok_pipe[0] <= global_idx_q < GLOBAL_SDF_SIZE;
       global_ok_pipe[1] <= global_ok_pipe[0];
+      global_ok_pipe[2] <= global_ok_pipe[1];
       local_ok_pipe[0] <= has_local && (cell_idx < LOCAL_CELL_COUNT) &&
                           (local_idx_q < LOCAL_PER_CELL);
       local_ok_pipe[1] <= local_ok_pipe[0];
+      local_ok_pipe[2] <= local_ok_pipe[1];
       lane_pipe[0] <= local_idx_q[LOCAL_LANE_W-1:0]; lane_pipe[1] <= lane_pipe[0];
+      lane_pipe[2] <= lane_pipe[1];
       global_idx_pipe[0] <= global_idx_q; global_idx_pipe[1] <= global_idx_pipe[0];
+      global_idx_pipe[2] <= global_idx_pipe[1];
     end
   end
-  assign valid = valid_pipe[2];
+  assign valid = valid_pipe[3];
   always_comb begin
     data = 0;
-    if (local_pipe[1] && local_ok_pipe[1])
-      data = sdf9_to_fp32(local_dout[lane_pipe[1] * 9 +: 9]);
-    else if (!local_pipe[1] && global_ok_pipe[1])
-      data = sdf9_to_fp32(global_dout[global_idx_pipe[1][2:0] * 9 +: 9]);
+    if (local_pipe[2] && local_ok_pipe[2])
+      data = sdf9_to_fp32(local_dout[lane_pipe[2] * 9 +: 9]);
+    else if (!local_pipe[2] && global_ok_pipe[2])
+      data = sdf9_to_fp32(global_dout[global_idx_pipe[2][2:0] * 9 +: 9]);
   end
 endmodule

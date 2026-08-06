@@ -45,7 +45,7 @@ class Frontend(c: TriPeConfig = TriPeConfig()) extends Module {
     pipe = true,
     useSyncReadMem = true
   ))
-  val missArb = Module(new RRArbiter(new RenderResult(c.cfg, c.addrWidth), 2))
+  val missArb = Module(new RRArbiter(UInt(1.W), 2))
 
   // A context is reserved before Init.  Track that reservation directly
   // rather than recomputing active_count + initMissQ.count in the ingress
@@ -111,9 +111,18 @@ class Frontend(c: TriPeConfig = TriPeConfig()) extends Module {
 
   sdf.io.dda_context_id <> io.backend_alloc
   io.context_out <> sdf.io.dda_context_out
-  missArb.io.in(0) <> initMissQ.io.deq
-  missArb.io.in(1) <> sdfMissQ.io.deq
-  io.miss_out <> missArb.io.out
+  missArb.io.in(0).valid := initMissQ.io.deq.valid
+  missArb.io.in(0).bits := 0.U
+  initMissQ.io.deq.ready := missArb.io.in(0).ready
+  missArb.io.in(1).valid := sdfMissQ.io.deq.valid
+  missArb.io.in(1).bits := 1.U
+  sdfMissQ.io.deq.ready := missArb.io.in(1).ready
+  io.miss_out.valid := missArb.io.out.valid
+  io.miss_out.bits := Mux1H(
+    UIntToOH(missArb.io.out.bits, 2).asBools,
+    Seq(initMissQ.io.deq.bits, sdfMissQ.io.deq.bits)
+  )
+  missArb.io.out.ready := io.miss_out.ready
 
   val capacityReleaseCount = PopCount(Seq(
     initMissQ.io.deq.fire,
