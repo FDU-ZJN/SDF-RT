@@ -8,7 +8,7 @@ namespace host_renderer {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kFovDegrees = 38.0f;
+constexpr float kFovDegrees = 60.0f;
 constexpr float kRoughness = 0.06f;
 constexpr float kExposure = 1.1f;
 constexpr Vec3 kGoldF0 = {1.0f, 0.766f, 0.336f};

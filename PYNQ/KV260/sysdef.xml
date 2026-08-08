@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<Project Version="1" Minor="7" DIGEST="">
+	<TOOL_VERSION Version="2024.2"/>
+	<MODE Name="Post-Synthesis"/>
+	<SYSTEMINFO BOARD="xilinx.com:kv260_som:1.4" PART="xck26-sfvc784-2LV-c" ARCH="zynquplus" PACKAGE="sfvc784" DEVICE="xck26" SPEED="-2LV" LUT="117120" FF="234240" BRAM="144" DSP="1248"/>
+	<PART Name="xck26-sfvc784-2LV-c">
+		<SSIT IS_SSIT="0"/>
+		<NUM_OF_SLRS Value="1"/>
+	</PART>
+	<HIERARCHY Name="design_1_wrapper"/>
+	<File Type="HW_HANDOFF" Name="design_1.hwh" src_db="design_1.hwdef" DESIGN_HIERARCHY="design_1_i" BD_TYPE="DEFAULT_BD">
+	</File>
+	<File Type="BDA" Name="design_1.bda" src_db="design_1.hwdef">
+	</File>
+	<File Type="PS_FSBL_INIT" Name="psu_init.c" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="PS_FSBL_INIT" Name="psu_init.h" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="PS_FSBL_INIT_GPL" Name="psu_init_gpl.c" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="PS_FSBL_INIT_GPL" Name="psu_init_gpl.h" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="PS_INIT_HELP" Name="psu_init.html" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="PS_XMD_INIT" Name="psu_init.tcl" src_db="design_1_zynq_ultra_ps_e_0_0.hwdef">
+	</File>
+	<File Type="HW_HANDOFF" Name="design_1_axi_smc_1_0.hwh" src_db="design_1_axi_smc_1_0.hwdef" DESIGN_HIERARCHY="design_1_i/axi_smc_1/inst" BD_TYPE="SCOPED_BD">
+	</File>
+	<File Type="HW_HANDOFF" Name="design_1_axi_smc_0.hwh" src_db="design_1_axi_smc_0.hwdef" DESIGN_HIERARCHY="design_1_i/axi_smc/inst" BD_TYPE="SCOPED_BD">
+	</File>
+	<File Type="BIT" Name="KV260.bit" src_db="temp.hdf">
+	</File>
+	<USEDRESOURCES LUT="87209" FF="100888" BRAM="115" DSP="629"/>
+	<DESIGN_DATA Type="rm">
+		<DESIGN_IDS DESIGN_ID="3518502791" PARENT_ID="0" NODE_ID="0"/>
+	</DESIGN_DATA>
+</Project>
+

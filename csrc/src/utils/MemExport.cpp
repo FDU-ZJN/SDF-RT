@@ -119,6 +119,16 @@ static uint32_t crc32Ieee(const uint8_t* data, size_t size) {
 }
 
 namespace {
+constexpr uint32_t kSdfImageVersion = 1;
+constexpr uint32_t kSdfHeaderBytes = 64;
+constexpr uint32_t kSdfGlobalRows = 4096;
+constexpr uint32_t kSdfMappingWords = 16384;
+constexpr uint32_t kSdfMaxLocalCells = rt::config::kSDFLocalCellCapacity;
+constexpr uint32_t kSdfGlobalSamplesPerRow = 8;
+constexpr uint32_t kSdfLocalSamplesPerRow = 64;
+constexpr uint32_t kSdfGlobalWordsPerRow = 3;
+constexpr uint32_t kSdfLocalWordsPerRow = 18;
+
 std::array<float, 9> triangleHardwareValues(const Triangle& tri) {
     return {
         tri.v0[0], tri.v0[1], tri.v0[2],
@@ -178,6 +188,107 @@ SparseSubgridImage buildSparseSubgridImage() {
     image.compactMeta.resize(rt::config::kSubgridCompactMetaDepth, 0U);
     return image;
 }
+
+std::vector<uint16_t> buildGlobalSdf9Samples() {
+    const size_t I = global_sdf_shape[0];
+    const size_t J = global_sdf_shape[1];
+    const size_t K = global_sdf_shape[2];
+    const size_t totalEntries = I * J * K;
+    if (totalEntries != kSdfGlobalRows * kSdfGlobalSamplesPerRow) {
+        throw std::runtime_error(
+            "FP9 SDF export requires exactly 32768 global samples for the current hardware");
+    }
+
+    std::vector<uint16_t> samples;
+    samples.reserve(totalEntries);
+    for (size_t globalIdx = 0; globalIdx < totalEntries; ++globalIdx) {
+        const int gi = static_cast<int>(globalIdx % I);
+        const int gj = static_cast<int>((globalIdx / I) % J);
+        const int gk = static_cast<int>(globalIdx / (I * J));
+        samples.push_back(floatToSdf9(get_global_sdf(gi, gj, gk)));
+    }
+    return samples;
+}
+
+std::vector<uint16_t> buildLocalSdf9Samples() {
+    const size_t localCells = local_sdf_shape[0];
+    const size_t LI = local_sdf_shape[1];
+    const size_t LJ = local_sdf_shape[2];
+    const size_t LK = local_sdf_shape[3];
+    const size_t localPerCell = LI * LJ * LK;
+    if (localCells > kSdfMaxLocalCells || localPerCell != kSdfLocalSamplesPerRow) {
+        throw std::runtime_error(
+            "FP9 SDF export requires at most 16384 local 4x4x4 cells for the current hardware");
+    }
+    if (num_cells != localCells) {
+        throw std::runtime_error("SDF local cell count does not match the mapping keys");
+    }
+
+    std::vector<uint16_t> samples;
+    samples.reserve(localCells * localPerCell);
+    for (size_t cell = 0; cell < localCells; ++cell) {
+        for (size_t localIdx = 0; localIdx < localPerCell; ++localIdx) {
+            const int li = static_cast<int>(localIdx % LI);
+            const int lj = static_cast<int>((localIdx / LI) % LJ);
+            const int lk = static_cast<int>(localIdx / (LI * LJ));
+            samples.push_back(floatToSdf9(get_local_sdf(static_cast<int>(cell), li, lj, lk)));
+        }
+    }
+    return samples;
+}
+
+std::vector<uint32_t> buildSdfLocalMappingWords() {
+    const size_t I = global_sdf_shape[0];
+    const size_t J = global_sdf_shape[1];
+    const size_t K = global_sdf_shape[2];
+    const size_t totalGlobals = I * J * K;
+    if (totalGlobals != kSdfMappingWords * 2U) {
+        throw std::runtime_error(
+            "FP9 SDF mapping export requires exactly 32768 global cells for the current hardware");
+    }
+    if (num_cells > kSdfMaxLocalCells) {
+        throw std::runtime_error("SDF local cell count exceeds the 14-bit hardware mapping field");
+    }
+    if (local_sdf_keys_flat.size() < num_cells * 3U) {
+        throw std::runtime_error("SDF local mapping key array is shorter than num_cells * 3");
+    }
+
+    std::vector<int> mapping(totalGlobals, -1);
+    for (size_t cell = 0; cell < num_cells; ++cell) {
+        const int gi = local_sdf_keys_flat[cell * 3 + 0];
+        const int gj = local_sdf_keys_flat[cell * 3 + 1];
+        const int gk = local_sdf_keys_flat[cell * 3 + 2];
+        if (gi < 0 || gj < 0 || gk < 0 ||
+            static_cast<size_t>(gi) >= I ||
+            static_cast<size_t>(gj) >= J ||
+            static_cast<size_t>(gk) >= K) {
+            throw std::runtime_error("SDF local mapping key is outside the global grid");
+        }
+        const size_t globalIdx =
+            static_cast<size_t>(gi) +
+            static_cast<size_t>(gj) * I +
+            static_cast<size_t>(gk) * I * J;
+        if (mapping[globalIdx] >= 0) {
+            throw std::runtime_error("duplicate SDF local mapping key for one global cell");
+        }
+        mapping[globalIdx] = static_cast<int>(cell);
+    }
+
+    std::vector<uint32_t> words;
+    words.reserve(kSdfMappingWords);
+    for (size_t base = 0; base < totalGlobals; base += 2) {
+        uint32_t packed = 0;
+        for (size_t lane = 0; lane < 2; ++lane) {
+            const int cell = mapping[base + lane];
+            const uint16_t entry = cell >= 0
+                ? static_cast<uint16_t>(0x8000u | static_cast<unsigned>(cell))
+                : 0;
+            packed |= static_cast<uint32_t>(entry) << (lane * 16);
+        }
+        words.push_back(packed);
+    }
+    return words;
+}
 } // namespace
 
 static inline size_t triBankDepthForExport(size_t triCount, int numPEs, int numBanks) {
@@ -199,7 +310,7 @@ void export_triangle_mem(const std::string& filename, int numPEs, int numBanks, 
     out << "// Format: Each line = 1 bank-local address as one contiguous "
         << (numPEs * 9 * 32) << "-bit hex word" << std::endl;
     out << "// Per triangle: {v0.xyz, e1.xyz=v1-v0, e2.xyz=v2-v0}" << std::endl;
-    out << "// Bit layout matches COE/XPM: lane high-to-low, float[8:0] high-to-low" << std::endl;
+    out << "// Bit layout matches XPM $readmemh: lane high-to-low, float[8:0] high-to-low" << std::endl;
     out << "// Total triangles: " << tri_store.size() << std::endl;
     out << "// Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
     out << std::endl;
@@ -274,6 +385,70 @@ void export_triangle_ddr_binary(const std::string& filename) {
               << tri_store.size() << " triangles, " << triBatchSize << " tri/block) to " << filename << std::endl;
 }
 
+void export_pynq_render_data(const std::string& filename) {
+    if (triangles.empty() || triangle_vertex_normals.size() != triangles.size()) {
+        throw std::runtime_error("PYNQ render export requires triangle vertex normals for every triangle");
+    }
+    if (triangles_compact_src_ids.empty()) {
+        throw std::runtime_error("PYNQ render export requires compact triangle source IDs");
+    }
+    for (uint32_t srcId : triangles_compact_src_ids) {
+        if (static_cast<size_t>(srcId) >= triangles.size()) {
+            throw std::runtime_error("PYNQ render export found a compact source ID outside triangle storage");
+        }
+    }
+
+    std::vector<uint8_t> payload;
+    const uint32_t triangleCount = static_cast<uint32_t>(triangles.size());
+    const uint32_t compactCount = static_cast<uint32_t>(triangles_compact_src_ids.size());
+    payload.reserve(
+        static_cast<size_t>(triangleCount) * 18U * sizeof(float) +
+        static_cast<size_t>(compactCount) * sizeof(uint32_t));
+
+    auto appendFloat = [&](float value) {
+        appendU32Le(payload, floatToRawU32(value));
+    };
+
+    for (const Triangle& tri : triangles) {
+        for (float value : tri.v0) appendFloat(value);
+        for (float value : tri.v1) appendFloat(value);
+        for (float value : tri.v2) appendFloat(value);
+    }
+    for (const TriangleVertexNormals& vertexNormals : triangle_vertex_normals) {
+        for (const auto& normal : vertexNormals) {
+            for (float value : normal) appendFloat(value);
+        }
+    }
+    for (uint32_t srcId : triangles_compact_src_ids) {
+        appendU32Le(payload, srcId);
+    }
+
+    std::vector<uint8_t> header = {'P', 'Y', 'R', 'T', 'R', 'N', 'D', 'R'};
+    appendU32Le(header, 1U);
+    appendU32Le(header, 64U);
+    appendU32Le(header, triangleCount);
+    appendU32Le(header, compactCount);
+    appendU32Le(header, static_cast<uint32_t>(payload.size()));
+    appendU32Le(header, crc32Ieee(payload.data(), payload.size()));
+    while (header.size() < 64U) {
+        appendU32Le(header, 0U);
+    }
+
+    std::ofstream out(filename, std::ios::binary);
+    if (!out.is_open()) {
+        throw std::runtime_error("failed to open PYNQ render data " + filename);
+    }
+    out.write(reinterpret_cast<const char*>(header.data()), header.size());
+    out.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    if (!out) {
+        throw std::runtime_error("failed to write PYNQ render data " + filename);
+    }
+    std::cout << "[MemExport] Exported PYNQ render data to " << filename
+              << " (triangles=" << triangleCount
+              << ", compact_ids=" << compactCount
+              << ", payload_bytes=" << payload.size() << ")" << std::endl;
+}
+
 // Export normal memory to .mem file
 void export_normal_mem(const std::string& filename) {
     const auto& normal_store = normals_compact.empty() ? normals : normals_compact;
@@ -305,9 +480,12 @@ void export_normal_mem(const std::string& filename) {
 
 // Export SDF memory to .mem files
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename) {
+    const std::vector<uint16_t> globalSamples = buildGlobalSdf9Samples();
+    const std::vector<uint16_t> localSamples = buildLocalSdf9Samples();
+
     // Export global SDF
-    // SdfMem packs eight custom E2M6 values into every 72-bit global row and
-    // 64 values into every 576-bit local row (one local mapping subcell).
+    // SdfMem packs eight custom FP9 E2M6 values into every 72-bit global row
+    // and 64 values into every 576-bit local row (one local mapping subcell).
     {
         std::ofstream out(global_filename);
         if (!out.is_open()) {
@@ -323,24 +501,13 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         size_t I = global_sdf_shape[0];
         size_t J = global_sdf_shape[1];
         size_t K = global_sdf_shape[2];
-        size_t totalEntries = I * J * K;
-
-        std::vector<uint16_t> packedSamples;
-        packedSamples.reserve(totalEntries);
-        for (size_t global_idx = 0; global_idx < totalEntries; ++global_idx) {
-            const int gi = static_cast<int>(global_idx % I);
-            const int gj = static_cast<int>((global_idx / I) % J);
-            const int gk = static_cast<int>(global_idx / (I * J));
-
-            float value = get_global_sdf(gi, gj, gk);
-
-            packedSamples.push_back(floatToSdf9(value));
-        }
-        writePackedSdf9Rows(out, packedSamples, 8);
+        writePackedSdf9Rows(out, globalSamples, kSdfGlobalSamplesPerRow);
 
         out.close();
         std::cout << "[MemExport] Exported global SDF (" << I << "x" << J << "x" << K
-                  << " = " << totalEntries << " entries) to " << global_filename << std::endl;
+                  << " = " << globalSamples.size()
+                  << " FP9 entries, " << kSdfGlobalRows
+                  << " packed rows) to " << global_filename << std::endl;
     }
 
     // Export local SDF
@@ -360,128 +527,52 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         size_t LI = local_sdf_shape[1];
         size_t LJ = local_sdf_shape[2];
         size_t LK = local_sdf_shape[3];
-
-        uint32_t entryCount = 0;
-        size_t localPerCell = LI * LJ * LK;
-        std::vector<uint16_t> packedSamples;
-        packedSamples.reserve(C * localPerCell);
-        for (size_t cell_idx = 0; cell_idx < C; ++cell_idx) {
-            for (size_t local_idx = 0; local_idx < localPerCell; ++local_idx) {
-                const int li = static_cast<int>(local_idx % LI);
-                const int lj = static_cast<int>((local_idx / LI) % LJ);
-                const int lk = static_cast<int>(local_idx / (LI * LJ));
-
-                float value = get_local_sdf(static_cast<int>(cell_idx), li, lj, lk);
-
-                packedSamples.push_back(floatToSdf9(value));
-                ++entryCount;
-            }
-        }
-        // Each local row is one 4x4x4 subcell: 9 * 64 = 576 bits.
-        writePackedSdf9Rows(out, packedSamples, 64);
+        writePackedSdf9Rows(out, localSamples, kSdfLocalSamplesPerRow);
 
         out.close();
         std::cout << "[MemExport] Exported local SDF (" << C << " cells x " 
-                  << LI << "x" << LJ << "x" << LK << " = " << entryCount 
-                  << " entries) to " << local_filename << std::endl;
+                  << LI << "x" << LJ << "x" << LK << " = " << localSamples.size()
+                  << " FP9 entries, " << C << " packed rows) to "
+                  << local_filename << std::endl;
     }
 }
 
 void export_sdf_uram_binary(const std::string& filename) {
-    constexpr uint32_t kVersion = 1;
-    constexpr uint32_t kHeaderBytes = 64;
-    constexpr uint32_t kExpectedGlobalRows = 4096;
-    constexpr uint32_t kExpectedMappingWords = 16384;
-    constexpr uint32_t kMaxLocalCells = 16384;
-    constexpr uint32_t kGlobalWordsPerRow = 3;
-    constexpr uint32_t kLocalWordsPerRow = 18;
-
-    const size_t globalEntries =
-        global_sdf_shape[0] * global_sdf_shape[1] * global_sdf_shape[2];
-    const size_t localCells = local_sdf_shape[0];
-    const size_t localPerCell =
-        local_sdf_shape[1] * local_sdf_shape[2] * local_sdf_shape[3];
-    if (globalEntries != kExpectedGlobalRows * 8U)
-        throw std::runtime_error("SDF URAM image requires exactly 32768 global samples");
-    if (localCells > kMaxLocalCells || localPerCell != 64)
-        throw std::runtime_error("SDF URAM image requires at most 16384 local 4x4x4 cells");
-    if (num_cells != localCells)
-        throw std::runtime_error("SDF local cell count does not match the mapping keys");
-
-    std::vector<uint16_t> globalSamples;
-    globalSamples.reserve(globalEntries);
-    const size_t I = global_sdf_shape[0];
-    const size_t J = global_sdf_shape[1];
-    for (size_t globalIdx = 0; globalIdx < globalEntries; ++globalIdx) {
-        const int gi = static_cast<int>(globalIdx % I);
-        const int gj = static_cast<int>((globalIdx / I) % J);
-        const int gk = static_cast<int>(globalIdx / (I * J));
-        globalSamples.push_back(floatToSdf9(get_global_sdf(gi, gj, gk)));
-    }
-
-    std::vector<uint16_t> localSamples;
-    localSamples.reserve(localCells * localPerCell);
-    const size_t LI = local_sdf_shape[1];
-    const size_t LJ = local_sdf_shape[2];
-    for (size_t cell = 0; cell < localCells; ++cell) {
-        for (size_t localIdx = 0; localIdx < localPerCell; ++localIdx) {
-            const int li = static_cast<int>(localIdx % LI);
-            const int lj = static_cast<int>((localIdx / LI) % LJ);
-            const int lk = static_cast<int>(localIdx / (LI * LJ));
-            localSamples.push_back(floatToSdf9(
-                get_local_sdf(static_cast<int>(cell), li, lj, lk)));
-        }
-    }
+    const std::vector<uint16_t> globalSamples = buildGlobalSdf9Samples();
+    const std::vector<uint16_t> localSamples = buildLocalSdf9Samples();
+    const std::vector<uint32_t> mappingWords = buildSdfLocalMappingWords();
 
     std::vector<uint8_t> payload;
-    const uint32_t localRows = static_cast<uint32_t>(localCells);
+    const uint32_t localRows = static_cast<uint32_t>(local_sdf_shape[0]);
     const uint32_t payloadWords =
-        kExpectedGlobalRows * kGlobalWordsPerRow +
-        localRows * kLocalWordsPerRow + kExpectedMappingWords;
+        kSdfGlobalRows * kSdfGlobalWordsPerRow +
+        localRows * kSdfLocalWordsPerRow + kSdfMappingWords;
     payload.reserve(static_cast<size_t>(payloadWords) * 4U);
-    for (size_t base = 0; base < globalSamples.size(); base += 8)
-        appendPackedSdf9Row(payload, globalSamples, base, 8, kGlobalWordsPerRow);
-    for (size_t base = 0; base < localSamples.size(); base += 64)
-        appendPackedSdf9Row(payload, localSamples, base, 64, kLocalWordsPerRow);
-
-    std::vector<int> mapping(globalEntries, -1);
-    for (size_t cell = 0; cell < num_cells; ++cell) {
-        const size_t gi = static_cast<size_t>(local_sdf_keys_flat[cell * 3 + 0]);
-        const size_t gj = static_cast<size_t>(local_sdf_keys_flat[cell * 3 + 1]);
-        const size_t gk = static_cast<size_t>(local_sdf_keys_flat[cell * 3 + 2]);
-        const size_t globalIdx = gi + gj * I + gk * I * J;
-        if (globalIdx >= globalEntries)
-            throw std::runtime_error("SDF local mapping key is outside the global grid");
-        mapping[globalIdx] = static_cast<int>(cell);
-    }
-    for (size_t base = 0; base < globalEntries; base += 2) {
-        uint32_t packed = 0;
-        for (size_t lane = 0; lane < 2; ++lane) {
-            const int cell = mapping[base + lane];
-            const uint16_t entry = cell >= 0
-                ? static_cast<uint16_t>(0x8000u | static_cast<unsigned>(cell))
-                : 0;
-            packed |= static_cast<uint32_t>(entry) << (lane * 16);
-        }
-        appendU32Le(payload, packed);
-    }
+    for (size_t base = 0; base < globalSamples.size(); base += kSdfGlobalSamplesPerRow)
+        appendPackedSdf9Row(
+            payload, globalSamples, base, kSdfGlobalSamplesPerRow, kSdfGlobalWordsPerRow);
+    for (size_t base = 0; base < localSamples.size(); base += kSdfLocalSamplesPerRow)
+        appendPackedSdf9Row(
+            payload, localSamples, base, kSdfLocalSamplesPerRow, kSdfLocalWordsPerRow);
+    for (uint32_t word : mappingWords)
+        appendU32Le(payload, word);
     if (payload.size() != static_cast<size_t>(payloadWords) * 4U)
         throw std::runtime_error("internal SDF URAM payload size mismatch");
 
     std::vector<uint8_t> header = {'S', 'D', 'F', '9', 'I', 'M', 'G', 0};
-    appendU32Le(header, kVersion);
-    appendU32Le(header, kHeaderBytes);
-    appendU32Le(header, kExpectedGlobalRows);
+    appendU32Le(header, kSdfImageVersion);
+    appendU32Le(header, kSdfHeaderBytes);
+    appendU32Le(header, kSdfGlobalRows);
     appendU32Le(header, localRows);
-    appendU32Le(header, kExpectedMappingWords);
-    appendU32Le(header, static_cast<uint32_t>(localCells));
-    appendU32Le(header, kGlobalWordsPerRow);
-    appendU32Le(header, kLocalWordsPerRow);
+    appendU32Le(header, kSdfMappingWords);
+    appendU32Le(header, localRows);
+    appendU32Le(header, kSdfGlobalWordsPerRow);
+    appendU32Le(header, kSdfLocalWordsPerRow);
     appendU32Le(header, payloadWords);
     appendU32Le(header, crc32Ieee(payload.data(), payload.size()));
     for (unsigned i = 0; i < 4; ++i)
         appendU32Le(header, 0);
-    if (header.size() != kHeaderBytes)
+    if (header.size() != kSdfHeaderBytes)
         throw std::runtime_error("internal SDF URAM header size mismatch");
 
     std::ofstream out(filename, std::ios::binary);
@@ -492,9 +583,9 @@ void export_sdf_uram_binary(const std::string& filename) {
     if (!out)
         throw std::runtime_error("failed to write SDF URAM image " + filename);
     std::cout << "[MemExport] Exported SDF URAM image to " << filename
-              << " (global_rows=" << kExpectedGlobalRows
+              << " (global_rows=" << kSdfGlobalRows
               << ", local_rows=" << localRows
-              << ", mapping_words=" << kExpectedMappingWords
+              << ", mapping_words=" << kSdfMappingWords
               << ", payload_bytes=" << payload.size() << ")" << std::endl;
 }
 
@@ -504,6 +595,7 @@ void export_sdf_local_mapping(const std::string& filename) {
     size_t J = global_sdf_shape[1];
     size_t K = global_sdf_shape[2];
     size_t totalGlobals = I * J * K;
+    const std::vector<uint32_t> mappingWords = buildSdfLocalMappingWords();
 
     std::ofstream out(filename);
     if (!out.is_open()) {
@@ -517,32 +609,15 @@ void export_sdf_local_mapping(const std::string& filename) {
     out << "// Linear $readmemh/XPM format: one 32-bit word per address" << std::endl;
     out << std::endl;
 
-    // Build mapping: globalLinear -> cell_idx
-    std::vector<int> mapping(totalGlobals, -1);
-    for (size_t c = 0; c < num_cells; ++c) {
-        int gi = local_sdf_keys_flat[c * 3 + 0];
-        int gj = local_sdf_keys_flat[c * 3 + 1];
-        int gk = local_sdf_keys_flat[c * 3 + 2];
-        size_t globalLinear = gi + gj * J + gk * J * K;
-        mapping[globalLinear] = static_cast<int>(c);
-    }
-
-    for (size_t base = 0; base < totalGlobals; base += 2) {
-        uint32_t packed = 0;
-        for (size_t lane = 0; lane < 2 && base + lane < totalGlobals; ++lane) {
-            const int cellIdx = mapping[base + lane];
-            const uint16_t entry = cellIdx >= 0
-                ? static_cast<uint16_t>((1u << 15) | (cellIdx & 0x3FFF))
-                : 0;
-            packed |= static_cast<uint32_t>(entry) << (lane * 16);
-        }
+    for (uint32_t packed : mappingWords) {
         out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
             << packed << std::endl;
     }
 
     out.close();
     std::cout << "[MemExport] Exported local mapping (" << totalGlobals
-              << " entries) to " << filename << std::endl;
+              << " entries, " << mappingWords.size()
+              << " packed words) to " << filename << std::endl;
 }
 
 void export_subgrid_sparse_mems(
@@ -581,227 +656,12 @@ void export_subgrid_sparse_mems(
               << "%" << std::endl;
 }
 
-// Export triangle memory to COE file (for Vivado BRAM initialization)
-void export_triangle_mem_coe(const std::string& filename, int numPEs, int numBanks, int bankId) {
-    const auto& tri_store = triangles_compact.empty() ? triangles : triangles_compact;
-
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
-    }
-
-    // COE file format for Xilinx block RAM
-    out << "; Triangle Memory COE File for Vivado" << std::endl;
-    out << "; Format: bank-local numPEs * {v0.xyz,e1.xyz,e2.xyz} * 32 bits" << std::endl;
-    out << "; Total triangles: " << tri_store.size() << std::endl;
-    out << "; Bank count: " << numBanks << " | Bank id: " << bankId << std::endl;
-    out << "memory_initialization_radix=16;" << std::endl;
-    out << "memory_initialization_vector=" << std::endl;
-
-    const int triBatchSize = numPEs;
-    const int bitsPerEntry = 32; // float is 32 bits
-    const int bitsPerAddress = triBatchSize * 9 * bitsPerEntry;
-    const size_t bankDepth = triBankDepthForExport(tri_store.size(), numPEs, numBanks);
-
-    for (size_t addrIdx = 0; addrIdx < bankDepth; ++addrIdx) {
-        const size_t baseIdx = (addrIdx * static_cast<size_t>(numBanks) + static_cast<size_t>(bankId)) *
-                               static_cast<size_t>(triBatchSize);
-        std::string hexLine;
-
-        for (int lane = triBatchSize - 1; lane >= 0; --lane) {
-            const size_t triIdx = baseIdx + static_cast<size_t>(lane);
-            if (triIdx >= tri_store.size()) {
-                for (int f = 8; f >= 0; --f) {
-                    hexLine += "00000000";
-                }
-            } else {
-                const Triangle& tri = tri_store[triIdx];
-                const auto values = triangleHardwareValues(tri);
-
-                for (int f = 8; f >= 0; --f) {
-                    hexLine += u32ToHex(floatToRawU32(values[f]));
-                }
-            }
-        }
-
-        const bool isLast = (addrIdx + 1 == bankDepth);
-        out << hexLine << (isLast ? "" : ",") << std::endl;
-    }
-
-    out << ";" << std::endl;
-    out.close();
-    
-    std::cout << "[MemExport] Exported " << tri_store.size()
-              << " triangles to COE " << filename << " (" << bankDepth
-              << " bank addresses, bank " << bankId << "/" << numBanks
-              << ", " << bitsPerAddress << "-bit width)" << std::endl;
-}
-
-// Export normal memory to COE file (for Vivado BRAM initialization)
-void export_normal_mem_coe(const std::string& filename) {
-    const auto& normal_store = normals_compact.empty() ? normals : normals_compact;
-
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
-    }
-
-    // COE file format for Xilinx block RAM
-    out << "; Normal Memory COE File for Vivado" << std::endl;
-    out << "; Format: 96-bit width (3 floats x 32 bits per normal)" << std::endl;
-    out << "; Total normals: " << normal_store.size() << std::endl;
-    out << "memory_initialization_radix=16;" << std::endl;
-    out << "memory_initialization_vector=" << std::endl;
-
-    const int bitsPerNormal = 96; // 3 * 32 bits
-
-    for (size_t idx = 0; idx < normal_store.size(); ++idx) {
-        const std::array<float, 3>& n = normal_store[idx];
-
-        // 倒序拼接以匹配Verilog的字节序：COE最左侧对应BRAM最高位
-        std::string hexLine = u32ToHex(floatToRawU32(n[2])) +
-                             u32ToHex(floatToRawU32(n[1])) +
-                             u32ToHex(floatToRawU32(n[0]));
-
-        out << hexLine << (idx + 1 == normal_store.size() ? "" : ",") << std::endl;
-    }
-
-    out << ";" << std::endl;
-    out.close();
-    
-    std::cout << "[MemExport] Exported " << normal_store.size()
-              << " normals to COE " << filename << " (" << bitsPerNormal << "-bit width)" << std::endl;
-}
-
-// Export normal ID mapping to COE file (for Vivado BRAM initialization)
-// Maps flat index (0..13093) to original 8552 vector IDs
-void export_normal_id_mapping_coe(const std::string& filename) {
-    // Use compact layout if available
-    if (!subgrid_layout_ready || triangles_compact_src_ids.empty()) {
-        std::cerr << "[MemExport] Warning: Compact layout not ready, skipping normal ID mapping export" << std::endl;
-        return;
-    }
-
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
-    }
-
-    // COE file format for Xilinx block RAM
-    out << "; Normal ID Mapping COE File for Vivado" << std::endl;
-    out << "; Format: 32-bit width per entry (original vector ID in 0..8551)" << std::endl;
-    out << "; Total entries: " << triangles_compact_src_ids.size() << " (flat index 0..13093)" << std::endl;
-    out << "memory_initialization_radix=16;" << std::endl;
-    out << "memory_initialization_vector=" << std::endl;
-
-    const int bitsPerEntry = 32;
-
-    for (size_t idx = 0; idx < triangles_compact_src_ids.size(); ++idx) {
-        uint32_t originalTriId = triangles_compact_src_ids[idx];
-
-        std::ostringstream oss;
-        oss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << originalTriId;
-        out << oss.str() << (idx + 1 == triangles_compact_src_ids.size() ? "" : ",") << std::endl;
-    }
-
-    out << ";" << std::endl;
-    out.close();
-    
-    std::cout << "[MemExport] Exported normal ID mapping to COE " << filename << " (" 
-              << triangles_compact_src_ids.size() << " entries, " << bitsPerEntry << "-bit width)" << std::endl;
-}
-
-// Export SDF Local Mapping to COE file (for Vivado BRAM initialization)
-void export_sdf_local_mapping_coe(const std::string& filename) {
-    size_t I = global_sdf_shape[0];
-    size_t J = global_sdf_shape[1];
-    size_t K = global_sdf_shape[2];
-    size_t totalGlobals = I * J * K;
-
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        std::cerr << "[MemExport] Failed to open " << filename << std::endl;
-        return;
-    }
-
-    // Build mapping: globalLinear -> cell_idx
-    std::vector<int> mapping(totalGlobals, -1);
-    for (size_t c = 0; c < num_cells; ++c) {
-        int gi = local_sdf_keys_flat[c * 3 + 0];
-        int gj = local_sdf_keys_flat[c * 3 + 1];
-        int gk = local_sdf_keys_flat[c * 3 + 2];
-        size_t globalLinear = gi + gj * J + gk * J * K;
-        mapping[globalLinear] = static_cast<int>(c);
-    }
-
-    // COE file format for Xilinx block RAM
-    out << "; SDF Local Mapping COE File for Vivado" << std::endl;
-    out << "; Format: 32-bit rows, odd entry in [31:16], even entry in [15:0]" << std::endl;
-    out << "; Total rows: " << ((totalGlobals + 1) / 2) << std::endl;
-    out << "memory_initialization_radix=16;" << std::endl;
-    out << "memory_initialization_vector=" << std::endl;
-
-    const int bitsPerEntry = 32;
-    const size_t rowCount = (totalGlobals + 1) / 2;
-    for (size_t row = 0; row < rowCount; ++row) {
-        uint32_t packed = 0;
-        for (size_t lane = 0; lane < 2 && row * 2 + lane < totalGlobals; ++lane) {
-            const int cellIdx = mapping[row * 2 + lane];
-            const uint16_t entry = cellIdx >= 0
-                ? static_cast<uint16_t>((1u << 15) | (cellIdx & 0x3FFF))
-                : 0;
-            packed |= static_cast<uint32_t>(entry) << (lane * 16);
-        }
-        std::ostringstream oss;
-        oss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << packed;
-        out << oss.str() << (row + 1 == rowCount ? "" : ",") << std::endl;
-    }
-
-    out << ";" << std::endl;
-    out.close();
-    
-    std::cout << "[MemExport] Exported local mapping to COE " << filename << " (" 
-              << totalGlobals << " entries, " << bitsPerEntry << "-bit width)" << std::endl;
-}
-
-void export_subgrid_sparse_mems_coe(
-    const std::string& block_dir_filename,
-    const std::string& compact_meta_filename) {
-    const SparseSubgridImage image = buildSparseSubgridImage();
-    std::ofstream dirOut(block_dir_filename);
-    std::ofstream metaOut(compact_meta_filename);
-    if (!dirOut.is_open() || !metaOut.is_open()) {
-        throw std::runtime_error("failed to open sparse subgrid .coe output files");
-    }
-
-    dirOut << "; Sparse Subgrid Block Directory [47]=0 [46:32]=base [31:0]=mask\n"
-           << "memory_initialization_radix=16;\nmemory_initialization_vector=\n";
-    for (size_t i = 0; i < image.blockDirectory.size(); ++i) {
-        dirOut << std::hex << std::uppercase << std::setfill('0') << std::setw(12)
-               << image.blockDirectory[i]
-               << (i + 1 == image.blockDirectory.size() ? ";\n" : ",\n");
-    }
-
-    metaOut << "; Compact Subgrid Meta [31:10]=triStart [9:0]=triCount\n"
-            << "memory_initialization_radix=16;\nmemory_initialization_vector=\n";
-    for (size_t i = 0; i < image.compactMeta.size(); ++i) {
-        metaOut << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
-                << image.compactMeta[i]
-                << (i + 1 == image.compactMeta.size() ? ";\n" : ",\n");
-    }
-
-    std::cout << "[MemExport] Exported sparse subgrid COE files: "
-              << block_dir_filename << ", " << compact_meta_filename << std::endl;
-}
-
 // Master export function
 void export_all_mems_for_vivado(const std::string& output_dir) {
     std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
     std::filesystem::create_directories(output_dir);
     export_triangle_ddr_binary(output_dir + "/triangle_ddr.bin");
+    export_pynq_render_data(output_dir + "/pynq_render_data.bin");
 
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem(
@@ -817,21 +677,6 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_subgrid_sparse_mems(
         output_dir + "/subgrid_block_dir.mem",
         output_dir + "/subgrid_compact_meta.mem");
-
-    // Export COE files for FPGA BRAM initialization
-    for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
-        export_triangle_mem_coe(
-            output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".coe",
-            rt::config::kTriCacheLineTriangles,
-            rt::config::kTriNumBanks,
-            bank);
-    }
-    export_normal_mem_coe(output_dir + "/normal_mem.coe");
-    export_normal_id_mapping_coe(output_dir + "/normal_id_mapping.coe");
-    export_sdf_local_mapping_coe(output_dir + "/sdf_local_mapping.coe");
-    export_subgrid_sparse_mems_coe(
-        output_dir + "/subgrid_block_dir.coe",
-        output_dir + "/subgrid_compact_meta.coe");
 
     std::cout << "========== Memory Export Complete ==========\n" << std::endl;
 }
