@@ -7,18 +7,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_BITSTREAM = SCRIPT_DIR / "KV260.bit"
 DEFAULT_HWH = SCRIPT_DIR / "KV260.hwh"
 DEFAULT_MEM_DIR = SCRIPT_DIR / "mem"
-DEFAULT_OUTPUT = SCRIPT_DIR / "render_kv260.png"
-DEFAULT_RESULTS = SCRIPT_DIR / "render_kv260_results.npz"
 
 IP_NAME = "fpga_top_0"
 DMA_NAME = "ray_dma"
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 CAMERA_FOV_DEGREES = 60.0
-MAX_BATCH_RAYS = 65536
+# ray_dma simple mode has C_SG_LENGTH_WIDTH=26, so its MM2S BTT register can
+# transfer at most 2^26 - 1 bytes.  Rays are 32 bytes, making this the input
+# side limit.  A 1920x1080 frame (2,073,600 rays) consequently fits in one
+# DMA transaction and in the 21-bit RayID field.
+MAX_BATCH_RAYS = ((1 << 26) - 1) // 32
 DEFAULT_SHADE_CHUNK_PIXELS = 65536
 RAY_BYTES = 32
 RESULT_BYTES = 16
+RAY_ID_BITS = 21
 RESULT_BUFFER_COUNT = 2
 TRACE_BLOCK_SIZE = 4
 CORE_REQUIRED_RANGE = 0x400000

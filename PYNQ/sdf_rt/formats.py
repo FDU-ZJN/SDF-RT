@@ -13,6 +13,7 @@ from .config import (
     MAPPING_WORDS,
     RENDER_DATA_MAGIC,
     RENDER_DATA_VERSION,
+    RAY_ID_BITS,
 )
 
 
@@ -80,13 +81,14 @@ def pack_ray_records(destination_words, origins, directions, count):
     ox, oy, oz = origin_bits[:, 0], origin_bits[:, 1], origin_bits[:, 2]
     dx, dy, dz = dir_bits[:, 0], dir_bits[:, 1], dir_bits[:, 2]
     words = destination_words[:count]
-    words[:, 0] = ray_id | (dz << np.uint32(16))
-    words[:, 1] = (dz >> np.uint32(16)) | (dy << np.uint32(16))
-    words[:, 2] = (dy >> np.uint32(16)) | (dx << np.uint32(16))
-    words[:, 3] = (dx >> np.uint32(16)) | (oz << np.uint32(16))
-    words[:, 4] = (oz >> np.uint32(16)) | (oy << np.uint32(16))
-    words[:, 5] = (oy >> np.uint32(16)) | (ox << np.uint32(16))
-    words[:, 6] = ox >> np.uint32(16)
+    shift = np.uint32(RAY_ID_BITS)
+    words[:, 0] = ray_id | (dz << shift)
+    words[:, 1] = (dz >> np.uint32(32 - RAY_ID_BITS)) | (dy << shift)
+    words[:, 2] = (dy >> np.uint32(32 - RAY_ID_BITS)) | (dx << shift)
+    words[:, 3] = (dx >> np.uint32(32 - RAY_ID_BITS)) | (oz << shift)
+    words[:, 4] = (oz >> np.uint32(32 - RAY_ID_BITS)) | (oy << shift)
+    words[:, 5] = (oy >> np.uint32(32 - RAY_ID_BITS)) | (ox << shift)
+    words[:, 6] = ox >> np.uint32(32 - RAY_ID_BITS)
     words[:, 7] = 0
 
 
@@ -95,19 +97,26 @@ def rewrite_batch_ray_ids(records, batch_rays):
     count = records.shape[0]
     for start in range(0, count, batch_rays):
         end = min(start + batch_rays, count)
-        records[start:end, 0] = (records[start:end, 0] & np.uint32(0xFFFF0000)) | np.arange(
+        ray_id_mask = np.uint32((1 << RAY_ID_BITS) - 1)
+        records[start:end, 0] = (records[start:end, 0] & np.uint32(0xFFFFFFFF ^ int(ray_id_mask))) | np.arange(
             end - start,
             dtype=np.uint32,
         )
 
 
 def decode_result_records(words, count):
-    """Decode {47'b0, hitT, hitId, hit, rayId} from 128-bit records."""
+    """Decode {42'b0, hitT, hitId, hit, rayId} from 128-bit records."""
     records = np.asarray(words[:count], dtype=np.uint32)
-    ray_id = (records[:, 0] & np.uint32(0xFFFF)).astype(np.uint32)
-    hit = ((records[:, 0] >> np.uint32(16)) & np.uint32(1)).astype(bool)
-    hit_id = ((records[:, 0] >> np.uint32(17)) & np.uint32(0x7FFF)) | ((records[:, 1] & np.uint32(0x1FFFF)) << np.uint32(15))
-    hit_t_bits = ((records[:, 1] >> np.uint32(17)) & np.uint32(0x7FFF)) | ((records[:, 2] & np.uint32(0x1FFFF)) << np.uint32(15))
+    ray_mask = np.uint32((1 << RAY_ID_BITS) - 1)
+    carry_mask = np.uint32((1 << (RAY_ID_BITS + 1)) - 1)
+    ray_id = (records[:, 0] & ray_mask).astype(np.uint32)
+    hit = ((records[:, 0] >> np.uint32(RAY_ID_BITS)) & np.uint32(1)).astype(bool)
+    hit_id = (records[:, 0] >> np.uint32(RAY_ID_BITS + 1)) | (
+        (records[:, 1] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
+    )
+    hit_t_bits = (records[:, 1] >> np.uint32(RAY_ID_BITS + 1)) | (
+        (records[:, 2] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
+    )
     return ray_id, hit, hit_id.astype(np.uint32), hit_t_bits.astype(np.uint32)
 
 

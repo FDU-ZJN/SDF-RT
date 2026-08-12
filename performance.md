@@ -42,7 +42,7 @@ still required to have multiple DMA batches in flight.
 
 - Camera rays are precomputed at initialization.
 - The complete frame ray buffer is prepacked in contiguous CMA memory.
-- Batch-local 16-bit RayIDs are remapped through the precomputed tiled raster
+- Batch-local 21-bit RayIDs are remapped through the precomputed tiled raster
   order.
 - SDF global/local/mapping initialization follows the current wrapper/RTL
   address layout and uses the FP9 memory exports.
@@ -95,8 +95,37 @@ The implementation is present in both deployment copies:
 
 ## Measurements
 
-All measurements use `batch-rays=65536` and the existing KV260 deployment.
-The 1920x1080 frame contains 2,073,600 rays and is divided into 32 batches.
+### DisplayPort Runtime
+
+- Removed PNG, depth-preview, and `results.npz` writes from the deployment
+  path. Validation now checks the in-memory hit buffer and prints `[VERIFY]
+  PASS`.
+- Added a daemon DisplayPort thread. It repeatedly copies the current shared
+  RGB888 render buffer to a `1024x768@60` frame using a center crop from the
+  1920x1080 render. The renderer overwrites the same buffer for each frame;
+  there is intentionally no display consumer queue or frame ownership handoff,
+  so display and shading are decoupled and tearing is allowed.
+- The display thread is enabled by default and can be disabled with
+  `--no-display`. DisplayPort setup errors are propagated to the render
+  process; after successful rendering the last submitted frame remains the
+  active output for the lifetime of the display process.
+- DisplayPort copy time is outside the trace and CPU shading timers; the
+  existing trace/shade measurements below remain directly comparable.
+- KV260 validation on `2026-08-09` with DisplayPort enabled, one
+  `1920x1080` frame, and `batch-rays=2097151`: SDF initialization `4.229 s`,
+  ray prepack `0.724705 s`, trace `0.100052 s`, CPU shade `2.388752 s`,
+  trace-to-render `2.494884 s`, and `20.725 Mray/s`. Validation passed with
+  `130356` hits (`6.29%`) and no PNG/NPZ artifacts.
+- Added `--hold-display` after observing that the finite verification process
+  exits immediately after PASS and releases DRM. A held 1920x1080 run on
+  `2026-08-09` completed trace in `0.100978 s`, CPU shading in `2.347598 s`,
+  and entered persistent DisplayPort scanout after validation.
+
+The historical measurements below use `batch-rays=65536`, which divides a
+1920x1080 frame into 32 batches. The current 21-bit deployment can use the
+full simple-mode input capacity where possible:
+`floor((2^26-1)/32) = 2,097,151` rays, so the 2,073,600-ray frame fits in one
+batch.
 
 | Run | Mode | Resolution | Frames | Trace avg | Shade field | PNG avg | Trace to PNG avg | Throughput | Result |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|
@@ -107,6 +136,29 @@ The 1920x1080 frame contains 2,073,600 rays and is divided into 32 batches.
 | `20260808T225054Z` | Pipelined | 1920x1080 | 10 | 1.615008 s | 3.164011 s CPU sum | 0.618667 s | 2.275137 s | 1.284 Mray/s | PASS |
 | `20260808T230445Z` | First-frame ROI | 1920x1080 | 10 | 0.716197 s | 1.507036 s CPU sum | 0.618546 s | 1.459515 s | 0.663 Mray/s | PASS |
 | `20260808T231851Z` | Modular runtime, ROI | 1920x1080 | 2 | 1.150706 s | 2.273423 s CPU sum | 0.624653 s | 1.971976 s | 0.908 Mray/s | PASS |
+| `20260809T023643Z` | 21-bit RayID, full frame, one batch | 1920x1080 | 1 | 0.099489 s | 2.443603 s CPU sum | 0.638587 s | 3.188191 s | 20.843 Mray/s | PASS |
+| `20260809T024046Z` | 21-bit RayID, frame 0 full + frames 1-9 rectangular ROI | 1920x1080 | 10 | 0.053998 s avg | 1.184577 s CPU sum avg | 0.626307 s avg | 1.901363 s avg | 8.773 Mray/s avg | PASS |
+
+The current one-batch run used the rebuilt KV260 IP and bitstream, not the
+previous cached 16-bit packaged IP. SDF initialization took `4.207 s` and ray
+prepacking took `0.775404 s`; initialization is excluded from the per-frame
+trace-to-PNG time. The run reported `130,356 / 2,073,600` hits (6.29%),
+triangle DataMover `issued=completed=33,716`, and passed the image/result
+checks. The deployed bitstream SHA-256 is:
+
+`04e10092b28296af9aded126ce7dc9fecdd6f4bbb8568bd28c7859fc193791f`
+
+The rendered PNG SHA-256 is:
+
+`2e8bafbdcd392d5f627af28fb2d02c69e58e2049fa3423c70ceb44294f76a583`
+
+The 10-frame run confirms the post-first-frame path. Frame 0 traced the full
+image in one batch: trace `0.100314 s`, trace-to-PNG `3.466672 s`. Its hit
+rectangle was `x=608..1307, y=276..795`, aligned to 4x4 blocks. Frames 1-9
+each traced the full rectangular ROI (`364,000 / 2,073,600 = 17.55%`) in one
+batch. Their trace times were `0.048687..0.049265 s`, and their
+trace-to-PNG times were `1.624739..1.960711 s`. All ten frames produced
+valid images and the final verification reported `130,356` hits.
 
 The first-frame ROI in the `20260808T230445Z` run was
 `x=608..1307, y=276..795`, aligned to 4x4 blocks. It contains 364,000 rays

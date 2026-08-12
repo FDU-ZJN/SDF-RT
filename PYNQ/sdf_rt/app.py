@@ -9,13 +9,10 @@ import numpy as np
 from .camera import make_hit_roi, make_tiled_pixel_order
 from .config import RAY_BYTES, TRACE_BLOCK_SIZE
 from .dma import Kv260Runner
-from .formats import decode_result_records, pack_ray_records
+from .display import DisplayThread
+from .formats import pack_ray_records
 from .io import (
-    frame_path,
     prepack_frame_rays,
-    save_hit_image,
-    save_render_array,
-    save_render_image,
 )
 from .pipeline import BatchRenderPipeline
 from .shading import HostRendererCache
@@ -38,21 +35,18 @@ class TracePlan:
 class PerformanceStats:
     trace_times: list = field(default_factory=list)
     shade_times: list = field(default_factory=list)
-    png_times: list = field(default_factory=list)
     frame_times: list = field(default_factory=list)
     ray_counts: list = field(default_factory=list)
 
-    def add(self, trace, shade, png, frame, rays):
+    def add(self, trace, shade, frame, rays):
         self.trace_times.append(trace)
         self.shade_times.append(shade)
-        self.png_times.append(png)
         self.frame_times.append(frame)
         self.ray_counts.append(rays)
 
     def print_average(self, frame_count):
         trace_avg = float(np.mean(self.trace_times))
         shade_avg = float(np.mean(self.shade_times))
-        png_avg = float(np.mean(self.png_times))
         frame_avg = float(np.mean(self.frame_times))
         throughput_avg = float(
             np.mean(np.asarray(self.ray_counts, dtype=np.float64) / np.asarray(self.trace_times))
@@ -63,8 +57,7 @@ class PerformanceStats:
             f"trace={trace_avg:.6f}s "
             f"shade={shade_avg:.6f}s "
             f"shade_cpu={shade_avg:.6f}s "
-            f"png={png_avg:.6f}s "
-            f"trace_to_render_png={frame_avg:.6f}s "
+            f"trace_to_render={frame_avg:.6f}s "
             f"throughput={throughput_avg:.3f} Mray/s"
         )
 
@@ -119,13 +112,46 @@ class RenderApplication:
             self.args.dma_name,
             self.args.batch_rays,
         )
+        display = None
         try:
             self._initialize_hardware(runner)
             prepacked_rays = self._prepare_frame_rays(runner)
-            self._run_frames(runner, prepacked_rays)
+            image = self.renderer.begin_frame()
+            if not self.args.no_display:
+                display = DisplayThread(
+                    image,
+                    self.args.width,
+                    self.args.height,
+                    self.args.display_width,
+                    self.args.display_height,
+                )
+                display.start()
+                print(
+                    f"[DISPLAY] DisplayPort active {self.args.display_width}x"
+                    f"{self.args.display_height}, center crop, shared buffer"
+                )
+            self._run_frames(runner, prepacked_rays, image, display)
+            if display is not None:
+                display.raise_if_error()
+            self._print_validation()
+            if self.args.hold_display:
+                self._hold_display(display)
         finally:
+            if display is not None:
+                display.stop()
             runner.close()
-        self._save_results()
+
+    @staticmethod
+    def _hold_display(display):
+        if display is None:
+            return
+        print("[DISPLAY] holding the last frame; press Ctrl-C to stop")
+        try:
+            while True:
+                time.sleep(0.5)
+                display.raise_if_error()
+        except KeyboardInterrupt:
+            print("[DISPLAY] hold interrupted")
 
     def _initialize_hardware(self, runner):
         print(f"[OVERLAY] loaded={runner.overlay.is_loaded()} IP={sorted(runner.overlay.ip_dict)}")
@@ -158,7 +184,7 @@ class RenderApplication:
         )
         return prepacked_rays
 
-    def _run_frames(self, runner, prepacked_rays):
+    def _run_frames(self, runner, prepacked_rays, image, display):
         stats = PerformanceStats()
         roi_order_positions = None
         roi_ray_buffer = None
@@ -168,7 +194,9 @@ class RenderApplication:
             self.hit_id.fill(0)
             self.hit_t_bits.fill(0)
             frame_start = time.perf_counter()
-            output_path = frame_path(self.args.output, frame_index, self.args.frames)
+            image[:] = self.renderer.background
+            if display is not None:
+                display.raise_if_error()
             plan = self._trace_plan(
                 frame_index,
                 prepacked_rays,
@@ -178,18 +206,18 @@ class RenderApplication:
             self._print_plan(frame_index, plan)
 
             if self.args.no_pipeline:
-                trace_elapsed, shade_elapsed, png_elapsed = self._run_serial_frame(
+                trace_elapsed, shade_elapsed = self._run_serial_frame(
                     runner,
                     frame_index,
                     plan,
-                    output_path,
+                    image,
                 )
             else:
-                trace_elapsed, shade_elapsed, png_elapsed = self._run_pipelined_frame(
+                trace_elapsed, shade_elapsed = self._run_pipelined_frame(
                     runner,
                     frame_index,
                     plan,
-                    output_path,
+                    image,
                 )
 
             if frame_index == 0 and self.args.frames > 1:
@@ -199,14 +227,13 @@ class RenderApplication:
                 )
 
             frame_elapsed = time.perf_counter() - frame_start
-            stats.add(trace_elapsed, shade_elapsed, png_elapsed, frame_elapsed, plan.ray_count)
+            stats.add(trace_elapsed, shade_elapsed, frame_elapsed, plan.ray_count)
             print(
                 f"[PERF] frame {frame_index + 1}/{self.args.frames} "
                 f"trace={trace_elapsed:.6f}s "
                 f"shade={shade_elapsed:.6f}s "
                 f"shade_cpu={shade_elapsed:.6f}s "
-                f"png={png_elapsed:.6f}s "
-                f"trace_to_render_png={frame_elapsed:.6f}s "
+                f"trace_to_render={frame_elapsed:.6f}s "
                 f"throughput={plan.ray_count / trace_elapsed / 1.0e6:.3f} Mray/s"
             )
         stats.print_average(self.args.frames)
@@ -237,11 +264,12 @@ class RenderApplication:
         coords = self.pixel_order[order_positions]
         directions = self.renderer.directions_for_coords(coords)
         origins = np.broadcast_to(self.camera_origin, directions.shape)
-        pack_ray_records(runner.ray_buffer, origins, directions, count)
+        pack_ray_records(runner.allocate_staging_ray_buffer(), origins, directions, count)
         return None, True
 
-    def _run_serial_frame(self, runner, frame_index, plan, output_path):
+    def _run_serial_frame(self, runner, frame_index, plan, image):
         trace_start = time.perf_counter()
+        shade_elapsed = 0.0
         for start, count, order_positions, raster_index in self._batches(plan):
             ray_address, flush_ray = self._prepare_batch_source(
                 runner, plan, start, count, order_positions
@@ -252,40 +280,24 @@ class RenderApplication:
                 ray_address=ray_address,
                 flush_ray=flush_ray,
             )
-            self._reconstruct_batch(runner.result_buffer, count, raster_index)
+            shade_start = time.perf_counter()
+            self.renderer.shade_result_batch(
+                image,
+                raster_index,
+                runner.result_buffer,
+                count,
+                self.hit,
+                self.hit_id,
+                self.hit_t_bits,
+                self.args.shade_chunk_pixels,
+            )
+            shade_elapsed += time.perf_counter() - shade_start
             self._print_progress(frame_index, start + count, plan.ray_count)
         trace_elapsed = time.perf_counter() - trace_start
         runner.print_triangle_status()
-        shade_elapsed, png_elapsed = save_render_image(
-            self.renderer,
-            self.hit,
-            self.hit_id,
-            self.hit_t_bits,
-            output_path,
-            self.args.shade_chunk_pixels,
-        )
-        return trace_elapsed, shade_elapsed, png_elapsed
+        return trace_elapsed, shade_elapsed
 
-    def _reconstruct_batch(self, result_buffer, count, batch_raster_index):
-        ray_id, batch_hit, batch_hit_id, batch_hit_t = decode_result_records(result_buffer, count)
-        if np.any(ray_id >= count):
-            raise RuntimeError(
-                f"batch returned out-of-range RayID {int(ray_id.max())} for {count} rays"
-            )
-        multiplicity = np.bincount(ray_id, minlength=count)
-        if np.any(multiplicity != 1):
-            missing = np.flatnonzero(multiplicity == 0)[:16]
-            duplicate = np.flatnonzero(multiplicity > 1)[:16]
-            raise RuntimeError(
-                f"invalid RayID set: missing={missing.tolist()} duplicate={duplicate.tolist()}"
-            )
-        raster_index = batch_raster_index[ray_id]
-        self.hit[raster_index] = batch_hit
-        self.hit_id[raster_index] = batch_hit_id
-        self.hit_t_bits[raster_index] = batch_hit_t
-
-    def _run_pipelined_frame(self, runner, frame_index, plan, output_path):
-        image = self.renderer.begin_frame()
+    def _run_pipelined_frame(self, runner, frame_index, plan, image):
         pipeline = BatchRenderPipeline(
             self.renderer,
             self.args.shade_workers,
@@ -323,12 +335,8 @@ class RenderApplication:
             pipeline.finish()
             render_tail_elapsed = time.perf_counter() - render_tail_start
             shade_elapsed = pipeline.total_shade_time()
-            png_elapsed = save_render_array(
-                image.reshape(self.args.height, self.args.width, 3),
-                output_path,
-            )
             print(f"[PERF] render tail after DMA={render_tail_elapsed:.6f}s")
-            return trace_elapsed, shade_elapsed, png_elapsed
+            return trace_elapsed, shade_elapsed
         finally:
             pipeline.abort()
 
@@ -366,23 +374,13 @@ class RenderApplication:
         )
         return roi_order_positions, roi_ray_buffer
 
-    def _save_results(self):
-        results_path = Path(self.args.results)
-        results_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            results_path,
-            width=np.uint32(self.args.width),
-            height=np.uint32(self.args.height),
-            hit=self.hit,
-            hit_id=self.hit_id,
-            hit_t_bits=self.hit_t_bits,
+    def _print_validation(self):
+        hit_t = self.hit_t_bits.view(np.float32)
+        valid = self.hit & np.isfinite(hit_t) & (hit_t >= 0.0)
+        if not np.any(valid):
+            raise RuntimeError("all rays missed; SDF traversal or camera setup is invalid")
+        print(
+            f"[VERIFY] PASS: pixels={self.total_rays} hits={int(np.count_nonzero(self.hit))} "
+            f"({100.0 * np.count_nonzero(self.hit) / self.total_rays:.2f}%), "
+            f"hit_t=[{float(hit_t[valid].min()):.6f}, {float(hit_t[valid].max()):.6f}]"
         )
-        print(f"[SAVE] raw unordered-result reconstruction: {results_path}")
-        if self.args.depth_output:
-            save_hit_image(
-                self.hit,
-                self.hit_t_bits,
-                self.args.width,
-                self.args.height,
-                self.args.depth_output,
-            )

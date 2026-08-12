@@ -113,7 +113,10 @@ class Kv260Runner:
         self.result_ranges = parse_hwh_master_ranges(hwh_path, dma_name, "M_AXI_S2MM")
         self.triangle_ranges = parse_hwh_master_ranges(hwh_path, TRI_DATAMOVER_NAME, "M_AXI_MM2S")
         self.max_batch_rays = max_batch_rays
-        self.ray_buffer = allocate(shape=(max_batch_rays, 8), dtype=np.uint32)
+        # The normal path pre-packs a full frame and DMA reads it directly.
+        # Allocate this staging buffer only for --no-prepack-rays; otherwise a
+        # full-frame batch would waste another 32 bytes per ray of CMA memory.
+        self.ray_buffer = None
         self.result_buffers = [
             allocate(shape=(max_batch_rays, 4), dtype=np.uint32)
             for _ in range(RESULT_BUFFER_COUNT)
@@ -122,12 +125,6 @@ class Kv260Runner:
         self.frame_ray_buffer = None
         self.roi_ray_buffer = None
         self.triangle_buffer = None
-        self._require_dma_range(
-            self.ray_buffer.physical_address,
-            self.ray_buffer.nbytes,
-            "ray",
-            self.ray_ranges,
-        )
         for index, result_buffer in enumerate(self.result_buffers):
             self._require_dma_range(
                 result_buffer.physical_address,
@@ -303,6 +300,19 @@ class Kv260Runner:
         )
         return self.frame_ray_buffer
 
+    def allocate_staging_ray_buffer(self):
+        """Allocate the on-demand ray source used only without prepacking."""
+        if self.ray_buffer is not None:
+            return self.ray_buffer
+        self.ray_buffer = allocate(shape=(self.max_batch_rays, 8), dtype=np.uint32)
+        self._require_dma_range(
+            self.ray_buffer.physical_address,
+            self.ray_buffer.nbytes,
+            "ray staging",
+            self.ray_ranges,
+        )
+        return self.ray_buffer
+
     def allocate_roi_ray_buffer(self, source_buffer, source_positions, batch_rays):
         count = int(source_positions.size)
         if count <= 0:
@@ -333,10 +343,14 @@ class Kv260Runner:
         if not 1 <= count <= self.max_batch_rays:
             raise ValueError(f"batch count {count} is outside 1..{self.max_batch_rays}")
         if ray_address is None:
+            if self.ray_buffer is None:
+                raise RuntimeError("ray staging buffer was not allocated")
             ray_address = int(self.ray_buffer.physical_address)
         result_buffer = self.result_buffers[slot]
         result_address = int(result_buffer.physical_address)
         if flush_ray:
+            if self.ray_buffer is None:
+                raise RuntimeError("ray staging buffer was not allocated")
             self.ray_buffer.flush()
         self.write_dma(MM2S_DMASR, DMA_IRQ_CLEAR)
         self.write_dma(S2MM_DMASR, DMA_IRQ_CLEAR)

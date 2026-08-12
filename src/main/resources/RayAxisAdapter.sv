@@ -13,11 +13,11 @@ module RayAxisAdapter (
   output wire [31:0]  core_ray_in_dir_x,
   output wire [31:0]  core_ray_in_dir_y,
   output wire [31:0]  core_ray_in_dir_z,
-  output wire [15:0]  core_ray_in_rayId,
+  output wire [20:0]  core_ray_in_rayId,
   output wire         core_ray_in_last,
   input  wire         core_ray_in_ready,
   input  wire         core_result_valid,
-  input  wire [15:0]  core_result_rayId,
+  input  wire [20:0]  core_result_rayId,
   input  wire         core_result_hit,
   input  wire [31:0]  core_result_hitId,
   input  wire [31:0]  core_result_hitT,
@@ -33,14 +33,15 @@ module RayAxisAdapter (
   assign core_ray_in_valid = s_axis_ray_tvalid && keep_is_full_record;
   assign core_ray_in_last = s_axis_ray_tlast;
 
-  // One 256-bit record: {reserved[47:0], rayId, dir.z/y/x, origin.z/y/x}.
+  // One 256-bit record: {reserved[42:0], rayId[20:0], dir.z/y/x, origin.z/y/x}.
   assign {core_ray_in_origin_x, core_ray_in_origin_y, core_ray_in_origin_z,
           core_ray_in_dir_x, core_ray_in_dir_y, core_ray_in_dir_z,
-          core_ray_in_rayId} = s_axis_ray_tdata[207:0];
+          core_ray_in_rayId} = s_axis_ray_tdata[212:0];
 
   assign m_axis_ray_result_tvalid = core_result_valid;
   assign m_axis_ray_result_tlast = core_result_last;
   assign m_axis_ray_result_tkeep = 16'hFFFF;
+  // One 128-bit result: {reserved[41:0], hitT, hitId, hit, rayId[20:0]}.
   assign m_axis_ray_result_tdata =
-    {47'b0, core_result_hitT, core_result_hitId, core_result_hit, core_result_rayId};
+    {42'b0, core_result_hitT, core_result_hitId, core_result_hit, core_result_rayId};
 endmodule

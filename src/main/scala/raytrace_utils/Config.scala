@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util.log2Ceil
 
 object GlobalConfig {
+  val rayIdWidth = 21
   val frameWidth =100
   val frameHeight = 100
   val traceNumWorkers = 4

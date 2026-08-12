@@ -345,10 +345,12 @@ int main(int argc, char** argv) {
     size_t traceHits = 0;
     size_t traceMisses = 0;
     bool sawResultLast = false;
-    std::deque<uint16_t> freeRayIds;
-    std::vector<int64_t> rayIdToPixel(1U << 16, -1);
-    for (uint32_t rayId = 0; rayId < (1U << 16); ++rayId) {
-        freeRayIds.push_back(static_cast<uint16_t>(rayId));
+    constexpr uint32_t kRayIdBits = 21;
+    constexpr uint32_t kRayIdCount = 1U << kRayIdBits;
+    std::deque<uint32_t> freeRayIds;
+    std::vector<int64_t> rayIdToPixel(kRayIdCount, -1);
+    for (uint32_t rayId = 0; rayId < kRayIdCount; ++rayId) {
+        freeRayIds.push_back(rayId);
     }
     size_t minFreeRayIds = freeRayIds.size();
     int stallCycles = 0;
@@ -387,7 +389,7 @@ int main(int argc, char** argv) {
         const bool inputFire = dut->io_ray_in_valid && dut->io_ray_in_ready;
         const bool resultFire = dut->io_result_valid && dut->io_result_ready;
         const bool resultLast = dut->io_result_last;
-        const uint16_t resultId = dut->io_result_meta_rayId;
+        const uint32_t resultId = dut->io_result_meta_rayId;
         const bool resultHit = dut->io_result_hit != 0;
         const uint32_t resultHitId = dut->io_result_hitId;
         const uint32_t resultHitT = dut->io_result_hitT;
@@ -395,7 +397,7 @@ int main(int argc, char** argv) {
         triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
         if (inputFire) {
-            const uint16_t rayId = freeRayIds.front();
+            const uint32_t rayId = freeRayIds.front();
             if (rayIdToPixel[rayId] != -1) {
                 std::cerr << "RayID allocator reused an active tag " << rayId << std::endl;
                 delete dut;
@@ -409,7 +411,7 @@ int main(int argc, char** argv) {
             minFreeRayIds = std::min(minFreeRayIds, freeRayIds.size());
         }
         if (resultFire) {
-                const uint16_t rayId = resultId;
+                const uint32_t rayId = resultId;
                 const int64_t pixelIndex = rayIdToPixel[rayId];
                 if (pixelIndex < 0) {
                     std::cerr << "Invalid or duplicate RayID " << rayId
@@ -491,7 +493,7 @@ int main(int argc, char** argv) {
     std::cout << "\nAll trace responses received: "
               << traceResultsReceived << " / " << framePixels << std::endl;
     if (nextRay != framePixels || traceResultsReceived != framePixels || !sawResultLast ||
-        freeRayIds.size() != (1U << 16)) {
+        freeRayIds.size() != kRayIdCount) {
         std::cerr << "Ray stream completion mismatch (sent=" << nextRay
                   << ", received=" << traceResultsReceived
                   << ", last=" << sawResultLast

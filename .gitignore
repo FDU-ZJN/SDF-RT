@@ -18,6 +18,16 @@
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment files
+.env
+.env.*
+!.env.example
 
 # Logs and temporary files
 *.log
@@ -41,6 +51,16 @@ ip_repo/
 .sbt/
 .sbt-boot/
 .codex_sbt/
+.bsp/
+.Xil/
+*.pdi
+*.ltx
+*.hwdef
+*.hdf
+*.xpr
+*.spr
+*.vitis/
+*.vitis_workspace/
 
 # Vivado / FPGA generated projects and reports
 KV260_vivado/
@@ -58,13 +78,17 @@ KV260_vivado/
 *.log
 *.jou
 *.str
+.Trash-1000/
+kv260_rt/verification/
+kv260_rt/*.hwh
+kv260_rt/*.bit
+kv260_rt/*.xsa
 
 # Generated analysis outputs
 csrc/*blackspot*
 csrc/tripe_hit_step_hist.csv
 
 # Local notes and scratch assets
-AGENTS.md
 docs/
 remote.sh
 software_rt/
@@ -79,7 +103,6 @@ main.cu
 # IDE / tool metadata
 .idea/
 .vscode/
-.bsp/
 .metals/
 .bloop/
 .scala-build/

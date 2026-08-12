@@ -21,13 +21,13 @@ class Ray(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
 }
 
 class RayMeta(addrWidth: Int = 32) extends Bundle {
-  val rayId = UInt(16.W)
+  val rayId = UInt(GlobalConfig.rayIdWidth.W)
 }
 
 class RayIngress(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val origin = new Vec3(cfg)
   val dir = new Vec3(cfg)
-  val rayId = UInt(16.W)
+  val rayId = UInt(GlobalConfig.rayIdWidth.W)
 }
 
 class ImmutableRayRecord(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
