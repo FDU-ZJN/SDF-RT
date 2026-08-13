@@ -63,7 +63,44 @@ void main() {
 }
 )GLSL";
 
-constexpr const char* kFragmentShader = R"GLSL(
+constexpr const char* kBackgroundFragmentShader = R"GLSL(
+precision mediump float;
+uniform vec2 uResolution;
+uniform vec3 uForward;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform float uTanHalfFov;
+
+vec3 environment(vec3 direction) {
+    vec3 dir = normalize(direction);
+    float vertical = clamp(dir.z * 0.5 + 0.5, 0.0, 1.0);
+    vec3 color = mix(vec3(0.12, 0.14, 0.17), vec3(0.34, 0.38, 0.43), vertical);
+    vec3 softboxDir = normalize(vec3(-0.15, 0.10, 0.98));
+    vec3 rimDir = normalize(vec3(-0.75, 0.55, 0.35));
+    color += vec3(8.0, 7.8, 7.2) * exp((dot(dir, softboxDir) - 1.0) * 7.0);
+    color += vec3(4.0, 1.8, 0.65) * exp((dot(dir, rimDir) - 1.0) * 22.0);
+    return color;
+}
+
+vec3 encodeColor(vec3 linearColor) {
+    vec3 x = clamp(linearColor * exp2(1.1), 0.0, 64.0);
+    vec3 mapped = clamp((x * (2.51 * x + 0.03)) /
+                        (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    vec3 low = 12.92 * mapped;
+    vec3 high = 1.055 * pow(mapped, vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), mapped));
+}
+
+void main() {
+    float aspect = uResolution.x / uResolution.y;
+    float screenX = (2.0 * gl_FragCoord.x / uResolution.x - 1.0) * aspect * uTanHalfFov;
+    float screenY = (2.0 * gl_FragCoord.y / uResolution.y - 1.0) * uTanHalfFov;
+    vec3 rayDir = normalize(uForward + screenX * uRight + screenY * uUp);
+    gl_FragColor = vec4(encodeColor(environment(rayDir)), 1.0);
+}
+)GLSL";
+
+constexpr const char* kBrdfFragmentShader = R"GLSL(
 precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uGbuffer;
@@ -136,27 +173,21 @@ vec3 encodeColor(vec3 linearColor) {
 }
 
 void main() {
-    vec2 pixel = gl_FragCoord.xy - vec2(0.5);
+    // Preserve the background rendered once during initialization.
+    vec4 gbuffer = texture2D(uGbuffer, vec2(vUv.x, 1.0 - vUv.y));
+    if (gbuffer.a < 0.5) discard;
     float aspect = uResolution.x / uResolution.y;
-    float screenX = (2.0 * (pixel.x + 0.5) / uResolution.x - 1.0) * aspect * uTanHalfFov;
+    float screenX = (2.0 * gl_FragCoord.x / uResolution.x - 1.0) * aspect * uTanHalfFov;
     // gl_FragCoord uses a bottom-left origin. Convert it to the same camera
     // convention as the CPU raster, whose row zero is at the top.
-    float screenY = (2.0 * (pixel.y + 0.5) / uResolution.y - 1.0) * uTanHalfFov;
+    float screenY = (2.0 * gl_FragCoord.y / uResolution.y - 1.0) * uTanHalfFov;
     vec3 rayDir = normalize(uForward + screenX * uRight + screenY * uUp);
-    // glTexSubImage2D assigns the first CPU row to texture row zero (bottom).
-    // Flip V so the final top-left RGB image retains the CPU raster layout.
-    vec4 gbuffer = texture2D(uGbuffer, vec2(vUv.x, 1.0 - vUv.y));
-    vec3 color;
-    if (gbuffer.a < 0.5) {
-        color = environment(rayDir);
-    } else {
-        vec3 normal = octDecode(gbuffer.rg);
-        vec3 view = -rayDir;
-        vec3 reflected = normalize(reflect(rayDir, normal));
-        color = environment(reflected) * fresnel(max(dot(normal, view), 0.0));
-        color += directLight(normal, view, normalize(vec3(-0.15, 0.10, 0.98)), vec3(3.0, 2.9, 2.65));
-        color += directLight(normal, view, normalize(vec3(-0.75, 0.55, 0.35)), vec3(1.8, 0.75, 0.22));
-    }
+    vec3 normal = octDecode(gbuffer.rg);
+    vec3 view = -rayDir;
+    vec3 reflected = normalize(reflect(rayDir, normal));
+    vec3 color = environment(reflected) * fresnel(max(dot(normal, view), 0.0));
+    color += directLight(normal, view, normalize(vec3(-0.15, 0.10, 0.98)), vec3(3.0, 2.9, 2.65));
+    color += directLight(normal, view, normalize(vec3(-0.75, 0.55, 0.35)), vec3(1.8, 0.75, 0.22));
     gl_FragColor = vec4(encodeColor(color), 1.0);
 }
 )GLSL";
@@ -168,12 +199,20 @@ struct Renderer {
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
     GLuint program = 0;
+    GLuint background_program = 0;
+    GLuint vertex_buffer = 0;
     GLuint gbuffer_texture = 0;
     GLuint output_texture = 0;
     GLuint framebuffer = 0;
     std::uint32_t gbuffer_width = 0;
     std::uint32_t gbuffer_height = 0;
     GLint position_location = -1;
+    GLint gbuffer_location = -1;
+    GLint resolution_location = -1;
+    GLint forward_location = -1;
+    GLint right_location = -1;
+    GLint up_location = -1;
+    GLint tan_half_fov_location = -1;
     std::array<float, 3> forward{};
     std::array<float, 3> right{};
     std::array<float, 3> up{};
@@ -187,9 +226,11 @@ struct Renderer {
         if (display == EGL_NO_DISPLAY) return;
         eglMakeCurrent(display, surface, surface, context);
         if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+        if (vertex_buffer) glDeleteBuffers(1, &vertex_buffer);
         if (output_texture) glDeleteTextures(1, &output_texture);
         if (gbuffer_texture) glDeleteTextures(1, &gbuffer_texture);
         if (program) glDeleteProgram(program);
+        if (background_program) glDeleteProgram(background_program);
         eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
         if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
@@ -235,24 +276,46 @@ bool initialize(Renderer& renderer, std::string& error) {
 
     std::string shader_error;
     const GLuint vertex = compile_shader(GL_VERTEX_SHADER, kVertexShader, shader_error);
-    const GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, kFragmentShader, shader_error);
-    if (!vertex || !fragment) {
+    const GLuint brdf_fragment =
+        compile_shader(GL_FRAGMENT_SHADER, kBrdfFragmentShader, shader_error);
+    const GLuint background_fragment =
+        compile_shader(GL_FRAGMENT_SHADER, kBackgroundFragmentShader, shader_error);
+    if (!vertex || !brdf_fragment || !background_fragment) {
         error = "shader compilation failed: " + shader_error;
         return false;
     }
     renderer.program = glCreateProgram();
     glAttachShader(renderer.program, vertex);
-    glAttachShader(renderer.program, fragment);
+    glAttachShader(renderer.program, brdf_fragment);
     glLinkProgram(renderer.program);
+    renderer.background_program = glCreateProgram();
+    glAttachShader(renderer.background_program, vertex);
+    glAttachShader(renderer.background_program, background_fragment);
+    glLinkProgram(renderer.background_program);
     glDeleteShader(vertex);
-    glDeleteShader(fragment);
-    GLint linked = GL_FALSE;
-    glGetProgramiv(renderer.program, GL_LINK_STATUS, &linked);
-    if (!linked) {
-        error = "shader link failed: " + shader_log(renderer.program, true);
+    glDeleteShader(brdf_fragment);
+    glDeleteShader(background_fragment);
+    GLint brdf_linked = GL_FALSE;
+    GLint background_linked = GL_FALSE;
+    glGetProgramiv(renderer.program, GL_LINK_STATUS, &brdf_linked);
+    glGetProgramiv(renderer.background_program, GL_LINK_STATUS, &background_linked);
+    if (!brdf_linked || !background_linked) {
+        const GLuint failed = brdf_linked ? renderer.background_program : renderer.program;
+        error = "shader link failed: " + shader_log(failed, true);
         return false;
     }
     renderer.position_location = glGetAttribLocation(renderer.program, "aPosition");
+    renderer.gbuffer_location = glGetUniformLocation(renderer.program, "uGbuffer");
+    renderer.resolution_location = glGetUniformLocation(renderer.program, "uResolution");
+    renderer.forward_location = glGetUniformLocation(renderer.program, "uForward");
+    renderer.right_location = glGetUniformLocation(renderer.program, "uRight");
+    renderer.up_location = glGetUniformLocation(renderer.program, "uUp");
+    renderer.tan_half_fov_location = glGetUniformLocation(renderer.program, "uTanHalfFov");
+
+    constexpr GLfloat vertices[] = {-1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f};
+    glGenBuffers(1, &renderer.vertex_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer.vertex_buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
     glGenTextures(1, &renderer.gbuffer_texture);
     glBindTexture(GL_TEXTURE_2D, renderer.gbuffer_texture);
@@ -275,6 +338,42 @@ bool initialize(Renderer& renderer, std::string& error) {
                            renderer.output_texture, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         error = "OpenGL ES framebuffer is incomplete";
+        return false;
+    }
+    constexpr float kPi = 3.14159265358979323846f;
+    const float tan_half_fov = std::tan(renderer.fov_degrees * kPi / 360.0f);
+    const auto set_camera_uniforms = [&](GLuint program) {
+        glUniform2f(glGetUniformLocation(program, "uResolution"),
+                    static_cast<float>(renderer.width), static_cast<float>(renderer.height));
+        glUniform3fv(glGetUniformLocation(program, "uForward"), 1, renderer.forward.data());
+        glUniform3fv(glGetUniformLocation(program, "uRight"), 1, renderer.right.data());
+        glUniform3fv(glGetUniformLocation(program, "uUp"), 1, renderer.up.data());
+        glUniform1f(glGetUniformLocation(program, "uTanHalfFov"), tan_half_fov);
+    };
+
+    // The environment is static for this camera. Render it once, then preserve
+    // miss pixels with discard in every BRDF pass.
+    glViewport(0, 0, renderer.width, renderer.height);
+    glUseProgram(renderer.background_program);
+    set_camera_uniforms(renderer.background_program);
+    const GLint background_position =
+        glGetAttribLocation(renderer.background_program, "aPosition");
+    glEnableVertexAttribArray(background_position);
+    glVertexAttribPointer(background_position, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glUseProgram(renderer.program);
+    glUniform1i(renderer.gbuffer_location, 0);
+    glUniform2f(renderer.resolution_location,
+                static_cast<float>(renderer.width), static_cast<float>(renderer.height));
+    glUniform3fv(renderer.forward_location, 1, renderer.forward.data());
+    glUniform3fv(renderer.right_location, 1, renderer.right.data());
+    glUniform3fv(renderer.up_location, 1, renderer.up.data());
+    glUniform1f(renderer.tan_half_fov_location, tan_half_fov);
+    glEnableVertexAttribArray(renderer.position_location);
+    glVertexAttribPointer(renderer.position_location, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    if (glGetError() != GL_NO_ERROR) {
+        error = "static GLES state initialization failed";
         return false;
     }
     const char* name = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
@@ -350,18 +449,7 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     glUseProgram(renderer->program);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
-    glUniform1i(glGetUniformLocation(renderer->program, "uGbuffer"), 0);
-    glUniform2f(glGetUniformLocation(renderer->program, "uResolution"),
-                static_cast<float>(renderer->width), static_cast<float>(renderer->height));
-    glUniform3fv(glGetUniformLocation(renderer->program, "uForward"), 1, renderer->forward.data());
-    glUniform3fv(glGetUniformLocation(renderer->program, "uRight"), 1, renderer->right.data());
-    glUniform3fv(glGetUniformLocation(renderer->program, "uUp"), 1, renderer->up.data());
-    constexpr float kPi = 3.14159265358979323846f;
-    const float tan_half_fov = std::tan(renderer->fov_degrees * kPi / 360.0f);
-    glUniform1f(glGetUniformLocation(renderer->program, "uTanHalfFov"), tan_half_fov);
-    const GLfloat vertices[] = {-1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f};
-    glEnableVertexAttribArray(renderer->position_location);
-    glVertexAttribPointer(renderer->position_location, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     // glReadPixels below is a synchronization point for the framebuffer. An
     // explicit glFinish here only serializes the CPU before the readback.

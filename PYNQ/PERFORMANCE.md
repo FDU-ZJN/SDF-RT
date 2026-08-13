@@ -19,6 +19,7 @@ Correctness gates for every stage are:
 | Stage 2 | Removed explicit `glFinish`; `glReadPixels` remains the synchronization point | 52.175 ms | 124.760 ms | 273.590 ms | 3.626 | `verification/20260813T003332Z` |
 | Stage 3 | Probe direct RGB readback; Mali reports RGBA, so use AArch64 NEON RGBA-to-RGB conversion | 52.091 ms | 122.864 ms | 240.652 ms | 4.137 | `verification/20260813T003757Z` |
 | Stage 4 | Compact first-frame hit ROI G-buffer upload, fragment viewport, and readback | 53.901 ms | 130.761 ms | 217.354 ms | 4.556 | `verification/20260813T010442Z` |
+| Stage 5 | Render static environment once; BRDF pass discards misses; cache GLES uniforms and fullscreen VBO | 53.935 ms | 131.605 ms | 210.439 ms | 4.708 | `verification/20260813T012641Z` |
 
 Stage 2 is a neutral/negative result within run-to-run variance, so the change
 is retained for simpler synchronization but is not counted as a speedup.
@@ -37,3 +38,11 @@ steady pipeline throughput by 10.1% relative to Stage 3. G-buffer time rose by
 6.4% because compact scatter computes a local ROI coordinate for each result.
 The saved Stage 4 RGB frame has CRC32 `0xA9A3799C`, exactly matching the Stage
 3 full-frame output; the compact G-buffer is `700x520`.
+
+Stage 5 reduced steady BRDF time by 3.2% and increased steady pipeline
+throughput by 3.3% relative to Stage 4. The background is rendered once per
+EGL renderer lifetime; miss fragments in subsequent ROI passes use `discard`,
+so they preserve the existing output texture without repeating environment,
+tone-map, and sRGB work. The shader path remains free of pure-blue or
+pure-green overflow pixels; the 1080p diagnostic differed from Stage 3 only by
+mediump 1-2 LSB rounding (mean absolute channel error 0.0034).
