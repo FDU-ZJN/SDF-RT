@@ -62,6 +62,11 @@ extern "C" int sdf_rt_build_gbuffer(
     std::uint32_t count,
     const float* directions,
     std::uint32_t pixel_count,
+    std::uint32_t image_width,
+    std::uint32_t roi_x,
+    std::uint32_t roi_y,
+    std::uint32_t roi_width,
+    std::uint32_t roi_height,
     const float* origin,
     const float* tri_v0,
     const float* tri_e1,
@@ -88,7 +93,9 @@ extern "C" int sdf_rt_build_gbuffer(
         set_error(error, error_size, "null buffer passed to G-buffer builder");
         return -1;
     }
-    if (count == 0 || count > pixel_count || thread_count <= 0) {
+    if (count == 0 || count > pixel_count || thread_count <= 0 || image_width == 0 ||
+        roi_width == 0 || roi_height == 0 || roi_x + roi_width > image_width ||
+        roi_y + roi_height > pixel_count / image_width) {
         set_error(error, error_size, "invalid count, pixel count, or thread count");
         return -1;
     }
@@ -110,6 +117,15 @@ extern "C" int sdf_rt_build_gbuffer(
             return -1;
         }
         const std::uint32_t raster = static_cast<std::uint32_t>(raster64);
+        const std::uint32_t raster_x = raster % image_width;
+        const std::uint32_t raster_y = raster / image_width;
+        if (raster_x < roi_x || raster_x >= roi_x + roi_width || raster_y < roi_y ||
+            raster_y >= roi_y + roi_height) {
+            set_error(error, error_size, "raster index is outside the compact G-buffer ROI");
+            return -1;
+        }
+        const std::uint32_t local =
+            (raster_y - roi_y) * roi_width + (raster_x - roi_x);
         const bool is_hit = ((words[0] >> kRayIdBits) & 1u) != 0;
         const std::uint32_t compact_id =
             (words[0] >> (kRayIdBits + 1)) |
@@ -121,7 +137,7 @@ extern "C" int sdf_rt_build_gbuffer(
         hit_id[raster] = compact_id;
         hit_t_bits[raster] = t_bits;
         if (!is_hit) {
-            gbuffer_rgba[4u * raster + 3] = 0;
+            gbuffer_rgba[4u * local + 3] = 0;
             continue;
         }
         float t = 0.0f;
@@ -180,7 +196,11 @@ extern "C" int sdf_rt_build_gbuffer(
             normal[1] = -normal[1];
             normal[2] = -normal[2];
         }
-        encode_octahedral(normal[0], normal[1], normal[2], gbuffer_rgba + 4u * item.raster);
+        const std::uint32_t raster_x = item.raster % image_width;
+        const std::uint32_t raster_y = item.raster / image_width;
+        const std::uint32_t local =
+            (raster_y - roi_y) * roi_width + (raster_x - roi_x);
+        encode_octahedral(normal[0], normal[1], normal[2], gbuffer_rgba + 4u * local);
     }
     if (bad_index.load(std::memory_order_relaxed)) {
         set_error(error, error_size, "triangle table or interpolated normal is invalid");

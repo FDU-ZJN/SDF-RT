@@ -171,6 +171,8 @@ struct Renderer {
     GLuint gbuffer_texture = 0;
     GLuint output_texture = 0;
     GLuint framebuffer = 0;
+    std::uint32_t gbuffer_width = 0;
+    std::uint32_t gbuffer_height = 0;
     GLint position_location = -1;
     std::array<float, 3> forward{};
     std::array<float, 3> right{};
@@ -258,7 +260,7 @@ bool initialize(Renderer& renderer, std::string& error) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, renderer.width, renderer.height, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
     glGenTextures(1, &renderer.output_texture);
@@ -288,8 +290,6 @@ bool initialize(Renderer& renderer, std::string& error) {
     } else {
         renderer.renderer_name += " readback=RGBA-NEON";
     }
-    renderer.readback.resize(
-        static_cast<std::size_t>(renderer.width) * renderer.height * renderer.read_channels);
     // The context is owned by the BRDF worker after initialization. Releasing
     // it here allows eglMakeCurrent from that thread without EGL_BAD_ACCESS.
     eglMakeCurrent(renderer.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -321,10 +321,13 @@ extern "C" void* sdf_rt_gles_create(
 }
 
 extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba,
-                                    std::uint8_t* image_rgb, char* error,
+                                    std::uint8_t* image_rgb, std::uint32_t roi_x,
+                                    std::uint32_t roi_y, std::uint32_t roi_width,
+                                    std::uint32_t roi_height, char* error,
                                     std::uint32_t error_size) {
     auto* renderer = static_cast<Renderer*>(handle);
-    if (!renderer || !gbuffer_rgba || !image_rgb) {
+    if (!renderer || !gbuffer_rgba || !image_rgb || roi_width == 0 || roi_height == 0 ||
+        roi_x + roi_width > renderer->width || roi_y + roi_height > renderer->height) {
         set_error(error, error_size, "invalid GLES render arguments");
         return -1;
     }
@@ -333,10 +336,17 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
         return -1;
     }
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, renderer->width, renderer->height,
+    if (renderer->gbuffer_width != roi_width || renderer->gbuffer_height != roi_height) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, roi_width, roi_height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        renderer->gbuffer_width = roi_width;
+        renderer->gbuffer_height = roi_height;
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, roi_width, roi_height,
                     GL_RGBA, GL_UNSIGNED_BYTE, gbuffer_rgba);
     glBindFramebuffer(GL_FRAMEBUFFER, renderer->framebuffer);
-    glViewport(0, 0, renderer->width, renderer->height);
+    const std::uint32_t gl_y = renderer->height - roi_y - roi_height;
+    glViewport(roi_x, gl_y, roi_width, roi_height);
     glUseProgram(renderer->program);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
@@ -360,33 +370,36 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
         return -1;
     }
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, renderer->width, renderer->height, renderer->read_format, GL_UNSIGNED_BYTE,
+    renderer->readback.resize(
+        static_cast<std::size_t>(roi_width) * roi_height * renderer->read_channels);
+    glReadPixels(roi_x, gl_y, roi_width, roi_height, renderer->read_format, GL_UNSIGNED_BYTE,
                  renderer->readback.data());
-    for (std::uint32_t y = 0; y < renderer->height; ++y) {
+    for (std::uint32_t y = 0; y < roi_height; ++y) {
         const std::size_t source_row =
-            static_cast<std::size_t>(renderer->height - 1u - y) * renderer->width;
-        const std::size_t destination_row = static_cast<std::size_t>(y) * renderer->width;
+            static_cast<std::size_t>(roi_height - 1u - y) * roi_width;
+        const std::size_t destination_row =
+            static_cast<std::size_t>(roi_y + y) * renderer->width + roi_x;
         const std::uint8_t* source =
             renderer->readback.data() + renderer->read_channels * source_row;
         std::uint8_t* destination = image_rgb + 3u * destination_row;
         if (renderer->read_channels == 3) {
-            std::memcpy(destination, source, 3u * renderer->width);
+            std::memcpy(destination, source, 3u * roi_width);
             continue;
         }
 #if defined(__aarch64__)
         std::uint32_t x = 0;
-        for (; x + 16u <= renderer->width; x += 16u) {
+        for (; x + 16u <= roi_width; x += 16u) {
             const uint8x16x4_t rgba = vld4q_u8(source + 4u * x);
             const uint8x16x3_t rgb = {rgba.val[0], rgba.val[1], rgba.val[2]};
             vst3q_u8(destination + 3u * x, rgb);
         }
-        for (; x < renderer->width; ++x) {
+        for (; x < roi_width; ++x) {
             destination[3u * x + 0] = source[4u * x + 0];
             destination[3u * x + 1] = source[4u * x + 1];
             destination[3u * x + 2] = source[4u * x + 2];
         }
 #else
-        for (std::uint32_t x = 0; x < renderer->width; ++x) {
+        for (std::uint32_t x = 0; x < roi_width; ++x) {
             destination[3u * x + 0] = source[4u * x + 0];
             destination[3u * x + 1] = source[4u * x + 1];
             destination[3u * x + 2] = source[4u * x + 2];

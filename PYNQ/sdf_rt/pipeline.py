@@ -5,6 +5,8 @@ import threading
 import time
 import traceback
 
+import numpy as np
+
 from .config import RESULT_BUFFER_COUNT
 from .io import write_gbuffer_ppm, write_ppm
 
@@ -33,6 +35,7 @@ class FramePipeline:
         self.error_lock = threading.Lock()
         self.error = None
         self.threads = []
+        self.previous_image = None
 
     def start(self):
         self.threads = [
@@ -104,6 +107,7 @@ class FramePipeline:
                         frame.hit_id,
                         frame.hit_t_bits,
                         self.shade_chunk_pixels,
+                        frame.roi,
                     )
                     frame.gbuffer_elapsed += elapsed
                     self.free_slots.put(slot)
@@ -119,7 +123,15 @@ class FramePipeline:
                     self.brdf_queue.task_done()
                     return
                 start = time.perf_counter()
-                self.renderer.finish_frame(frame.gbuffer, frame.image)
+                if self.previous_image is not None and frame.roi != (
+                    0,
+                    0,
+                    self.renderer.width,
+                    self.renderer.height,
+                ):
+                    np.copyto(frame.image, self.previous_image)
+                self.renderer.finish_frame(frame.gbuffer, frame.image, frame.roi)
+                self.previous_image = frame.image.copy()
                 frame.brdf_elapsed = time.perf_counter() - start
                 if self.save_ppm and frame.index == self.last_frame_index:
                     write_ppm(

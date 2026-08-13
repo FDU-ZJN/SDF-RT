@@ -43,7 +43,9 @@ class NativeRenderLibrary:
 
     def _bind(self):
         self.lib.sdf_rt_build_gbuffer.argtypes = [
-            _U32_P, _I64_P, ctypes.c_uint32, _F32_P, ctypes.c_uint32, _F32_P,
+            _U32_P, _I64_P, ctypes.c_uint32, _F32_P, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, _F32_P,
             _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P,
             ctypes.c_uint32, _U32_P, ctypes.c_uint32, _U8_P, _U8_P, _U32_P,
             _U32_P, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32,
@@ -55,7 +57,8 @@ class NativeRenderLibrary:
         ]
         self.lib.sdf_rt_gles_create.restype = ctypes.c_void_p
         self.lib.sdf_rt_gles_render.argtypes = [
-            ctypes.c_void_p, _U8_P, _U8_P, ctypes.c_char_p, ctypes.c_uint32,
+            ctypes.c_void_p, _U8_P, _U8_P, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32,
         ]
         self.lib.sdf_rt_gles_render.restype = ctypes.c_int
         self.lib.sdf_rt_gles_destroy.argtypes = [ctypes.c_void_p]
@@ -157,8 +160,10 @@ class MaliBrdfRenderer:
         hit_id,
         hit_t_bits,
         shade_chunk_pixels,
+        roi,
     ):
         del shade_chunk_pixels
+        roi = tuple(int(value) for value in roi)
         words = np.asarray(result_words[:count], dtype=np.uint32)
         raster = np.ascontiguousarray(batch_raster_index, dtype=np.int64)
         if words.ndim != 2 or words.shape[1] != 4:
@@ -174,6 +179,11 @@ class MaliBrdfRenderer:
                 count,
                 _pointer(self.directions, _F32_P),
                 self.width * self.height,
+                self.width,
+                roi[0],
+                roi[1],
+                roi[2],
+                roi[3],
                 _pointer(self.origin, _F32_P),
                 _pointer(self.tri_v0, _F32_P),
                 _pointer(self.tri_e1, _F32_P),
@@ -199,15 +209,21 @@ class MaliBrdfRenderer:
             raise RuntimeError(error.value.decode(errors="replace"))
         return result, build_elapsed
 
-    def finish_frame(self, gbuffer, image):
+    def finish_frame(self, gbuffer, image, roi):
         if not self._handle:
             raise RuntimeError("GLES renderer is closed")
+        roi = tuple(int(value) for value in roi)
+        gbuffer = np.ascontiguousarray(gbuffer, dtype=np.uint8)
         output = np.asarray(image, dtype=np.uint8).reshape(self.height, self.width, 3)
         error = self.native.error_buffer()
         result = self.native.lib.sdf_rt_gles_render(
             self._handle,
             _pointer(gbuffer, _U8_P),
             _pointer(output, _U8_P),
+            roi[0],
+            roi[1],
+            roi[2],
+            roi[3],
             error,
             len(error),
         )

@@ -10,6 +10,11 @@ int sdf_rt_build_gbuffer(
     std::uint32_t count,
     const float* directions,
     std::uint32_t pixel_count,
+    std::uint32_t image_width,
+    std::uint32_t roi_x,
+    std::uint32_t roi_y,
+    std::uint32_t roi_width,
+    std::uint32_t roi_height,
     const float* origin,
     const float* tri_v0,
     const float* tri_e1,
@@ -44,6 +49,10 @@ int sdf_rt_gles_render(
     void* renderer,
     const std::uint8_t* gbuffer_rgba,
     std::uint8_t* image_rgb,
+    std::uint32_t roi_x,
+    std::uint32_t roi_y,
+    std::uint32_t roi_width,
+    std::uint32_t roi_height,
     char* error,
     std::uint32_t error_size);
 

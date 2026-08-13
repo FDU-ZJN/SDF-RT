@@ -26,6 +26,7 @@ class TracePlan:
     order_positions: np.ndarray
     ray_buffer: object
     label: str
+    roi: tuple
 
     @property
     def ray_count(self):
@@ -49,10 +50,16 @@ class FrameContext:
     started_at: float = 0.0
     gbuffer_done_at: float = 0.0
     completed_at: float = 0.0
+    roi: tuple = (0, 0, 0, 0)
 
-    def reset(self, index):
+    def reset(self, index, roi):
         self.index = index
-        self.gbuffer.fill(0)
+        self.roi = roi
+        roi_width, roi_height = roi[2], roi[3]
+        if self.gbuffer.shape[:2] != (roi_height, roi_width):
+            self.gbuffer = np.zeros((roi_height, roi_width, 4), dtype=np.uint8)
+        else:
+            self.gbuffer.fill(0)
         self.image.fill(0)
         self.hit.fill(False)
         self.hit_id.fill(0)
@@ -249,7 +256,7 @@ class RenderApplication:
     def _allocate_frame_context(self, index):
         return FrameContext(
             index=index,
-            gbuffer=self.renderer.allocate_gbuffer(),
+            gbuffer=np.zeros((1, 1, 4), dtype=np.uint8),
             image=self.renderer.allocate_image(),
             hit=np.zeros(self.total_rays, dtype=bool),
             hit_id=np.zeros(self.total_rays, dtype=np.uint32),
@@ -260,6 +267,7 @@ class RenderApplication:
         stats = PerformanceStats()
         roi_order_positions = None
         roi_ray_buffer = None
+        roi_bounds = None
         contexts = [self._allocate_frame_context(index) for index in range(3)]
         completed = []
         pipeline = FramePipeline(
@@ -278,13 +286,14 @@ class RenderApplication:
                     completed.append(
                         self._snapshot_frame(frame, frame.index == self.args.frames - 1)
                     )
-                frame.reset(frame_index)
                 plan = self._trace_plan(
                     frame_index,
                     prepacked_rays,
                     roi_order_positions,
                     roi_ray_buffer,
+                    roi_bounds,
                 )
+                frame.reset(frame_index, plan.roi)
                 self._print_plan(frame_index, plan)
                 frame.started_at = time.perf_counter()
                 trace_start = time.perf_counter()
@@ -313,7 +322,7 @@ class RenderApplication:
                 pipeline.finish_frame(frame)
                 if frame_index == 0 and self.args.frames > 1:
                     pipeline.wait_gbuffer(frame)
-                    roi_order_positions, roi_ray_buffer = self._build_first_frame_roi(
+                    roi_order_positions, roi_ray_buffer, roi_bounds = self._build_first_frame_roi(
                         runner,
                         prepacked_rays,
                         frame,
@@ -387,12 +396,35 @@ class RenderApplication:
             started_at=frame.started_at,
             gbuffer_done_at=frame.gbuffer_done_at,
             completed_at=frame.completed_at,
+            roi=frame.roi,
         )
 
-    def _trace_plan(self, frame_index, prepacked_rays, roi_order_positions, roi_ray_buffer):
+    def _trace_plan(
+        self,
+        frame_index,
+        prepacked_rays,
+        roi_order_positions,
+        roi_ray_buffer,
+        roi_bounds,
+    ):
         if frame_index == 0 or roi_order_positions is None:
-            return TracePlan(self.full_order_positions, prepacked_rays, "full frame")
-        return TracePlan(roi_order_positions, roi_ray_buffer, "first-frame hit ROI")
+            return TracePlan(
+                self.full_order_positions,
+                prepacked_rays,
+                "full frame",
+                (0, 0, self.args.width, self.args.height),
+            )
+        return TracePlan(
+            roi_order_positions,
+            roi_ray_buffer,
+            "first-frame hit ROI",
+            (
+                roi_bounds[0],
+                roi_bounds[1],
+                roi_bounds[2] - roi_bounds[0] + 1,
+                roi_bounds[3] - roi_bounds[1] + 1,
+            ),
+        )
 
     def _print_plan(self, frame_index, plan):
         batch_count = (plan.ray_count + self.args.batch_rays - 1) // self.args.batch_rays
@@ -436,7 +468,7 @@ class RenderApplication:
         )
         if roi_order_positions is None:
             print("[ROI] frame 0 had no hits; retaining full-frame tracing")
-            return None, None
+            return None, None, None
         roi_ray_buffer = None
         if prepacked_rays is not None:
             roi_ray_buffer = runner.allocate_roi_ray_buffer(
@@ -450,7 +482,7 @@ class RenderApplication:
             f"block={TRACE_BLOCK_SIZE}x{TRACE_BLOCK_SIZE} "
             f"rays={roi_order_positions.size}/{self.total_rays}"
         )
-        return roi_order_positions, roi_ray_buffer
+        return roi_order_positions, roi_ray_buffer, roi_bounds
 
     def _print_validation(self):
         hit_t = self.last_frame.hit_t_bits.view(np.float32)
