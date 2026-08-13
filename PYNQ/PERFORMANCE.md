@@ -46,3 +46,19 @@ so they preserve the existing output texture without repeating environment,
 tone-map, and sRGB work. The shader path remains free of pure-blue or
 pure-green overflow pixels; the 1080p diagnostic differed from Stage 3 only by
 mediump 1-2 LSB rounding (mean absolute channel error 0.0034).
+
+Stage 6 direct-scanout feasibility was checked on the deployed KV260. The
+connector is `card0-DP-1` and supports page flips, while Mali exports
+`EGL_KHR_image_base` and `EGL_EXT_image_dma_buf_import`. The installed PYNQ
+`libdisplayport.so` ABI, however, only exposes `frame_new/data/physaddr/write`
+and does not expose a dma-buf file descriptor. Its implementation creates a
+PRIME fd with `DRM_IOCTL_PRIME_HANDLE_TO_FD`, but keeps that fd private inside
+the C++ frame object, so the buffer cannot be imported into EGL through the
+current Python driver. No unsafe
+EGLImage/DRM ownership change was enabled. The synchronized DisplayPort thread
+therefore remains the verified fallback; a true zero-copy stage requires a
+small native DRM allocator/page-flip backend (or a one-function PYNQ driver
+extension) that shares dma-buf fds with the Mali EGL context. Because the
+active display mode is `1024x768`, that backend should render the centered
+crop directly into scanout buffers while retaining `1920x1080` camera-space
+coordinates for the BRDF.
