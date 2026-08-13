@@ -15,6 +15,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace {
 
@@ -50,6 +51,7 @@ struct DrmScanout::Impl {
     std::uint32_t connector = 0;
     std::uint32_t crtc = 0;
     std::uint32_t plane = 0;
+    std::vector<std::uint32_t> other_planes;
     drmModeModeInfo mode{};
     drmModeCrtc* saved_crtc = nullptr;
     EGLDisplay egl_display = EGL_NO_DISPLAY;
@@ -110,8 +112,19 @@ std::unique_ptr<DrmScanout> DrmScanout::create(
         return nullptr;
     }
     drmModePlaneRes* plane_resources = drmModeGetPlaneResources(impl->fd);
-    if (plane_resources && plane_resources->count_planes)
-        impl->plane = plane_resources->planes[0];
+    if (plane_resources) {
+        for (std::uint32_t i = 0; i < plane_resources->count_planes; ++i) {
+            drmModePlane* candidate = drmModeGetPlane(impl->fd, plane_resources->planes[i]);
+            if (!candidate) continue;
+            const bool usable = candidate->possible_crtcs != 0;
+            if (!impl->plane && usable) {
+                impl->plane = candidate->plane_id;
+            } else if (usable) {
+                impl->other_planes.push_back(candidate->plane_id);
+            }
+            drmModeFreePlane(candidate);
+        }
+    }
     if (plane_resources) drmModeFreePlaneResources(plane_resources);
     if (!impl->plane) {
         error = "DRM primary plane is unavailable";
@@ -216,6 +229,15 @@ bool DrmScanout::start(std::string& error) {
                        0, 0, &impl_->connector, 1, &impl_->mode) != 0) {
         error = system_error("drmModeSetCrtc");
         return false;
+    }
+    // PYNQ's DisplayPort driver can leave another plane enabled at zpos=0.
+    // Disable it so the EGLImage plane is the only visible source.
+    for (const std::uint32_t plane : impl_->other_planes) {
+        if (drmModeSetPlane(impl_->fd, plane, impl_->crtc, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0) != 0) {
+            error = system_error("drmModeSetPlane disable old plane");
+            return false;
+        }
     }
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[0].framebuffer, 0,
