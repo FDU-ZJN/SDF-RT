@@ -14,6 +14,8 @@
 *.tar
 *.tar.gz
 *.zip
+*.o
+*.so
 
 # Python cache
 __pycache__/
@@ -107,3 +109,4 @@ main.cu
 .bloop/
 .scala-build/
 .qwen/
+PYNQ/native/native_test

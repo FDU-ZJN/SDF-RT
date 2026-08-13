@@ -1,4 +1,4 @@
-"""Producer/consumer pipeline that overlaps DMA tracing and CPU shading."""
+"""Cross-frame Trace, G-buffer, and Mali BRDF pipeline."""
 
 import queue
 import threading
@@ -6,36 +6,41 @@ import time
 import traceback
 
 from .config import RESULT_BUFFER_COUNT
+from .io import write_gbuffer_ppm, write_ppm
 
 
-class BatchRenderPipeline:
-    """Overlap one simple-mode DMA producer with CPU batch shading workers."""
+class FramePipeline:
+    """Run OpenMP G-buffer and Mali BRDF as persistent frame stages."""
 
-    def __init__(self, renderer, worker_count, shade_chunk_pixels):
-        if worker_count <= 0:
-            raise ValueError("shade worker count must be positive")
+    def __init__(
+        self,
+        renderer,
+        display,
+        shade_chunk_pixels,
+        save_ppm=None,
+        last_frame_index=None,
+    ):
         self.renderer = renderer
-        self.worker_count = int(worker_count)
+        self.display = display
         self.shade_chunk_pixels = int(shade_chunk_pixels)
-        self.work_queue = queue.Queue(maxsize=RESULT_BUFFER_COUNT)
+        self.save_ppm = save_ppm
+        self.last_frame_index = last_frame_index
         self.free_slots = queue.Queue(maxsize=RESULT_BUFFER_COUNT)
         for slot in range(RESULT_BUFFER_COUNT):
             self.free_slots.put(slot)
+        self.gbuffer_queue = queue.Queue(maxsize=RESULT_BUFFER_COUNT + 1)
+        self.brdf_queue = queue.Queue(maxsize=3)
         self.error_lock = threading.Lock()
         self.error = None
-        self.shade_time_lock = threading.Lock()
-        self.shade_time = 0.0
         self.threads = []
 
     def start(self):
-        for worker_index in range(self.worker_count):
-            thread = threading.Thread(
-                target=self._worker,
-                name=f"shade-{worker_index}",
-                daemon=True,
-            )
+        self.threads = [
+            threading.Thread(target=self._gbuffer_worker, name="gbuffer", daemon=True),
+            threading.Thread(target=self._brdf_worker, name="brdf", daemon=True),
+        ]
+        for thread in self.threads:
             thread.start()
-            self.threads.append(thread)
 
     def _record_error(self, exc):
         with self.error_lock:
@@ -47,7 +52,8 @@ class BatchRenderPipeline:
             error = self.error
         if error is not None:
             exc, details = error
-            raise RuntimeError(f"render worker failed: {exc}\n{details}") from exc
+            raise RuntimeError(f"frame pipeline failed: {exc}\n{details}") from exc
+        self.display.raise_if_error()
 
     def acquire_slot(self):
         while True:
@@ -57,69 +63,87 @@ class BatchRenderPipeline:
             except queue.Empty:
                 continue
 
-    def submit(self, slot, image, batch_raster_index, result_buffer, count, hit, hit_id, hit_t_bits):
-        self.raise_if_error()
-        task = (
-            slot,
-            image,
-            batch_raster_index,
-            result_buffer,
-            count,
-            hit,
-            hit_id,
-            hit_t_bits,
+    def submit_batch(self, slot, frame, batch_raster_index, result_buffer, count):
+        self.gbuffer_queue.put(
+            (slot, frame, batch_raster_index, result_buffer, count)
         )
-        try:
-            self.work_queue.put(task, timeout=0.05)
-        except queue.Full:
-            self.free_slots.put(slot)
+
+    def finish_frame(self, frame):
+        self.gbuffer_queue.put((None, frame, None, None, None))
+
+    def wait_gbuffer(self, frame):
+        self._wait_event(frame.gbuffer_done)
+
+    def wait_frame(self, frame):
+        self._wait_event(frame.done)
+
+    def _wait_event(self, event):
+        while not event.wait(0.05):
             self.raise_if_error()
-            raise RuntimeError("render pipeline queue unexpectedly remained full")
-
-    def _worker(self):
-        while True:
-            task = self.work_queue.get()
-            if task is None:
-                self.work_queue.task_done()
-                return
-            slot = task[0]
-            try:
-                shade_start = time.perf_counter()
-                self.renderer.shade_result_batch(
-                    task[1],
-                    task[2],
-                    task[3],
-                    task[4],
-                    task[5],
-                    task[6],
-                    task[7],
-                    self.shade_chunk_pixels,
-                )
-                with self.shade_time_lock:
-                    self.shade_time += time.perf_counter() - shade_start
-            except BaseException as exc:
-                self._record_error(exc)
-            finally:
-                self.free_slots.put(slot)
-                self.work_queue.task_done()
-
-    def finish(self):
-        self.work_queue.join()
-        self._shutdown_workers()
         self.raise_if_error()
 
-    def total_shade_time(self):
-        with self.shade_time_lock:
-            return self.shade_time
+    def _gbuffer_worker(self):
+        try:
+            while True:
+                task = self.gbuffer_queue.get()
+                if task is None:
+                    self.gbuffer_queue.task_done()
+                    return
+                slot, frame, raster_index, result_buffer, count = task
+                if slot is None:
+                    frame.gbuffer_done_at = time.perf_counter()
+                    frame.gbuffer_done.set()
+                    self.brdf_queue.put(frame)
+                else:
+                    _, elapsed = self.renderer.shade_result_batch(
+                        frame.gbuffer,
+                        raster_index,
+                        result_buffer,
+                        count,
+                        frame.hit,
+                        frame.hit_id,
+                        frame.hit_t_bits,
+                        self.shade_chunk_pixels,
+                    )
+                    frame.gbuffer_elapsed += elapsed
+                    self.free_slots.put(slot)
+                self.gbuffer_queue.task_done()
+        except BaseException as exc:
+            self._record_error(exc)
 
-    def abort(self):
-        self._shutdown_workers()
+    def _brdf_worker(self):
+        try:
+            while True:
+                frame = self.brdf_queue.get()
+                if frame is None:
+                    self.brdf_queue.task_done()
+                    return
+                start = time.perf_counter()
+                self.renderer.finish_frame(frame.gbuffer, frame.image)
+                frame.brdf_elapsed = time.perf_counter() - start
+                if self.save_ppm and frame.index == self.last_frame_index:
+                    write_ppm(
+                        self.save_ppm,
+                        frame.image,
+                        self.renderer.width,
+                        self.renderer.height,
+                    )
+                    write_gbuffer_ppm(self.save_ppm, frame.gbuffer)
+                self.display.publish(frame.image, frame.index)
+                frame.completed_at = time.perf_counter()
+                frame.done.set()
+                self.brdf_queue.task_done()
+        except BaseException as exc:
+            self._record_error(exc)
 
-    def _shutdown_workers(self):
+    def close(self):
         if not self.threads:
             return
-        for _ in self.threads:
-            self.work_queue.put(None)
+        self.gbuffer_queue.join()
+        self.brdf_queue.join()
+        self.gbuffer_queue.put(None)
+        self.brdf_queue.put(None)
         for thread in self.threads:
             thread.join()
         self.threads.clear()
+        self.raise_if_error()
