@@ -325,6 +325,44 @@ bool DrmScanout::start(std::string& error) {
 }
 
 bool DrmScanout::present(std::uint32_t index, std::string& error) {
+    const Buffer& source = impl_->buffers[index];
+    drm_mode_map_dumb source_map{};
+    source_map.handle = source.handle;
+    drm_mode_map_dumb base_map{};
+    base_map.handle = impl_->base_buffer.handle;
+    if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &source_map) != 0 ||
+        drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &base_map) != 0) {
+        error = system_error("DRM_IOCTL_MODE_MAP_DUMB present");
+        return false;
+    }
+    void* source_ptr = mmap(nullptr, source.size, PROT_READ, MAP_SHARED,
+                            impl_->fd, source_map.offset);
+    void* base_ptr = mmap(nullptr, impl_->base_buffer.size, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, impl_->fd, base_map.offset);
+    if (source_ptr == MAP_FAILED || base_ptr == MAP_FAILED) {
+        if (source_ptr != MAP_FAILED) munmap(source_ptr, source.size);
+        if (base_ptr != MAP_FAILED) munmap(base_ptr, impl_->base_buffer.size);
+        error = system_error("mmap present buffers");
+        return false;
+    }
+    const auto* source_bytes = static_cast<const std::uint8_t*>(source_ptr);
+    auto* base_bytes = static_cast<std::uint8_t*>(base_ptr);
+    for (std::uint32_t y = 0; y < impl_->height; ++y) {
+        const auto* src = source_bytes + static_cast<std::size_t>(y) * source.pitch;
+        auto* dst = base_bytes + static_cast<std::size_t>(y) * impl_->base_buffer.pitch;
+        for (std::uint32_t x = 0; x < impl_->width; ++x) {
+            dst[3u * x + 0] = src[4u * x + 2];
+            dst[3u * x + 1] = src[4u * x + 1];
+            dst[3u * x + 2] = src[4u * x + 0];
+        }
+    }
+    munmap(source_ptr, source.size);
+    munmap(base_ptr, impl_->base_buffer.size);
+    if (drmModeSetCrtc(impl_->fd, impl_->crtc, impl_->base_buffer.framebuffer,
+                       0, 0, &impl_->connector, 1, &impl_->mode) != 0) {
+        error = system_error("drmModeSetCrtc present");
+        return false;
+    }
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[index].framebuffer, 0,
                         0, 0, impl_->width, impl_->height,
