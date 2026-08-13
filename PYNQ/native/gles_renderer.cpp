@@ -12,6 +12,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 namespace {
 
 void set_error(char* error, std::uint32_t size, const std::string& text) {
@@ -173,6 +177,8 @@ struct Renderer {
     std::array<float, 3> up{};
     float fov_degrees = 60.0f;
     std::string renderer_name;
+    GLenum read_format = GL_RGBA;
+    std::size_t read_channels = 4;
     std::vector<std::uint8_t> readback;
 
     ~Renderer() {
@@ -271,7 +277,19 @@ bool initialize(Renderer& renderer, std::string& error) {
     }
     const char* name = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     renderer.renderer_name = name ? name : "unknown";
-    renderer.readback.resize(static_cast<std::size_t>(renderer.width) * renderer.height * 4u);
+    GLint implementation_format = GL_RGBA;
+    GLint implementation_type = GL_UNSIGNED_BYTE;
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &implementation_format);
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &implementation_type);
+    if (implementation_format == GL_RGB && implementation_type == GL_UNSIGNED_BYTE) {
+        renderer.read_format = GL_RGB;
+        renderer.read_channels = 3;
+        renderer.renderer_name += " readback=RGB-direct";
+    } else {
+        renderer.renderer_name += " readback=RGBA-NEON";
+    }
+    renderer.readback.resize(
+        static_cast<std::size_t>(renderer.width) * renderer.height * renderer.read_channels);
     // The context is owned by the BRDF worker after initialization. Releasing
     // it here allows eglMakeCurrent from that thread without EGL_BAD_ACCESS.
     eglMakeCurrent(renderer.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -341,18 +359,39 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
         set_error(error, error_size, "OpenGL ES rendering failed");
         return -1;
     }
-    glReadPixels(0, 0, renderer->width, renderer->height, GL_RGBA, GL_UNSIGNED_BYTE,
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, renderer->width, renderer->height, renderer->read_format, GL_UNSIGNED_BYTE,
                  renderer->readback.data());
     for (std::uint32_t y = 0; y < renderer->height; ++y) {
-        const std::size_t src_row = static_cast<std::size_t>(renderer->height - 1u - y) * renderer->width;
-        const std::size_t dst_row = static_cast<std::size_t>(y) * renderer->width;
-        for (std::uint32_t x = 0; x < renderer->width; ++x) {
-            const std::size_t source = src_row + x;
-            const std::size_t destination = dst_row + x;
-            image_rgb[3 * destination + 0] = renderer->readback[4 * source + 0];
-            image_rgb[3 * destination + 1] = renderer->readback[4 * source + 1];
-            image_rgb[3 * destination + 2] = renderer->readback[4 * source + 2];
+        const std::size_t source_row =
+            static_cast<std::size_t>(renderer->height - 1u - y) * renderer->width;
+        const std::size_t destination_row = static_cast<std::size_t>(y) * renderer->width;
+        const std::uint8_t* source =
+            renderer->readback.data() + renderer->read_channels * source_row;
+        std::uint8_t* destination = image_rgb + 3u * destination_row;
+        if (renderer->read_channels == 3) {
+            std::memcpy(destination, source, 3u * renderer->width);
+            continue;
         }
+#if defined(__aarch64__)
+        std::uint32_t x = 0;
+        for (; x + 16u <= renderer->width; x += 16u) {
+            const uint8x16x4_t rgba = vld4q_u8(source + 4u * x);
+            const uint8x16x3_t rgb = {rgba.val[0], rgba.val[1], rgba.val[2]};
+            vst3q_u8(destination + 3u * x, rgb);
+        }
+        for (; x < renderer->width; ++x) {
+            destination[3u * x + 0] = source[4u * x + 0];
+            destination[3u * x + 1] = source[4u * x + 1];
+            destination[3u * x + 2] = source[4u * x + 2];
+        }
+#else
+        for (std::uint32_t x = 0; x < renderer->width; ++x) {
+            destination[3u * x + 0] = source[4u * x + 0];
+            destination[3u * x + 1] = source[4u * x + 1];
+            destination[3u * x + 2] = source[4u * x + 2];
+        }
+#endif
     }
     return 0;
 }
