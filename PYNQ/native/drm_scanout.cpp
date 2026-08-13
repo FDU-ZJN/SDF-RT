@@ -233,7 +233,7 @@ bool DrmScanout::start(std::string& error) {
     // PYNQ's DisplayPort driver can leave another plane enabled at zpos=0.
     // Disable it so the EGLImage plane is the only visible source.
     for (const std::uint32_t plane : impl_->other_planes) {
-        if (drmModeSetPlane(impl_->fd, plane, impl_->crtc, 0, 0,
+        if (drmModeSetPlane(impl_->fd, plane, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, 0) != 0) {
             error = system_error("drmModeSetPlane disable old plane");
             return false;
