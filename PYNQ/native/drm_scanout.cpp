@@ -252,7 +252,6 @@ bool DrmScanout::start(std::string& error) {
 }
 
 bool DrmScanout::present(std::uint32_t index, std::string& error) {
-    impl_->flip_done = false;
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[index].framebuffer, 0,
                         0, 0, impl_->width, impl_->height,
@@ -260,15 +259,12 @@ bool DrmScanout::present(std::uint32_t index, std::string& error) {
         error = system_error("drmModeSetPlane");
         return false;
     }
-    // The legacy plane API does not emit page-flip events. Wait for the next
-    // vertical blank before reusing the previous scanout buffer.
-    drmVBlank vblank{};
-    vblank.request.type = DRM_VBLANK_RELATIVE;
-    vblank.request.sequence = 1;
-    if (drmWaitVBlank(impl_->fd, &vblank) != 0) {
-        error = system_error("drmWaitVBlank");
-        return false;
-    }
+    // This controller exposes the image as an overlay plane, and its legacy
+    // plane API does not generate page-flip events. Do not call drmWaitVBlank
+    // here: on the KV260 driver it can block indefinitely. The renderer uses
+    // two buffers and always renders into the buffer opposite the active one,
+    // so ownership is still safe; the display controller latches the plane
+    // update on its next scanout boundary.
     impl_->active = index;
     return true;
 }
