@@ -134,6 +134,8 @@ struct DrmScanout::Impl {
     PFNEGLDESTROYIMAGEKHRPROC destroy_image = nullptr;
     std::array<Buffer, 2> buffers{};
     Buffer base_buffer{};
+    std::array<void*, 2> source_maps{MAP_FAILED, MAP_FAILED};
+    void* base_map = MAP_FAILED;
     std::uint32_t active = 0;
     bool started = false;
     bool flip_done = false;
@@ -306,6 +308,29 @@ bool DrmScanout::start(std::string& error) {
         error = system_error("drmModeSetCrtc");
         return false;
     }
+    drm_mode_map_dumb base_map{};
+    base_map.handle = impl_->base_buffer.handle;
+    if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &base_map) != 0) {
+        error = system_error("DRM_IOCTL_MODE_MAP_DUMB scanout");
+        return false;
+    }
+    for (std::size_t i = 0; i < impl_->buffers.size(); ++i) {
+        drm_mode_map_dumb source_map{};
+        source_map.handle = impl_->buffers[i].handle;
+        if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &source_map) != 0) {
+            error = system_error("DRM_IOCTL_MODE_MAP_DUMB source");
+            return false;
+        }
+        impl_->source_maps[i] = mmap(nullptr, impl_->buffers[i].size, PROT_READ,
+                                     MAP_SHARED, impl_->fd, source_map.offset);
+    }
+    impl_->base_map = mmap(nullptr, impl_->base_buffer.size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, impl_->fd, base_map.offset);
+    if (impl_->source_maps[0] == MAP_FAILED || impl_->source_maps[1] == MAP_FAILED ||
+        impl_->base_map == MAP_FAILED) {
+        error = system_error("mmap scanout buffers");
+        return false;
+    }
     refresh_other_planes(impl_->fd, impl_->plane, impl_->other_planes);
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[0].framebuffer, 0,
@@ -327,61 +352,41 @@ bool DrmScanout::start(std::string& error) {
     return true;
 }
 
-bool DrmScanout::present(std::uint32_t index, std::string& error) {
+bool DrmScanout::present(std::uint32_t index, std::uint32_t dirty_x,
+                         std::uint32_t dirty_y, std::uint32_t dirty_width,
+                         std::uint32_t dirty_height, std::string& error) {
     const Buffer& source = impl_->buffers[index];
-    drm_mode_map_dumb source_map{};
-    source_map.handle = source.handle;
-    drm_mode_map_dumb base_map{};
-    base_map.handle = impl_->base_buffer.handle;
-    if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &source_map) != 0 ||
-        drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &base_map) != 0) {
-        error = system_error("DRM_IOCTL_MODE_MAP_DUMB present");
-        return false;
-    }
-    void* source_ptr = mmap(nullptr, source.size, PROT_READ, MAP_SHARED,
-                            impl_->fd, source_map.offset);
-    void* base_ptr = mmap(nullptr, impl_->base_buffer.size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, impl_->fd, base_map.offset);
-    if (source_ptr == MAP_FAILED || base_ptr == MAP_FAILED) {
-        if (source_ptr != MAP_FAILED) munmap(source_ptr, source.size);
-        if (base_ptr != MAP_FAILED) munmap(base_ptr, impl_->base_buffer.size);
-        error = system_error("mmap present buffers");
-        return false;
-    }
-    const auto* source_bytes = static_cast<const std::uint8_t*>(source_ptr);
-    auto* base_bytes = static_cast<std::uint8_t*>(base_ptr);
-    for (std::uint32_t y = 0; y < impl_->height; ++y) {
+    const auto* source_bytes = static_cast<const std::uint8_t*>(impl_->source_maps[index]);
+    auto* base_bytes = static_cast<std::uint8_t*>(impl_->base_map);
+    dirty_x = std::min(dirty_x, impl_->width);
+    dirty_y = std::min(dirty_y, impl_->height);
+    dirty_width = std::min(dirty_width, impl_->width - dirty_x);
+    dirty_height = std::min(dirty_height, impl_->height - dirty_y);
+    for (std::uint32_t y = dirty_y; y < dirty_y + dirty_height; ++y) {
         // GLES renderbuffers use a bottom-left origin; DRM scanout starts at
         // the top row. Flip the source row while copying to the primary FB.
         const auto* src = source_bytes +
             static_cast<std::size_t>(impl_->height - 1u - y) * source.pitch;
         auto* dst = base_bytes + static_cast<std::size_t>(y) * impl_->base_buffer.pitch;
 #if defined(__aarch64__)
-        std::uint32_t x = 0;
-        for (; x + 16u <= impl_->width; x += 16u) {
+        std::uint32_t x = dirty_x;
+        for (; x + 16u <= dirty_x + dirty_width; x += 16u) {
             const uint8x16x4_t rgba = vld4q_u8(src + 4u * x);
             const uint8x16x3_t rgb = {rgba.val[2], rgba.val[1], rgba.val[0]};
             vst3q_u8(dst + 3u * x, rgb);
         }
-        for (; x < impl_->width; ++x) {
+        for (; x < dirty_x + dirty_width; ++x) {
             dst[3u * x + 0] = src[4u * x + 2];
             dst[3u * x + 1] = src[4u * x + 1];
             dst[3u * x + 2] = src[4u * x + 0];
         }
 #else
-        for (std::uint32_t x = 0; x < impl_->width; ++x) {
+        for (std::uint32_t x = dirty_x; x < dirty_x + dirty_width; ++x) {
             dst[3u * x + 0] = src[4u * x + 2];
             dst[3u * x + 1] = src[4u * x + 1];
             dst[3u * x + 2] = src[4u * x + 0];
         }
 #endif
-    }
-    munmap(source_ptr, source.size);
-    munmap(base_ptr, impl_->base_buffer.size);
-    if (drmModeSetCrtc(impl_->fd, impl_->crtc, impl_->base_buffer.framebuffer,
-                       0, 0, &impl_->connector, 1, &impl_->mode) != 0) {
-        error = system_error("drmModeSetCrtc present");
-        return false;
     }
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[index].framebuffer, 0,
@@ -464,6 +469,10 @@ DrmScanout::~DrmScanout() {
                        &impl_->saved_crtc->mode);
     }
     if (impl_->saved_crtc) drmModeFreeCrtc(impl_->saved_crtc);
+    for (void* source_map : impl_->source_maps)
+        if (source_map != MAP_FAILED) munmap(source_map, impl_->buffers[0].size);
+    if (impl_->base_map != MAP_FAILED)
+        munmap(impl_->base_map, impl_->base_buffer.size);
     for (Buffer& buffer : impl_->buffers) {
         if (buffer.gl_framebuffer) glDeleteFramebuffers(1, &buffer.gl_framebuffer);
         if (buffer.renderbuffer) glDeleteRenderbuffers(1, &buffer.renderbuffer);

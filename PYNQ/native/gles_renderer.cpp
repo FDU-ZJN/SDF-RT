@@ -589,7 +589,11 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     if (renderer->scanout) {
         glFinish();
         std::string detail;
-        if (!renderer->scanout->present(scanout_index, detail)) {
+        const std::uint32_t dirty_x = draw_width ? draw_x - renderer->crop_x : 0;
+        const std::uint32_t dirty_y = draw_height
+            ? renderer->output_height - (draw_y - renderer->crop_y) - draw_height : 0;
+        if (!renderer->scanout->present(scanout_index, dirty_x, dirty_y,
+                                        draw_width, draw_height, detail)) {
             set_error(error, error_size, detail);
             return -1;
         }
