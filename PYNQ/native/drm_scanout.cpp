@@ -31,6 +31,47 @@ std::string egl_error(const char* operation) {
     return stream.str();
 }
 
+std::uint32_t object_property(int fd, std::uint32_t object, const char* name) {
+    drmModeObjectProperties* properties =
+        drmModeObjectGetProperties(fd, object, DRM_MODE_OBJECT_PLANE);
+    if (!properties) return 0;
+    std::uint32_t result = 0;
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        drmModePropertyRes* property = drmModeGetProperty(fd, properties->props[i]);
+        if (property) {
+            if (std::strcmp(property->name, name) == 0) result = property->prop_id;
+            drmModeFreeProperty(property);
+        }
+        if (result) break;
+    }
+    drmModeFreeObjectProperties(properties);
+    return result;
+}
+
+bool disable_plane_atomic(int fd, std::uint32_t plane, std::string& error) {
+    const std::uint32_t crtc_id = object_property(fd, plane, "CRTC_ID");
+    const std::uint32_t fb_id = object_property(fd, plane, "FB_ID");
+    if (!crtc_id || !fb_id) {
+        error = "DRM plane has no atomic CRTC_ID/FB_ID properties";
+        return false;
+    }
+    drmModeAtomicReq* request = drmModeAtomicAlloc();
+    if (!request) {
+        error = "drmModeAtomicAlloc failed";
+        return false;
+    }
+    int result = drmModeAtomicAddProperty(request, plane, crtc_id, 0);
+    if (result >= 0) result = drmModeAtomicAddProperty(request, plane, fb_id, 0);
+    if (result >= 0)
+        result = drmModeAtomicCommit(fd, request, 0, nullptr);
+    drmModeAtomicFree(request);
+    if (result != 0) {
+        error = system_error("drmModeAtomicCommit disable plane");
+        return false;
+    }
+    return true;
+}
+
 struct Buffer {
     std::uint32_t handle = 0;
     std::uint32_t framebuffer = 0;
@@ -240,9 +281,7 @@ bool DrmScanout::start(std::string& error) {
     // Set our plane first. The KV260 display driver may restore its primary
     // plane during the CRTC mode-set, so disable stale planes afterwards.
     for (const std::uint32_t plane : impl_->other_planes) {
-        if (drmModeSetPlane(impl_->fd, plane, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 0) != 0) {
-            error = system_error("drmModeSetPlane disable old plane");
+        if (!disable_plane_atomic(impl_->fd, plane, error)) {
             return false;
         }
     }
