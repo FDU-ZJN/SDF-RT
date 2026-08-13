@@ -230,21 +230,21 @@ bool DrmScanout::start(std::string& error) {
         error = system_error("drmModeSetCrtc");
         return false;
     }
-    // PYNQ's DisplayPort driver can leave another plane enabled at zpos=0.
-    // Disable it so the EGLImage plane is the only visible source.
-    for (const std::uint32_t plane : impl_->other_planes) {
-        if (drmModeSetPlane(impl_->fd, plane, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 0) != 0) {
-            error = system_error("drmModeSetPlane disable old plane");
-            return false;
-        }
-    }
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[0].framebuffer, 0,
                         0, 0, impl_->width, impl_->height,
                         0, 0, impl_->width << 16, impl_->height << 16) != 0) {
         error = system_error("drmModeSetPlane initial scanout");
         return false;
+    }
+    // Set our plane first. The KV260 display driver may restore its primary
+    // plane during the CRTC mode-set, so disable stale planes afterwards.
+    for (const std::uint32_t plane : impl_->other_planes) {
+        if (drmModeSetPlane(impl_->fd, plane, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0) != 0) {
+            error = system_error("drmModeSetPlane disable old plane");
+            return false;
+        }
     }
     impl_->active = 0;
     impl_->started = true;
