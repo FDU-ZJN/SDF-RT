@@ -56,6 +56,17 @@ class NativeRenderLibrary:
             ctypes.c_float, ctypes.c_char_p, ctypes.c_uint32,
         ]
         self.lib.sdf_rt_gles_create.restype = ctypes.c_void_p
+        self.lib.sdf_rt_gles_enable_direct_scanout.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_char_p, ctypes.c_uint32,
+        ]
+        self.lib.sdf_rt_gles_enable_direct_scanout.restype = ctypes.c_int
+        self.lib.sdf_rt_gles_scanout_crc32.argtypes = [ctypes.c_void_p]
+        self.lib.sdf_rt_gles_scanout_crc32.restype = ctypes.c_uint32
+        self.lib.sdf_rt_gles_dump_scanout_ppm.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32,
+        ]
+        self.lib.sdf_rt_gles_dump_scanout_ppm.restype = ctypes.c_int
         self.lib.sdf_rt_gles_render.argtypes = [
             ctypes.c_void_p, _U8_P, _U8_P, ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32,
@@ -104,6 +115,7 @@ class MaliBrdfRenderer:
         self.native = NativeRenderLibrary()
         self._build_lock = threading.Lock()
         self._handle = None
+        self.direct_scanout = False
         self._create_gles_renderer()
 
     def _create_gles_renderer(self):
@@ -148,7 +160,20 @@ class MaliBrdfRenderer:
         return np.zeros((self.height, self.width, 4), dtype=np.uint8)
 
     def allocate_image(self):
+        if self.direct_scanout:
+            return None
         return np.zeros((self.height * self.width, 3), dtype=np.uint8)
+
+    def enable_direct_scanout(self, output_width, output_height):
+        error = self.native.error_buffer()
+        result = self.native.lib.sdf_rt_gles_enable_direct_scanout(
+            self._handle, int(output_width), int(output_height), error, len(error)
+        )
+        if result != 0:
+            raise RuntimeError(error.value.decode(errors="replace"))
+        self.direct_scanout = True
+        name = self.native.lib.sdf_rt_gles_renderer(self._handle).decode(errors="replace")
+        print(f"[DISPLAY] direct renderer={name} mode={output_width}x{output_height}")
 
     def shade_result_batch(
         self,
@@ -214,12 +239,16 @@ class MaliBrdfRenderer:
             raise RuntimeError("GLES renderer is closed")
         roi = tuple(int(value) for value in roi)
         gbuffer = np.ascontiguousarray(gbuffer, dtype=np.uint8)
-        output = np.asarray(image, dtype=np.uint8).reshape(self.height, self.width, 3)
+        output = None
+        output_pointer = ctypes.cast(None, _U8_P)
+        if not self.direct_scanout:
+            output = np.asarray(image, dtype=np.uint8).reshape(self.height, self.width, 3)
+            output_pointer = _pointer(output, _U8_P)
         error = self.native.error_buffer()
         result = self.native.lib.sdf_rt_gles_render(
             self._handle,
             _pointer(gbuffer, _U8_P),
-            _pointer(output, _U8_P),
+            output_pointer,
             roi[0],
             roi[1],
             roi[2],
@@ -230,3 +259,14 @@ class MaliBrdfRenderer:
         if result != 0:
             raise RuntimeError(error.value.decode(errors="replace"))
         return output
+
+    def scanout_crc32(self):
+        return int(self.native.lib.sdf_rt_gles_scanout_crc32(self._handle))
+
+    def dump_scanout_ppm(self, path):
+        error = self.native.error_buffer()
+        result = self.native.lib.sdf_rt_gles_dump_scanout_ppm(
+            self._handle, os.fsencode(path), error, len(error)
+        )
+        if result != 0:
+            raise RuntimeError(error.value.decode(errors="replace"))

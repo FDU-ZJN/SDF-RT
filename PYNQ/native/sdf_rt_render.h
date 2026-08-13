@@ -45,6 +45,20 @@ void* sdf_rt_gles_create(
     char* error,
     std::uint32_t error_size);
 
+int sdf_rt_gles_enable_direct_scanout(
+    void* renderer,
+    std::uint32_t output_width,
+    std::uint32_t output_height,
+    char* error,
+    std::uint32_t error_size);
+
+std::uint32_t sdf_rt_gles_scanout_crc32(void* renderer);
+int sdf_rt_gles_dump_scanout_ppm(
+    void* renderer,
+    const char* path,
+    char* error,
+    std::uint32_t error_size);
+
 int sdf_rt_gles_render(
     void* renderer,
     const std::uint8_t* gbuffer_rgba,

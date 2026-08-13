@@ -10,7 +10,7 @@ import numpy as np
 from .camera import make_hit_roi, make_tiled_pixel_order
 from .config import RAY_BYTES, TRACE_BLOCK_SIZE
 from .dma import Kv260Runner
-from .display import DisplayThread
+from .display import DirectScanoutDisplay, DisplayThread
 from .formats import pack_ray_records
 from .io import (
     prepack_frame_rays,
@@ -60,7 +60,8 @@ class FrameContext:
             self.gbuffer = np.zeros((roi_height, roi_width, 4), dtype=np.uint8)
         else:
             self.gbuffer.fill(0)
-        self.image.fill(0)
+        if self.image is not None:
+            self.image.fill(0)
         self.hit.fill(False)
         self.hit_id.fill(0)
         self.hit_t_bits.fill(0)
@@ -178,16 +179,23 @@ class RenderApplication:
         try:
             self._initialize_hardware(runner)
             prepacked_rays = self._prepare_frame_rays(runner)
-            display = DisplayThread(
-                self.args.width,
-                self.args.height,
-                self.args.display_width,
-                self.args.display_height,
-            )
+            if self.args.direct_scanout:
+                self.renderer.enable_direct_scanout(
+                    self.args.display_width, self.args.display_height
+                )
+                display = DirectScanoutDisplay()
+            else:
+                display = DisplayThread(
+                    self.args.width,
+                    self.args.height,
+                    self.args.display_width,
+                    self.args.display_height,
+                )
             display.start()
             print(
                 f"[DISPLAY] HDMI/DisplayPort active {self.args.display_width}x"
-                f"{self.args.display_height}, centered output, frame-synchronized buffers"
+                f"{self.args.display_height}, centered output, "
+                f"frame-synchronized {'EGLImage/DRM scanout' if self.args.direct_scanout else 'buffers'}"
             )
             self._run_frames(runner, prepacked_rays, display)
             if display is not None:
@@ -376,6 +384,11 @@ class RenderApplication:
                 f"fps={(len(completed) - 2) / steady_duration:.3f}"
             )
         self.last_frame = completed[-1]
+        if self.args.direct_scanout:
+            print(f"[DISPLAY] scanout_crc32=0x{self.renderer.scanout_crc32():08X}")
+            if self.args.scanout_dump_ppm:
+                self.renderer.dump_scanout_ppm(self.args.scanout_dump_ppm)
+                print(f"[PPM] scanout_saved={self.args.scanout_dump_ppm}")
         runner.print_triangle_status()
         display.wait_presented(self.last_frame.index)
         stats.print_average(self.args.frames)

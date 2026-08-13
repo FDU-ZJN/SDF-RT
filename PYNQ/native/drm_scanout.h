@@ -1,0 +1,28 @@
+#pragma once
+
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+class DrmScanout {
+public:
+    static std::unique_ptr<DrmScanout> create(
+        std::uint32_t width, std::uint32_t height, std::string& error);
+    ~DrmScanout();
+
+    bool bind_egl(EGLDisplay display, std::string& error);
+    bool start(std::string& error);
+    bool present(std::uint32_t index, std::string& error);
+    GLuint framebuffer(std::uint32_t index) const;
+    std::uint32_t next_index() const;
+    std::uint32_t crc32(std::uint32_t index) const;
+    bool dump_ppm(std::uint32_t index, const char* path, std::string& error) const;
+
+private:
+    struct Impl;
+    explicit DrmScanout(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};

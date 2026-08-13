@@ -123,7 +123,7 @@ class FramePipeline:
                     self.brdf_queue.task_done()
                     return
                 start = time.perf_counter()
-                if self.previous_image is not None and frame.roi != (
+                if not self.renderer.direct_scanout and self.previous_image is not None and frame.roi != (
                     0,
                     0,
                     self.renderer.width,
@@ -131,7 +131,8 @@ class FramePipeline:
                 ):
                     np.copyto(frame.image, self.previous_image)
                 self.renderer.finish_frame(frame.gbuffer, frame.image, frame.roi)
-                self.previous_image = frame.image.copy()
+                if not self.renderer.direct_scanout:
+                    self.previous_image = frame.image.copy()
                 frame.brdf_elapsed = time.perf_counter() - start
                 if self.save_ppm and frame.index == self.last_frame_index:
                     write_ppm(

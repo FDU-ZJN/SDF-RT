@@ -20,6 +20,7 @@ Correctness gates for every stage are:
 | Stage 3 | Probe direct RGB readback; Mali reports RGBA, so use AArch64 NEON RGBA-to-RGB conversion | 52.091 ms | 122.864 ms | 240.652 ms | 4.137 | `verification/20260813T003757Z` |
 | Stage 4 | Compact first-frame hit ROI G-buffer upload, fragment viewport, and readback | 53.901 ms | 130.761 ms | 217.354 ms | 4.556 | `verification/20260813T010442Z` |
 | Stage 5 | Render static environment once; BRDF pass discards misses; cache GLES uniforms and fullscreen VBO | 53.935 ms | 131.605 ms | 210.439 ms | 4.708 | `verification/20260813T012641Z` |
+| Stage 6 | EGLImage/PRIME DRM scanout: GPU renders directly to double-buffered 1024x768 plane | 100.092 ms | 121.123 ms | 27.332 ms | 8.276 | `verification/20260813T030800Z` |
 
 Stage 2 is a neutral/negative result within run-to-run variance, so the change
 is retained for simpler synchronization but is not counted as a speedup.
@@ -47,18 +48,25 @@ tone-map, and sRGB work. The shader path remains free of pure-blue or
 pure-green overflow pixels; the 1080p diagnostic differed from Stage 3 only by
 mediump 1-2 LSB rounding (mean absolute channel error 0.0034).
 
-Stage 6 direct-scanout feasibility was checked on the deployed KV260. The
-connector is `card0-DP-1` and supports page flips, while Mali exports
-`EGL_KHR_image_base` and `EGL_EXT_image_dma_buf_import`. The installed PYNQ
-`libdisplayport.so` ABI, however, only exposes `frame_new/data/physaddr/write`
-and does not expose a dma-buf file descriptor. Its implementation creates a
-PRIME fd with `DRM_IOCTL_PRIME_HANDLE_TO_FD`, but keeps that fd private inside
-the C++ frame object, so the buffer cannot be imported into EGL through the
-current Python driver. No unsafe
-EGLImage/DRM ownership change was enabled. The synchronized DisplayPort thread
-therefore remains the verified fallback; a true zero-copy stage requires a
-small native DRM allocator/page-flip backend (or a one-function PYNQ driver
-extension) that shares dma-buf fds with the Mali EGL context. Because the
-active display mode is `1024x768`, that backend should render the centered
-crop directly into scanout buffers while retaining `1920x1080` camera-space
-coordinates for the BRDF.
+Stage 6 implements the direct scanout path as an opt-in native DRM backend.
+The deployed connector is `card0-DP-1` at `1024x768@60`; its single plane
+accepts `XRGB8888`, while Mali accepts the matching dma-buf as `ARGB8888` for
+`EGL_EXT_image_dma_buf_import`. The backend uses an `RGB888` dumb buffer for
+the CRTC mode-set, two PRIME-exported 32-bit dumb buffers as EGLImage
+renderbuffers, and `drmModeSetPlane` plus `drmWaitVBlank` for synchronized
+buffer ownership. It renders the centered 1024x768 crop while retaining the
+1920x1080 camera coordinate system.
+
+In direct mode the BRDF stage does not call `glReadPixels`, does not perform
+RGBA-to-RGB conversion, and does not allocate or copy the NumPy RGB frame.
+The 10-frame run reduced steady BRDF wall time from 210.439 ms to 27.332 ms
+and increased steady pipeline throughput from 4.708 FPS to 8.276 FPS. The
+remaining interval is dominated by Trace/G-buffer and the 60 Hz scanout
+boundary. The direct PPM diagnostic payload has CRC32 `0x968700E8`; compared
+with a same-build readback center crop it changed 5,450 of 786,432 pixels,
+with maximum channel error 2 and mean absolute channel error 0.00247. It had
+no pure-blue or pure-green pixels. The ordinary PYNQ DisplayPort thread
+remains the default fallback and passed a post-change 320x180 smoke test.
+The native capability probe reports one connected `1024x768@60` CRTC, a
+single plane with `XRGB8888`, `EGL_EXT_image_dma_buf_import=yes`, and a
+GPU-to-PRIME mapped clear-color check of `rgb=64,128,191 verify=PASS`.

@@ -75,3 +75,10 @@ For display diagnostics, `--save-ppm PATH` saves the final Mali readback before
 HDMI publication and also writes `PATH.gbuffer.ppm`. The log includes min/max,
 nonzero-channel count, and CRC32 values. Through the board wrapper, set
 `KV260_RT_SAVE_PPM=/home/ubuntu/kv260_rt/verification/frame.ppm`.
+
+For the zero-copy scanout path, run with `KV260_RT_DIRECT_SCANOUT=1` (or pass
+`--direct-scanout` directly). Mali renders into double-buffered EGLImage/DRM
+buffers at the connected `1024x768` mode, and the native backend waits for the
+vblank boundary before reusing a buffer. Use
+`KV260_RT_SCANOUT_PPM=/home/ubuntu/kv260_rt/verification/scanout.ppm` for a
+diagnostic dump; this is mutually exclusive with `KV260_RT_SAVE_PPM`.

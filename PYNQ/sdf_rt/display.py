@@ -145,3 +145,28 @@ class DisplayThread:
         if self.thread.is_alive():
             raise TimeoutError("DisplayPort thread did not stop")
         self.raise_if_error()
+
+
+class DirectScanoutDisplay:
+    """Track frames page-flipped synchronously by the native renderer."""
+
+    def __init__(self):
+        self.presented_frame = -1
+
+    def start(self):
+        pass
+
+    def publish(self, image, frame_index):
+        del image
+        self.presented_frame = int(frame_index)
+
+    def wait_presented(self, frame_index, timeout=5.0):
+        del timeout
+        if self.presented_frame < frame_index:
+            raise RuntimeError(f"direct scanout did not present frame {frame_index}")
+
+    def raise_if_error(self):
+        pass
+
+    def stop(self):
+        pass
