@@ -72,6 +72,25 @@ bool disable_plane_atomic(int fd, std::uint32_t plane, std::string& error) {
     return true;
 }
 
+bool set_plane_zpos(int fd, std::uint32_t plane, std::uint64_t zpos,
+                    std::string& error) {
+    const std::uint32_t property_id = object_property(fd, plane, "zpos");
+    if (!property_id) return true;
+    drmModeAtomicReq* request = drmModeAtomicAlloc();
+    if (!request) {
+        error = "drmModeAtomicAlloc failed";
+        return false;
+    }
+    int result = drmModeAtomicAddProperty(request, plane, property_id, zpos);
+    if (result >= 0) result = drmModeAtomicCommit(fd, request, 0, nullptr);
+    drmModeAtomicFree(request);
+    if (result != 0) {
+        error = system_error("drmModeAtomicCommit set plane zpos");
+        return false;
+    }
+    return true;
+}
+
 struct Buffer {
     std::uint32_t handle = 0;
     std::uint32_t framebuffer = 0;
@@ -278,6 +297,7 @@ bool DrmScanout::start(std::string& error) {
         error = system_error("drmModeSetPlane initial scanout");
         return false;
     }
+    if (!set_plane_zpos(impl_->fd, impl_->plane, 1, error)) return false;
     // Set our plane first. The KV260 display driver may restore its primary
     // plane during the CRTC mode-set, so disable stale planes afterwards.
     for (const std::uint32_t plane : impl_->other_planes) {
