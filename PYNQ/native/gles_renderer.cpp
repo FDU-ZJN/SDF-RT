@@ -335,7 +335,8 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     glEnableVertexAttribArray(renderer->position_location);
     glVertexAttribPointer(renderer->position_location, 2, GL_FLOAT, GL_FALSE, 0, vertices);
     glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
+    // glReadPixels below is a synchronization point for the framebuffer. An
+    // explicit glFinish here only serializes the CPU before the readback.
     if (glGetError() != GL_NO_ERROR) {
         set_error(error, error_size, "OpenGL ES rendering failed");
         return -1;

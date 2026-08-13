@@ -16,6 +16,10 @@ Correctness gates for every stage are:
 | Stage | Change | Trace | G-buffer | BRDF | Pipeline FPS | Evidence |
 |---|---|---:|---:|---:|---:|---|
 | Baseline | Three-frame Trace/G-buffer/BRDF pipeline, synchronized HDMI, stable mediump shader | 52.450 ms | 122.981 ms | 274.741 ms | 3.608 | `verification/20260813T002707Z` |
+| Stage 2 | Removed explicit `glFinish`; `glReadPixels` remains the synchronization point | 52.175 ms | 124.760 ms | 273.590 ms | 3.626 | `verification/20260813T003332Z` |
+
+Stage 2 is a neutral/negative result within run-to-run variance, so the change
+is retained for simpler synchronization but is not counted as a speedup.
 
 The BRDF measurement includes G-buffer upload, fragment execution,
 `glReadPixels`, vertical flip, and RGBA-to-RGB conversion. It intentionally
