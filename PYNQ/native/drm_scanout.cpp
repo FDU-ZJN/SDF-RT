@@ -11,6 +11,7 @@
 #include <xf86drmMode.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -89,6 +90,18 @@ bool set_plane_zpos(int fd, std::uint32_t plane, std::uint64_t zpos,
         return false;
     }
     return true;
+}
+
+void refresh_other_planes(int fd, std::uint32_t selected,
+                          std::vector<std::uint32_t>& planes) {
+    drmModePlaneRes* resources = drmModeGetPlaneResources(fd);
+    if (!resources) return;
+    for (std::uint32_t i = 0; i < resources->count_planes; ++i) {
+        const std::uint32_t id = resources->planes[i];
+        if (id != selected && std::find(planes.begin(), planes.end(), id) == planes.end())
+            planes.push_back(id);
+    }
+    drmModeFreePlaneResources(resources);
 }
 
 struct Buffer {
@@ -290,6 +303,7 @@ bool DrmScanout::start(std::string& error) {
         error = system_error("drmModeSetCrtc");
         return false;
     }
+    refresh_other_planes(impl_->fd, impl_->plane, impl_->other_planes);
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[0].framebuffer, 0,
                         0, 0, impl_->width, impl_->height,

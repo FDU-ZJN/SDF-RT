@@ -72,6 +72,21 @@ int main() {
             if (!plane) continue;
             std::printf("[DRM] plane=%u possible_crtcs=0x%x formats=%u\n",
                         plane->plane_id, plane->possible_crtcs, plane->count_formats);
+            drmModeObjectProperties* properties =
+                drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE);
+            if (properties) {
+                for (uint32_t p = 0; p < properties->count_props; ++p) {
+                    drmModePropertyRes* property = drmModeGetProperty(fd, properties->props[p]);
+                    if (property) {
+                        std::printf("[DRM] plane=%u prop=%s id=%u value=%llu flags=0x%x\n",
+                                    plane->plane_id, property->name, property->prop_id,
+                                    static_cast<unsigned long long>(properties->prop_values[p]),
+                                    property->flags);
+                        drmModeFreeProperty(property);
+                    }
+                }
+                drmModeFreeObjectProperties(properties);
+            }
             for (uint32_t f = 0; f < plane->count_formats; ++f)
                 std::printf("[DRM] plane=%u format=%s fourcc=0x%08x\n", plane->plane_id,
                             fourcc(plane->formats[f]), plane->formats[f]);
