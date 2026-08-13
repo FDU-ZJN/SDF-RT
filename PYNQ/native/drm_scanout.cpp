@@ -12,6 +12,9 @@
 
 #include <array>
 #include <algorithm>
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -348,13 +351,30 @@ bool DrmScanout::present(std::uint32_t index, std::string& error) {
     const auto* source_bytes = static_cast<const std::uint8_t*>(source_ptr);
     auto* base_bytes = static_cast<std::uint8_t*>(base_ptr);
     for (std::uint32_t y = 0; y < impl_->height; ++y) {
-        const auto* src = source_bytes + static_cast<std::size_t>(y) * source.pitch;
+        // GLES renderbuffers use a bottom-left origin; DRM scanout starts at
+        // the top row. Flip the source row while copying to the primary FB.
+        const auto* src = source_bytes +
+            static_cast<std::size_t>(impl_->height - 1u - y) * source.pitch;
         auto* dst = base_bytes + static_cast<std::size_t>(y) * impl_->base_buffer.pitch;
+#if defined(__aarch64__)
+        std::uint32_t x = 0;
+        for (; x + 16u <= impl_->width; x += 16u) {
+            const uint8x16x4_t rgba = vld4q_u8(src + 4u * x);
+            const uint8x16x3_t rgb = {rgba.val[2], rgba.val[1], rgba.val[0]};
+            vst3q_u8(dst + 3u * x, rgb);
+        }
+        for (; x < impl_->width; ++x) {
+            dst[3u * x + 0] = src[4u * x + 2];
+            dst[3u * x + 1] = src[4u * x + 1];
+            dst[3u * x + 2] = src[4u * x + 0];
+        }
+#else
         for (std::uint32_t x = 0; x < impl_->width; ++x) {
             dst[3u * x + 0] = src[4u * x + 2];
             dst[3u * x + 1] = src[4u * x + 1];
             dst[3u * x + 2] = src[4u * x + 0];
         }
+#endif
     }
     munmap(source_ptr, source.size);
     munmap(base_ptr, impl_->base_buffer.size);
