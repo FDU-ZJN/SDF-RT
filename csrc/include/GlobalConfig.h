@@ -13,14 +13,19 @@ inline constexpr int kTriCacheLineTriangles = 4;
 inline constexpr int kTriNumBanks = 4;
 inline constexpr int kMaxCompactTriangles = 131072;
 inline constexpr int kTriangleAddressWidth = 17;
-inline constexpr int kSDFGlobalRes = 32;
-inline constexpr int kSDFSubRes = 4;
-inline constexpr int kSDFLocalCellCapacity = 16384;
+inline constexpr int kSDFGlobalRes = 16;
+inline constexpr int kSDFSubRes = 8;
+inline constexpr int kSDFLocalCellCapacity = 2048;
 
 inline constexpr int kDdaGlobalRes = 16;
 inline constexpr int kDdaSubRes = 4;
 inline constexpr int kSubgridBlockSize = 32;
-inline constexpr int kSubgridCompactMetaDepth = 12288;
+// 23742 non-empty fufu subgrids, rounded up to a 1024-deep RAMB36 quantum.
+inline constexpr int kSubgridCompactMetaDepth = 24576;
+static_assert(kSubgridCompactMetaDepth % 1024 == 0,
+              "compact subgrid metadata depth must be RAMB36 aligned");
+static_assert(kSubgridCompactMetaDepth <= 32768,
+              "compact subgrid metadata must fit the 15-bit directory base");
 
 inline constexpr int kSanityFullX = 64;
 inline constexpr int kSanityFullY = 145;
@@ -28,10 +33,10 @@ inline constexpr int kSanityFullZ = 195;
 
 inline constexpr bool kUseComputedHybridSdf = false;
 inline constexpr bool kForceRebuildSdfCacheFpga = false;
-inline constexpr float kLocalActiveBand = 0.15f;
+inline constexpr float kLocalActiveBand = 0.08f;
 
-inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/killeroo_gold.obj";
-inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_killeroo_gold_32_fp9.npz";
+inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/fufu.obj";
+inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_fufu_g16_l8_fp9.npz";
 #ifdef RT_VCD_PATH
 inline constexpr const char* kVcdPath = RT_VCD_PATH;
 #else

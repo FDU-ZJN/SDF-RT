@@ -168,13 +168,20 @@ void tick(VFpgaTop* dut) {
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
     bool runtimeRebuildSdf = kForceRebuildSdfCacheFpga;
+#ifdef RT_ENABLE_CUDA
+    SdfBuildBackend runtimeSdfBackend = SdfBuildBackend::Cuda;
+#else
+    SdfBuildBackend runtimeSdfBackend = SdfBuildBackend::Cpu;
+#endif
     int runtimeWidth = kWidth;
     int runtimeHeight = kHeight;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i] ? argv[i] : "";
         constexpr const char* kVcdArgPrefix = "+RT_VCD_PATH=";
-        constexpr const char* kSdfRebuildPrefix = "+SDF_REBUILD=";
+        constexpr const char* kSdfRebuildPrefix = "+RT_REBUILD_SDF=";
+        constexpr const char* kLegacySdfRebuildPrefix = "+SDF_REBUILD=";
+        constexpr const char* kSdfBackendPrefix = "+RT_SDF_BACKEND=";
         constexpr const char* kWidthPrefix = "+RT_WIDTH=";
         constexpr const char* kHeightPrefix = "+RT_HEIGHT=";
         if (arg.rfind(kVcdArgPrefix, 0) == 0) {
@@ -182,6 +189,20 @@ int main(int argc, char** argv) {
         } else if (arg.rfind(kSdfRebuildPrefix, 0) == 0) {
             const std::string value = arg.substr(std::char_traits<char>::length(kSdfRebuildPrefix));
             runtimeRebuildSdf = (value == "1" || value == "true" || value == "TRUE");
+        } else if (arg.rfind(kLegacySdfRebuildPrefix, 0) == 0) {
+            const std::string value = arg.substr(std::char_traits<char>::length(kLegacySdfRebuildPrefix));
+            runtimeRebuildSdf = (value == "1" || value == "true" || value == "TRUE");
+        } else if (arg.rfind(kSdfBackendPrefix, 0) == 0) {
+            const std::string value = arg.substr(std::char_traits<char>::length(kSdfBackendPrefix));
+            if (value == "cpu") {
+                runtimeSdfBackend = SdfBuildBackend::Cpu;
+            } else if (value == "cuda") {
+                runtimeSdfBackend = SdfBuildBackend::Cuda;
+            } else {
+                std::cerr << "Unknown SDF backend '" << value
+                          << "'; expected cpu or cuda." << std::endl;
+                return 1;
+            }
         } else if (arg.rfind(kWidthPrefix, 0) == 0) {
             runtimeWidth = std::stoi(arg.substr(std::char_traits<char>::length(kWidthPrefix)));
         } else if (arg.rfind(kHeightPrefix, 0) == 0) {
@@ -219,12 +240,21 @@ int main(int argc, char** argv) {
     const bool sdfCacheExists = std::filesystem::exists(kComputedSdfOutPath);
     const bool shouldRebuildSdf = runtimeRebuildSdf || !sdfCacheExists;
     if (shouldRebuildSdf) {
-        std::printf("Rebuilding SDF cache%s...\n", sdfCacheExists ? "" : " (cache missing)");
-        build_hybrid_sdf_from_mesh(
-            gridMin, gridMax,
-            kSDFGlobalRes, kSDFGlobalRes, kSDFGlobalRes,
-            kSDFSubRes, kSDFSubRes, kSDFSubRes,
-            kLocalActiveBand);
+        const char* backendName = runtimeSdfBackend == SdfBuildBackend::Cuda ? "cuda" : "cpu";
+        std::printf("Rebuilding SDF cache%s (backend=%s)...\n",
+                    sdfCacheExists ? "" : " (cache missing)", backendName);
+        try {
+            build_hybrid_sdf_from_mesh(
+                gridMin, gridMax,
+                kSDFGlobalRes, kSDFGlobalRes, kSDFGlobalRes,
+                kSDFSubRes, kSDFSubRes, kSDFSubRes,
+                kLocalActiveBand,
+                runtimeSdfBackend,
+                kSDFLocalCellCapacity);
+        } catch (const std::exception& error) {
+            std::cerr << "SDF rebuild failed: " << error.what() << std::endl;
+            return 2;
+        }
         save_sdf_npz(kComputedSdfOutPath);
     } else {
         printf("Loading SDF cache...\n");
@@ -232,6 +262,19 @@ int main(int argc, char** argv) {
     }
     if (global_sdf_flat.empty()) {
         std::cerr << "SDF cache is empty." << endl;
+        return 2;
+    }
+    const bool sdfShapeMatchesHardware =
+        global_sdf_shape[0] == static_cast<size_t>(kSDFGlobalRes) &&
+        global_sdf_shape[1] == static_cast<size_t>(kSDFGlobalRes) &&
+        global_sdf_shape[2] == static_cast<size_t>(kSDFGlobalRes) &&
+        local_sdf_shape[1] == static_cast<size_t>(kSDFSubRes) &&
+        local_sdf_shape[2] == static_cast<size_t>(kSDFSubRes) &&
+        local_sdf_shape[3] == static_cast<size_t>(kSDFSubRes);
+    if (!sdfShapeMatchesHardware) {
+        std::cerr << "SDF cache shape does not match global " << kSDFGlobalRes
+                  << " and local " << kSDFSubRes
+                  << "; rebuild it with +RT_REBUILD_SDF=1." << endl;
         return 2;
     }
     if (num_cells > kSDFLocalCellCapacity) {
@@ -389,10 +432,12 @@ int main(int argc, char** argv) {
         const bool inputFire = dut->io_ray_in_valid && dut->io_ray_in_ready;
         const bool resultFire = dut->io_result_valid && dut->io_result_ready;
         const bool resultLast = dut->io_result_last;
-        const uint32_t resultId = dut->io_result_meta_rayId;
+        const uint32_t resultId = dut->io_result_rayId;
         const bool resultHit = dut->io_result_hit != 0;
         const uint32_t resultHitId = dut->io_result_hitId;
         const uint32_t resultHitT = dut->io_result_hitT;
+        const uint16_t resultHitU = dut->io_result_hitU;
+        const uint16_t resultHitV = dut->io_result_hitV;
         tick(dut);
         triangleDma.completeCycle(cmdFire, command, dataFire, statusFire);
         ++totalCycles;
@@ -442,7 +487,9 @@ int main(int argc, char** argv) {
                         return 4;
                     }
                     encoded = renderer.encode(renderer.shadeHit(
-                        ray, hitT, triangles[originalTriId], triangle_vertex_normals[originalTriId]));
+                        ray, hitT, triangles[originalTriId], triangle_vertex_normals[originalTriId],
+                        static_cast<float>(resultHitU) / 65535.0f,
+                        static_cast<float>(resultHitV) / 65535.0f));
                 } else {
                     encoded = renderer.encode(renderer.sampleEnvironment(ray.direction));
                 }

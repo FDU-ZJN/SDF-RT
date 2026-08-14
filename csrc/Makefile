@@ -8,6 +8,9 @@ WLF_FILE = $(CSRC_DIR)/raytrace_$(MODE).wlf
 
 SBT = sbt
 JOBS ?= 16
+USE_CUDA ?= 1
+CUDA_HOME ?= /opt/cuda
+NVCC ?= $(CUDA_HOME)/bin/nvcc
 
 MODE ?= noblackbox
 ifneq ($(strip $(mode)),)
@@ -86,7 +89,11 @@ RUN_PLUSARGS := $(BASE_PLUSARGS) $(PLUSARGS)
 
 # 构建目录和对象目录（各自独立）
 BUILD_DIR := $(VERILOG_DIR)
+ifeq ($(USE_CUDA),1)
+OBJ_DIR   := $(VERILOG_DIR)/obj_dir_cuda
+else
 OBJ_DIR   := $(VERILOG_DIR)/obj_dir
+endif
 
 # 模块配置
 TOP_MODULE ?= SimTop
@@ -120,16 +127,33 @@ INC_FLAGS = -I$(CSRC_DIR)/include \
             -I$(CSRC_DIR)/src/tests \
             -I$(OBJ_DIR)
 
+# 可选 CUDA SDF 后端。CUDA 对象由 nvcc 单独编译，再链接进 Verilator runner。
+CUDA_DEPS :=
+CUDA_CFLAGS :=
+CUDA_LDFLAGS :=
+ifeq ($(USE_CUDA),1)
+CUDA_OBJ := $(BUILD_DIR)/sdf_cuda.o
+CUDA_DEPS += $(CUDA_OBJ)
+CUDA_CFLAGS += -DRT_ENABLE_CUDA
+CUDA_LDFLAGS += $(CUDA_OBJ) -L$(CUDA_HOME)/lib64 -Wl,-rpath,$(CUDA_HOME)/lib64 -lcudart
+endif
+
 # Verilator 生成选项
 V_OPTS = --cc --trace --exe -j $(JOBS) \
 		 --top-module $(TOP_MODULE) \
 		 --Mdir $(OBJ_DIR) \
-		 --CFLAGS "$(INC_FLAGS) -O2 -std=c++17" \
-		 --LDFLAGS "-lcnpy -lz -ljpeg" \
+		 --CFLAGS "$(INC_FLAGS) $(CUDA_CFLAGS) -O2 -std=c++17" \
+		 --LDFLAGS "$(CUDA_LDFLAGS) -lcnpy -lz -ljpeg" \
 		 -I$(CSRC_DIR)/include
 
 # 目标程序路径（放在各自模式文件夹内）
+ifeq ($(USE_CUDA),1)
+TARGET = $(VERILOG_DIR)/test_runner_cuda
+else
 TARGET = $(VERILOG_DIR)/test_runner
+endif
+VERILATED_MAKEFILE := $(OBJ_DIR)/V$(TOP_MODULE).mk
+VERILATOR_USER_DEPS := $(CSRC_DIR)/verilator_user_deps.mk
 
 .PHONY: all clean run sim wave generate convert_vcd host-renderer-test subgrid-sparse-test sdf-cmodel sdf-cmodel-test sdf-sweep
 
@@ -213,19 +237,30 @@ generate:
 	@echo "FpgaTop.sv build marker (SHA-256):"
 	@sha256sum $(VERILOG_TARGET)
 
-$(TARGET): $(VERILOG_TARGET) $(CPPS) $(HEADERS)
+$(CUDA_OBJ): $(CSRC_DIR)/src/utils/SdfCuda.cu $(CSRC_DIR)/include/SdfCuda.h
+	@mkdir -p $(dir $@)
+	$(NVCC) -O3 -std=c++17 --fmad=false -lineinfo \
+		-I$(CSRC_DIR)/include -c $< -o $@
+
+$(VERILATED_MAKEFILE): $(VERILOG_TARGET) $(CSRC_DIR)/Makefile $(VERILATOR_USER_DEPS)
 	@echo "============================================"
-	@echo "编译 Verilator 仿真程序..."
+	@echo "生成 Verilator C++ 模型..."
 	@echo "  模式: $(MODE)"
 	@echo "  源目录: $(VERILOG_DIR)"
 	@echo "  顶层模块: $(TOP_MODULE)"
+	@echo "  CUDA SDF: $(USE_CUDA)"
 	@echo "  RTL marker: $$(sha256sum $(VERILOG_TARGET) | cut -d' ' -f1)"
 	@echo "============================================"
 	@mkdir -p $(VERILOG_DIR)
 	verilator $(V_OPTS) $(CPPS) $(wildcard $(VERILOG_DIR)/*.sv) -o $(TARGET)
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.fast
 	@ln -sf V$(TOP_MODULE)__pch.h $(OBJ_DIR)/V$(TOP_MODULE)__pch.h.slow
-	$(MAKE) -C $(OBJ_DIR) -f V$(TOP_MODULE).mk -j $(JOBS)
+
+$(TARGET): $(VERILATED_MAKEFILE) $(CPPS) $(HEADERS) $(CUDA_DEPS)
+	@echo "增量编译 Verilator 仿真程序: $(TARGET)"
+	$(MAKE) -C $(OBJ_DIR) \
+		-f V$(TOP_MODULE).mk -f $(VERILATOR_USER_DEPS) -j $(JOBS) \
+		RT_VERILATOR_TARGET=$(TARGET) RT_CUDA_OBJ=$(CUDA_OBJ) $(TARGET)
 
 run: $(TARGET)
 	@echo "============================================"

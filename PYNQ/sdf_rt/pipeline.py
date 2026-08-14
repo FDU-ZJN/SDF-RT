@@ -1,14 +1,143 @@
-"""Cross-frame Trace, G-buffer, and Mali BRDF pipeline."""
+"""Cross-frame ray update, Trace, G-buffer, and Mali BRDF pipeline."""
 
+import math
 import queue
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 
 import numpy as np
 
 from .config import RESULT_BUFFER_COUNT
-from .io import write_gbuffer_ppm, write_ppm
+from .camera import camera_vectors
+from .io import rotate_camera_rays, write_gbuffer_ppm, write_ppm
+
+
+@dataclass(frozen=True)
+class RotatingRayFrame:
+    index: int
+    buffer: object
+    directions: np.ndarray
+    origin: np.ndarray
+    forward: np.ndarray
+    right: np.ndarray
+    up: np.ndarray
+    update_elapsed: float
+
+
+class RayUpdatePipeline:
+    """Build future orbit-camera ray frames into a reusable CMA buffer pool."""
+
+    def __init__(
+        self,
+        buffers,
+        base_directions,
+        batch_rays,
+        rotation_period_frames,
+    ):
+        self.base_directions = np.ascontiguousarray(base_directions, dtype=np.float32)
+        self.batch_rays = int(batch_rays)
+        self.rotation_period_frames = int(rotation_period_frames)
+        self.requests = queue.Queue()
+        self.ready = queue.Queue()
+        self.free_buffers = queue.Queue()
+        for buffer in buffers:
+            self.free_buffers.put(buffer)
+        self.stop_event = threading.Event()
+        self.error_lock = threading.Lock()
+        self.error = None
+        self.thread = None
+
+    def start(self):
+        self.thread = threading.Thread(
+            target=self._worker, name="ray-update", daemon=True
+        )
+        self.thread.start()
+
+    def request(self, frame_index):
+        self.raise_if_error()
+        self.requests.put(int(frame_index))
+
+    def acquire(self, frame_index):
+        while True:
+            self.raise_if_error()
+            try:
+                frame = self.ready.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if frame.index != frame_index:
+                raise RuntimeError(
+                    f"ray update returned frame {frame.index}, expected {frame_index}"
+                )
+            return frame
+
+    def release(self, frame):
+        self.free_buffers.put(frame.buffer)
+
+    def raise_if_error(self):
+        with self.error_lock:
+            error = self.error
+        if error is not None:
+            exc, details = error
+            raise RuntimeError(f"ray update pipeline failed: {exc}\n{details}") from exc
+
+    def _worker(self):
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    frame_index = self.requests.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if frame_index is None:
+                    return
+                buffer = None
+                while buffer is None and not self.stop_event.is_set():
+                    try:
+                        buffer = self.free_buffers.get(timeout=0.05)
+                    except queue.Empty:
+                        pass
+                if buffer is None:
+                    return
+                angle = (
+                    2.0
+                    * math.pi
+                    * (frame_index % self.rotation_period_frames)
+                    / self.rotation_period_frames
+                )
+                origin, forward, right, up = camera_vectors(angle)
+                directions, elapsed = rotate_camera_rays(
+                    buffer,
+                    self.base_directions,
+                    origin,
+                    angle,
+                    self.batch_rays,
+                )
+                self.ready.put(
+                    RotatingRayFrame(
+                        frame_index,
+                        buffer,
+                        directions,
+                        origin,
+                        forward,
+                        right,
+                        up,
+                        elapsed,
+                    )
+                )
+        except BaseException as exc:
+            with self.error_lock:
+                if self.error is None:
+                    self.error = (exc, traceback.format_exc())
+
+    def close(self):
+        if self.thread is None:
+            return
+        self.stop_event.set()
+        self.requests.put(None)
+        self.thread.join()
+        self.thread = None
+        self.raise_if_error()
 
 
 class FramePipeline:
@@ -19,12 +148,14 @@ class FramePipeline:
         renderer,
         display,
         shade_chunk_pixels,
+        validate_ray_ids=False,
         save_ppm=None,
         last_frame_index=None,
     ):
         self.renderer = renderer
         self.display = display
         self.shade_chunk_pixels = int(shade_chunk_pixels)
+        self.validate_ray_ids = bool(validate_ray_ids)
         self.save_ppm = save_ppm
         self.last_frame_index = last_frame_index
         self.free_slots = queue.Queue(maxsize=RESULT_BUFFER_COUNT)
@@ -35,7 +166,6 @@ class FramePipeline:
         self.error_lock = threading.Lock()
         self.error = None
         self.threads = []
-        self.previous_image = None
 
     def start(self):
         self.threads = [
@@ -66,13 +196,17 @@ class FramePipeline:
             except queue.Empty:
                 continue
 
-    def submit_batch(self, slot, frame, batch_raster_index, result_buffer, count):
+    def submit_batch(
+        self, slot, frame, batch_raster_index, batch_local_index,
+        batch_directions, result_buffer, count, store_results
+    ):
         self.gbuffer_queue.put(
-            (slot, frame, batch_raster_index, result_buffer, count)
+            (slot, frame, batch_raster_index, batch_local_index, batch_directions,
+             result_buffer, count, store_results)
         )
 
     def finish_frame(self, frame):
-        self.gbuffer_queue.put((None, frame, None, None, None))
+        self.gbuffer_queue.put((None, frame, None, None, None, None, None, None))
 
     def wait_gbuffer(self, frame):
         self._wait_event(frame.gbuffer_done)
@@ -92,7 +226,8 @@ class FramePipeline:
                 if task is None:
                     self.gbuffer_queue.task_done()
                     return
-                slot, frame, raster_index, result_buffer, count = task
+                (slot, frame, raster_index, local_index, directions,
+                 result_buffer, count, store_results) = task
                 if slot is None:
                     frame.gbuffer_done_at = time.perf_counter()
                     frame.gbuffer_done.set()
@@ -101,13 +236,15 @@ class FramePipeline:
                     _, elapsed = self.renderer.shade_result_batch(
                         frame.gbuffer,
                         raster_index,
+                        local_index,
+                        directions,
                         result_buffer,
                         count,
                         frame.hit,
-                        frame.hit_id,
                         frame.hit_t_bits,
+                        store_results,
+                        self.validate_ray_ids,
                         self.shade_chunk_pixels,
-                        frame.roi,
                     )
                     frame.gbuffer_elapsed += elapsed
                     self.free_slots.put(slot)
@@ -123,16 +260,13 @@ class FramePipeline:
                     self.brdf_queue.task_done()
                     return
                 start = time.perf_counter()
-                if not self.renderer.direct_scanout and self.previous_image is not None and frame.roi != (
-                    0,
-                    0,
-                    self.renderer.width,
-                    self.renderer.height,
-                ):
-                    np.copyto(frame.image, self.previous_image)
-                self.renderer.finish_frame(frame.gbuffer, frame.image, frame.roi)
-                if not self.renderer.direct_scanout:
-                    self.previous_image = frame.image.copy()
+                self.renderer.finish_frame(
+                    frame.gbuffer,
+                    frame.image,
+                    frame.forward,
+                    frame.right,
+                    frame.up,
+                )
                 frame.brdf_elapsed = time.perf_counter() - start
                 if self.save_ppm and frame.index == self.last_frame_index:
                     write_ppm(

@@ -4,8 +4,11 @@ module SdfMem #(
   parameter int GLOBAL_ADDR_BITS = 15,
   parameter int LATENCY = 4,
   parameter int GLOBAL_SDF_SIZE = 32768,
+  parameter int GLOBAL_STORAGE_ROWS = 4096,
   parameter int LOCAL_CELL_COUNT = 16384,
   parameter int LOCAL_PER_CELL = 64,
+  parameter int LOCAL_STORAGE_ROWS = 16384,
+  parameter int MAPPING_STORAGE_WORDS = 16384,
   parameter int LOCAL_SDF_SIZE = LOCAL_CELL_COUNT * LOCAL_PER_CELL,
   parameter string LOCAL_IDX_INIT_FILE = "sdf_local_mapping.mem"
 ) (
@@ -20,9 +23,10 @@ module SdfMem #(
   //   global: 0x00000 + row*4, slots 0..2, slot 3 is the row commit
   //   local : 0x10000 + row*32, slots 0..17, slot 31 is the row commit
   //   map   : 0xC0000 + packed mapping word
-  localparam int GLOBAL_ROWS = (GLOBAL_SDF_SIZE + 7) / 8;
+  localparam int GLOBAL_VALID_ROWS = (GLOBAL_SDF_SIZE + 7) / 8;
   localparam int LOCAL_ROW_SAMPLES = 64;
-  localparam int LOCAL_ROWS = (LOCAL_SDF_SIZE + LOCAL_ROW_SAMPLES - 1) / LOCAL_ROW_SAMPLES;
+  localparam int LOCAL_ROWS_PER_CELL = LOCAL_PER_CELL / LOCAL_ROW_SAMPLES;
+  localparam int LOCAL_VALID_ROWS = LOCAL_CELL_COUNT * LOCAL_ROWS_PER_CELL;
   localparam int GLOBAL_WRITE_BASE = 32'h00000;
   localparam int GLOBAL_WRITE_STRIDE = 4;
   localparam int GLOBAL_WRITE_COMMIT = 3;
@@ -30,8 +34,10 @@ module SdfMem #(
   localparam int LOCAL_WRITE_STRIDE = 32;
   localparam int LOCAL_WRITE_COMMIT = 31;
   localparam int MAPPING_WRITE_BASE = 32'hC0000;
-  localparam int MAPPING_WORDS = (GLOBAL_SDF_SIZE + 1) / 2;
+  localparam int MAPPING_VALID_WORDS = (GLOBAL_SDF_SIZE + 1) / 2;
   localparam int LOCAL_LANE_W = $clog2(LOCAL_PER_CELL);
+  localparam int LOCAL_ROW_LANE_W = $clog2(LOCAL_ROW_SAMPLES);
+  localparam int LOCAL_BLOCK_ROW_W = $clog2(LOCAL_ROWS_PER_CELL);
   localparam int CELL_INDEX_BITS = $clog2(LOCAL_CELL_COUNT);
 
   function automatic logic [31:0] sdf9_to_fp32(input logic [8:0] value);
@@ -54,7 +60,7 @@ module SdfMem #(
 
   // Pack four 32-bit mapping words per row to cap this RAM at 4096 entries.
   localparam int MAPPING_PACK_BITS = 2;
-  localparam int MAPPING_DEPTH = 4096;
+  localparam int MAPPING_DEPTH = MAPPING_STORAGE_WORDS / 4;
   logic [127:0] mapping_dout;
   logic [$clog2(MAPPING_DEPTH)-1:0] mapping_addr;
   logic [$clog2(MAPPING_DEPTH)-1:0] mapping_wr_addr;
@@ -64,13 +70,13 @@ module SdfMem #(
   logic has_local;
   logic [CELL_INDEX_BITS-1:0] cell_idx;
   logic [CELL_INDEX_BITS-1:0] cell_idx_q;
-  logic [$clog2(GLOBAL_ROWS)-1:0] global_row_q;
+  logic [$clog2(GLOBAL_STORAGE_ROWS)-1:0] global_row_q;
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:MAPPING_PACK_BITS+1];
   assign mapping_wr_addr = (wr_addr - MAPPING_WRITE_BASE) >> MAPPING_PACK_BITS;
   assign mapping_lane = wr_addr - MAPPING_WRITE_BASE;
   assign mapping_we = (wr_en &&
     (wr_addr >= MAPPING_WRITE_BASE) &&
-    (wr_addr < MAPPING_WRITE_BASE + MAPPING_WORDS)) ?
+    (wr_addr < MAPPING_WRITE_BASE + MAPPING_STORAGE_WORDS)) ?
     (16'b1111 << (mapping_lane * 4)) : 16'b0;
   always_comb begin
     mapping_dina = 128'b0;
@@ -110,13 +116,13 @@ module SdfMem #(
   logic [95:0] global_stage;
   logic [575:0] local_stage;
   logic [11:0] global_stage_row;
-  logic [$clog2(LOCAL_ROWS)-1:0] local_stage_row;
+  logic [$clog2(LOCAL_STORAGE_ROWS)-1:0] local_stage_row;
   logic [2:0] global_stage_mask;
   logic [17:0] local_stage_mask;
   logic global_write_commit;
   logic [11:0] global_write_row;
   logic local_write_commit;
-  logic [$clog2(LOCAL_ROWS)-1:0] local_write_row;
+  logic [$clog2(LOCAL_STORAGE_ROWS)-1:0] local_write_row;
   logic [ADDR_WIDTH-1:0] global_idx_q, local_idx_q;
   logic [31:0] global_write_offset, local_write_offset;
   assign global_write_offset = wr_addr - GLOBAL_WRITE_BASE;
@@ -125,12 +131,12 @@ module SdfMem #(
   assign local_write_row = local_write_offset[18:5];
   assign global_write_commit = wr_en &&
     (wr_addr >= GLOBAL_WRITE_BASE) &&
-    (wr_addr < GLOBAL_WRITE_BASE + GLOBAL_ROWS * GLOBAL_WRITE_STRIDE) &&
+    (wr_addr < GLOBAL_WRITE_BASE + GLOBAL_STORAGE_ROWS * GLOBAL_WRITE_STRIDE) &&
     (global_write_offset[1:0] == GLOBAL_WRITE_COMMIT) &&
     (global_stage_mask == 3'b111) && (global_stage_row == global_write_row);
   assign local_write_commit = wr_en &&
     (wr_addr >= LOCAL_WRITE_BASE) &&
-    (wr_addr < LOCAL_WRITE_BASE + LOCAL_ROWS * LOCAL_WRITE_STRIDE) &&
+    (wr_addr < LOCAL_WRITE_BASE + LOCAL_STORAGE_ROWS * LOCAL_WRITE_STRIDE) &&
     (local_write_offset[4:0] == LOCAL_WRITE_COMMIT) &&
     (local_stage_mask == 18'h3ffff) && (local_stage_row == local_write_row);
   always_ff @(posedge clk) begin
@@ -145,7 +151,7 @@ module SdfMem #(
       cell_idx_q <= cell_idx;
       global_row_q <= global_idx_q[GLOBAL_ADDR_BITS-1:3];
       if (wr_en && wr_addr >= GLOBAL_WRITE_BASE &&
-          wr_addr < GLOBAL_WRITE_BASE + GLOBAL_ROWS * GLOBAL_WRITE_STRIDE &&
+          wr_addr < GLOBAL_WRITE_BASE + GLOBAL_STORAGE_ROWS * GLOBAL_WRITE_STRIDE &&
           global_write_offset[1:0] != GLOBAL_WRITE_COMMIT) begin
         if (global_stage_mask == 0 || global_stage_row != global_write_row) begin
           global_stage <= '0;
@@ -156,7 +162,7 @@ module SdfMem #(
         global_stage_mask[global_write_offset[1:0]] <= 1'b1;
       end
       if (wr_en && wr_addr >= LOCAL_WRITE_BASE &&
-          wr_addr < LOCAL_WRITE_BASE + LOCAL_ROWS * LOCAL_WRITE_STRIDE &&
+          wr_addr < LOCAL_WRITE_BASE + LOCAL_STORAGE_ROWS * LOCAL_WRITE_STRIDE &&
           local_write_offset[4:0] < 18) begin
         if (local_stage_mask == 0 || local_stage_row != local_write_row) begin
           local_stage <= '0;
@@ -181,16 +187,18 @@ module SdfMem #(
   logic [575:0] local_dina;
   logic global_we, local_we;
   logic [11:0] global_uram_addr;
-  logic [$clog2(LOCAL_ROWS)-1:0] local_uram_addr;
+  logic [$clog2(LOCAL_STORAGE_ROWS)-1:0] local_uram_addr;
+  logic [$clog2(LOCAL_STORAGE_ROWS)-1:0] local_read_row;
   assign global_we = global_write_commit;
   assign local_we = local_write_commit;
   assign global_dina = global_stage[71:0];
   assign local_dina = local_stage;
   assign global_uram_addr = global_write_commit ? global_write_row : global_row_q;
-  assign local_uram_addr = local_write_commit ? local_write_row : cell_idx_q;
+  assign local_read_row = {cell_idx_q, local_idx_q[LOCAL_LANE_W-1:LOCAL_ROW_LANE_W]};
+  assign local_uram_addr = local_write_commit ? local_write_row : local_read_row;
 
   xpm_memory_spram #(
-    .ADDR_WIDTH_A($clog2(GLOBAL_ROWS)), .MEMORY_SIZE(GLOBAL_ROWS * 72),
+    .ADDR_WIDTH_A($clog2(GLOBAL_STORAGE_ROWS)), .MEMORY_SIZE(GLOBAL_STORAGE_ROWS * 72),
     .READ_DATA_WIDTH_A(72), .WRITE_DATA_WIDTH_A(72), .BYTE_WRITE_WIDTH_A(72),
     .READ_LATENCY_A(URAM_READ_LATENCY), .WRITE_MODE_A("read_first"),
     .MEMORY_PRIMITIVE("ultra"), .ECC_MODE("no_ecc"), .CASCADE_HEIGHT(0)
@@ -202,7 +210,7 @@ module SdfMem #(
   );
 
   xpm_memory_spram #(
-    .ADDR_WIDTH_A($clog2(LOCAL_ROWS)), .MEMORY_SIZE(LOCAL_ROWS * 576),
+    .ADDR_WIDTH_A($clog2(LOCAL_STORAGE_ROWS)), .MEMORY_SIZE(LOCAL_STORAGE_ROWS * 576),
     .READ_DATA_WIDTH_A(576), .WRITE_DATA_WIDTH_A(576), .BYTE_WRITE_WIDTH_A(576),
     .READ_LATENCY_A(URAM_READ_LATENCY), .WRITE_MODE_A("read_first"),
     .MEMORY_PRIMITIVE("ultra"), .ECC_MODE("no_ecc"), .CASCADE_HEIGHT(0)
@@ -215,7 +223,7 @@ module SdfMem #(
 
   logic [3:0] valid_pipe;
   logic [2:0] local_pipe, global_ok_pipe, local_ok_pipe;
-  logic [LOCAL_LANE_W-1:0] lane_pipe [0:2];
+  logic [LOCAL_ROW_LANE_W-1:0] lane_pipe [0:2];
   logic [ADDR_WIDTH-1:0] global_idx_pipe [0:2];
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -234,7 +242,7 @@ module SdfMem #(
                           (local_idx_q < LOCAL_PER_CELL);
       local_ok_pipe[1] <= local_ok_pipe[0];
       local_ok_pipe[2] <= local_ok_pipe[1];
-      lane_pipe[0] <= local_idx_q[LOCAL_LANE_W-1:0]; lane_pipe[1] <= lane_pipe[0];
+      lane_pipe[0] <= local_idx_q[LOCAL_ROW_LANE_W-1:0]; lane_pipe[1] <= lane_pipe[0];
       lane_pipe[2] <= lane_pipe[1];
       global_idx_pipe[0] <= global_idx_q; global_idx_pipe[1] <= global_idx_pipe[0];
       global_idx_pipe[2] <= global_idx_pipe[1];

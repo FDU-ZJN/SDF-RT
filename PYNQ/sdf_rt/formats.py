@@ -92,6 +92,25 @@ def pack_ray_records(destination_words, origins, directions, count):
     words[:, 7] = 0
 
 
+def pack_ray_records_uniform_origin(destination_words, origin, directions, count):
+    """Pack rays that share one camera origin without materializing origin rows."""
+    origin_bits = np.ascontiguousarray(origin, dtype=np.float32).view(np.uint32)
+    dir_bits = np.ascontiguousarray(directions, dtype=np.float32).view(np.uint32)
+    ray_id = np.arange(count, dtype=np.uint32)
+    ox, oy, oz = origin_bits
+    dx, dy, dz = dir_bits[:, 0], dir_bits[:, 1], dir_bits[:, 2]
+    words = destination_words[:count]
+    shift = np.uint32(RAY_ID_BITS)
+    words[:, 0] = ray_id | (dz << shift)
+    words[:, 1] = (dz >> np.uint32(32 - RAY_ID_BITS)) | (dy << shift)
+    words[:, 2] = (dy >> np.uint32(32 - RAY_ID_BITS)) | (dx << shift)
+    words[:, 3] = (dx >> np.uint32(32 - RAY_ID_BITS)) | (oz << shift)
+    words[:, 4] = (oz >> np.uint32(32 - RAY_ID_BITS)) | (oy << shift)
+    words[:, 5] = (oy >> np.uint32(32 - RAY_ID_BITS)) | (ox << shift)
+    words[:, 6] = ox >> np.uint32(32 - RAY_ID_BITS)
+    words[:, 7] = 0
+
+
 def rewrite_batch_ray_ids(records, batch_rays):
     """Rewrite IDs after selecting prepacked records into a new batch layout."""
     count = records.shape[0]
@@ -105,11 +124,13 @@ def rewrite_batch_ray_ids(records, batch_rays):
 
 
 def decode_result_records(words, count):
-    """Decode {42'b0, hitT, hitId, hit, rayId} from 128-bit records."""
+    """Decode {u16, v16, reserved, hitT, hitId, hit, rayId}."""
     records = np.asarray(words[:count], dtype=np.uint32)
     ray_mask = np.uint32((1 << RAY_ID_BITS) - 1)
     carry_mask = np.uint32((1 << (RAY_ID_BITS + 1)) - 1)
     ray_id = (records[:, 0] & ray_mask).astype(np.uint32)
+    hit_u = (records[:, 3] >> np.uint32(16)).astype(np.uint16)
+    hit_v = (records[:, 3] & np.uint32(0xffff)).astype(np.uint16)
     hit = ((records[:, 0] >> np.uint32(RAY_ID_BITS)) & np.uint32(1)).astype(bool)
     hit_id = (records[:, 0] >> np.uint32(RAY_ID_BITS + 1)) | (
         (records[:, 1] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
@@ -117,7 +138,7 @@ def decode_result_records(words, count):
     hit_t_bits = (records[:, 1] >> np.uint32(RAY_ID_BITS + 1)) | (
         (records[:, 2] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
     )
-    return ray_id, hit, hit_id.astype(np.uint32), hit_t_bits.astype(np.uint32)
+    return ray_id, hit, hit_id.astype(np.uint32), hit_t_bits.astype(np.uint32), hit_u, hit_v
 
 
 def decode_core_status(value):

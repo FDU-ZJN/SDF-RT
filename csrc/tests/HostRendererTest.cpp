@@ -27,6 +27,8 @@ int main() {
     using host_renderer::Vec3;
 
     HostRenderer renderer(101, 101);
+    expect(renderer.cameraTarget() == Vec3{0.0f, 0.0f, 0.0f},
+           "camera target must remain at the world origin");
     const auto centerRay = renderer.makeCameraRay(50, 50);
     const Vec3 toTarget = normalize({
         renderer.cameraTarget()[0] - centerRay.origin[0],
@@ -34,7 +36,6 @@ int main() {
         renderer.cameraTarget()[2] - centerRay.origin[2]
     });
     expect(dot(centerRay.direction, toTarget) > 0.999999f, "center camera ray misses target");
-
     const Triangle triangle{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
     const auto bary = renderer.barycentrics({0.25f, 0.25f, 0.0f}, triangle);
     expect(std::abs(bary.w0 - 0.5f) < 1e-6f, "wrong barycentric w0");

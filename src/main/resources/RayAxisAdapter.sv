@@ -21,6 +21,8 @@ module RayAxisAdapter (
   input  wire         core_result_hit,
   input  wire [31:0]  core_result_hitId,
   input  wire [31:0]  core_result_hitT,
+  input  wire [15:0]  core_result_hitU,
+  input  wire [15:0]  core_result_hitV,
   input  wire         core_result_last,
   output wire [127:0] m_axis_ray_result_tdata,
   output wire [15:0]  m_axis_ray_result_tkeep,
@@ -41,7 +43,8 @@ module RayAxisAdapter (
   assign m_axis_ray_result_tvalid = core_result_valid;
   assign m_axis_ray_result_tlast = core_result_last;
   assign m_axis_ray_result_tkeep = 16'hFFFF;
-  // One 128-bit result: {reserved[41:0], hitT, hitId, hit, rayId[20:0]}.
+  // One 128-bit result: {u16, v16, reserved[9:0], hitT, hitId, hit, rayId[20:0]}.
   assign m_axis_ray_result_tdata =
-    {42'b0, core_result_hitT, core_result_hitId, core_result_hit, core_result_rayId};
+    {core_result_hitU, core_result_hitV, 10'b0, core_result_hitT, core_result_hitId,
+     core_result_hit, core_result_rayId};
 endmodule

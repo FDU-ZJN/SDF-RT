@@ -92,11 +92,9 @@ object GlobalConfig {
   require(maxCompactTriangles == (1 << triangleAddrWidth),
     "maxCompactTriangles must be a power of two")
 
-  val GlobalSdfRes = 32
-  val LocalSdfRes = 4
-  // The 32^3 hybrid SDF cache for Killeroo currently activates 16059 cells.
-  // Mapping stores a 14-bit cell index, so retain the full 16384-entry range.
-  val LocalCell = 16384
+  val GlobalSdfRes = 16
+  val LocalSdfRes = 8
+  val LocalCell = 2048
 
   val GlobalDdaRes = 16
   val SubDdaRes = 4
@@ -136,12 +134,17 @@ object GlobalConfig {
   val subgridMetaMemTriCountWidth = 10
   val subgridBlockSize = 32
   val subgridBlockShift = 5
-  val subgridCompactMetaDepth = 12288
+  // 23742 non-empty fufu subgrids, rounded up to a 1024-deep RAMB36 quantum.
+  val subgridCompactMetaDepth = 24576
+  require(subgridCompactMetaDepth % 1024 == 0,
+    "compact subgrid metadata depth must be RAMB36 aligned")
+  require(subgridCompactMetaDepth <= (1 << 15),
+    "compact subgrid metadata must fit the 15-bit directory base")
 
   // SDF memory: global and local address widths
   val sdfMemAddrWidth = 32           // External interface address width
-  val sdfMemGlobalAddrWidth = 15   // 32^3 = 32768 global entries
-  val sdfMemLocalAddrWidth = 20    // 2^20 = 1M local entries
+  val sdfMemGlobalAddrWidth = log2Ceil(GlobalSdfRes * GlobalSdfRes * GlobalSdfRes)
+  val sdfMemLocalAddrWidth = log2Ceil(LocalCell * LocalSdfRes * LocalSdfRes * LocalSdfRes)
   // SDF samples are stored as custom 9-bit E2M6 (bias 5, subnormal support).
   // Values above the finite range saturate toward zero.  The read-side
   // codec expands them back to FP32 before they enter SdfPE.
@@ -149,6 +152,11 @@ object GlobalConfig {
   val sdfMemDataWidth = 32         // FP32 after the SDF-memory read codec
   val sdfMemGlobalRowSamples = 8
   val sdfMemLocalRowSamples = 64
+  // Preserve the deployed RAM geometry.  A logical 8x8x8 local block occupies
+  // eight consecutive 576-bit rows, selected by local z.
+  val sdfMemGlobalPhysicalRows = 4096
+  val sdfMemLocalPhysicalRows = 16384
+  val sdfMemMappingPhysicalWords = 16384
   val sdfMemGlobalWriteStrideWords = 4
   val sdfMemLocalWriteStrideWords = 32
   val sdfMemLocalWriteBase = 0x10000
@@ -160,6 +168,14 @@ object GlobalConfig {
   val sdfMemLocalPerCell = LocalSdfRes * LocalSdfRes * LocalSdfRes
   val sdfMemLocalLaneBits = log2Ceil(sdfMemLocalPerCell)
   val sdfMemLocalGridSize = sdfMemLocalPerCell
+  val sdfMemLocalRowsPerCell = sdfMemLocalPerCell / sdfMemLocalRowSamples
+  require(sdfMemLocalPerCell % sdfMemLocalRowSamples == 0,
+    "local SDF block must occupy an integer number of physical rows")
+  require(LocalCell * sdfMemLocalRowsPerCell <= sdfMemLocalPhysicalRows,
+    "logical local SDF capacity exceeds the fixed physical URAM layout")
+  require(GlobalSdfRes * GlobalSdfRes * GlobalSdfRes <=
+      sdfMemGlobalPhysicalRows * sdfMemGlobalRowSamples,
+    "logical global SDF capacity exceeds the fixed physical URAM layout")
 
   val addrWidth = triangleAddrWidth
 

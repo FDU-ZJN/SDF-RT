@@ -14,11 +14,23 @@ def normalize_rows(values):
     return (values / lengths[:, None]).astype(np.float32)
 
 
-def camera_vectors():
+def camera_vectors(rotation_radians=0.0):
     source_center = np.asarray((0.0796971726, -47.2750625, -49.2204103), dtype=np.float32)
     scale = np.float32(0.0050387813)
-    origin = (np.asarray((200.0, 250.0, 70.0), dtype=np.float32) - source_center) * scale
-    target = (np.asarray((0.0, 33.0, -50.0), dtype=np.float32) - source_center) * scale
+    base_origin = (np.asarray((200.0, 250.0, 70.0), dtype=np.float32) - source_center) * scale
+    target = np.zeros(3, dtype=np.float32)
+    angle = float(rotation_radians)
+    cosine = np.float32(math.cos(angle))
+    sine = np.float32(math.sin(angle))
+    offset = base_origin - target
+    origin = target + np.asarray(
+        (
+            cosine * offset[0] - sine * offset[1],
+            sine * offset[0] + cosine * offset[1],
+            offset[2],
+        ),
+        dtype=np.float32,
+    )
     forward = normalize_rows((target - origin)[None, :])[0]
     right = normalize_rows(np.cross(forward, np.asarray((0.0, 0.0, 1.0)))[None, :])[0]
     up = normalize_rows(np.cross(right, forward)[None, :])[0]
@@ -40,26 +52,6 @@ def make_tiled_pixel_order(width, height, tile=TRACE_BLOCK_SIZE):
     if index != width * height:
         raise AssertionError(f"pixel order contains {index} entries")
     return order
-
-
-def make_hit_roi(pixel_order, raster_index_by_order, hit, width, height, block_size=TRACE_BLOCK_SIZE):
-    """Return a block-aligned rectangular order for first-frame hit bounds."""
-    hit_order = np.flatnonzero(hit[raster_index_by_order])
-    if hit_order.size == 0:
-        return None, None
-    hit_xy = pixel_order[hit_order]
-    min_x = int(hit_xy[:, 0].min()) // block_size * block_size
-    min_y = int(hit_xy[:, 1].min()) // block_size * block_size
-    max_x = min(width - 1, ((int(hit_xy[:, 0].max()) // block_size) + 1) * block_size - 1)
-    max_y = min(height - 1, ((int(hit_xy[:, 1].max()) // block_size) + 1) * block_size - 1)
-    in_roi = (
-        (pixel_order[:, 0] >= min_x)
-        & (pixel_order[:, 0] <= max_x)
-        & (pixel_order[:, 1] >= min_y)
-        & (pixel_order[:, 1] <= max_y)
-    )
-    order_positions = np.flatnonzero(in_roi).astype(np.int64)
-    return order_positions, (min_x, min_y, max_x, max_y)
 
 
 def make_camera_rays(pixel_xy, width, height, origin, forward, right, up):

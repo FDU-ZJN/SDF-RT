@@ -109,6 +109,7 @@ class TriangleMemMultiPort(
       val refillDispatchValid = RegInit(false.B)
       val refillDispatchId = Reg(UInt(mshrIdW.W))
       val refillDispatchBank = Reg(UInt(bankSelW.W))
+      val refillDispatchBankOH = Reg(UInt(numBanks.W))
       val refillDispatchAddr = Reg(UInt(GlobalConfig.triMemAddrWidth.W))
       val refillDispatchSet = Reg(UInt(log2Ceil(GlobalConfig.triMemCacheSets).W))
       val refillDispatchTag = Reg(UInt((GlobalConfig.triMemAddrWidth - log2Ceil(GlobalConfig.triMemCacheSets)).W))
@@ -138,7 +139,7 @@ class TriangleMemMultiPort(
         allocArb.io.in(b).bits := banks(b).io.allocReq.bits
         banks(b).io.allocReq.ready := allocArb.io.in(b).ready && !allocInFlight(b)
 
-        banks(b).io.refillDone.valid := refillDispatchValid && refillDispatchBank === b.U
+        banks(b).io.refillDone.valid := refillDispatchValid && refillDispatchBankOH(b)
         banks(b).io.refillDone.bits.id := refillDispatchId
         banks(b).io.refillDone.bits.addr := refillDispatchAddr
         banks(b).io.refillDone.bits.set := refillDispatchSet
@@ -230,6 +231,7 @@ class TriangleMemMultiPort(
         refillDispatchValid := true.B
         refillDispatchId := dispatchId
         refillDispatchBank := Mux1H(dispatchOH, mshrBank)
+        refillDispatchBankOH := Mux1H(dispatchOH, mshrBank.map(UIntToOH(_, numBanks)))
         refillDispatchAddr := dispatchAddr
         refillDispatchSet := dispatchAddr(log2Ceil(GlobalConfig.triMemCacheSets) - 1, 0)
         refillDispatchTag := dispatchAddr(

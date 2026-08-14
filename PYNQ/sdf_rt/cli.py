@@ -32,9 +32,20 @@ def build_parser():
     parser.add_argument("--width", type=int, default=FRAME_WIDTH)
     parser.add_argument("--height", type=int, default=FRAME_HEIGHT)
     parser.add_argument("--batch-rays", type=int, default=MAX_BATCH_RAYS)
-    parser.add_argument("--frames", type=int, default=1)
+    parser.add_argument("--frames", type=int, default=180)
+    parser.add_argument(
+        "--rotation-period-frames",
+        type=int,
+        default=180,
+        help="orbit-camera frames per 360-degree turn; use 0 for a static camera",
+    )
     parser.add_argument("--no-prepack-rays", action="store_true")
     parser.add_argument("--verbose-ray-progress", action="store_true")
+    parser.add_argument(
+        "--validate-result-stream",
+        action="store_true",
+        help="enable duplicate/missing RayID checks in the native G-buffer path",
+    )
     parser.add_argument("--origin", nargs=3, type=float, default=None)
     parser.add_argument("--grid-min", nargs=3, type=float, default=DEFAULT_GRID_MIN)
     parser.add_argument("--grid-max", nargs=3, type=float, default=DEFAULT_GRID_MAX)
@@ -55,10 +66,19 @@ def build_parser():
     )
     parser.add_argument("--display-width", type=int, default=1024)
     parser.add_argument("--display-height", type=int, default=768)
-    parser.add_argument(
+    display_mode = parser.add_mutually_exclusive_group()
+    display_mode.add_argument(
         "--direct-scanout",
+        dest="direct_scanout",
         action="store_true",
+        default=True,
         help="render Mali output directly into synchronized DRM scanout buffers",
+    )
+    display_mode.add_argument(
+        "--readback-display",
+        dest="direct_scanout",
+        action="store_false",
+        help="use GPU readback and the software DisplayPort publication path",
     )
     parser.add_argument(
         "--scanout-dump-ppm",
@@ -78,7 +98,7 @@ def build_parser():
     parser.add_argument(
         "--render-threads",
         type=int,
-        default=4,
+        default=1,
         help="OpenMP threads used by the native normal G-buffer builder",
     )
     parser.add_argument(
@@ -97,6 +117,8 @@ def validate_args(parser, args):
         parser.error(f"batch-rays must be in 1..{MAX_BATCH_RAYS}")
     if args.frames <= 0:
         parser.error("frames must be positive")
+    if args.rotation_period_frames < 0:
+        parser.error("rotation-period-frames must be non-negative")
     if args.shade_chunk_pixels <= 0:
         parser.error("shade-chunk-pixels must be positive")
     if args.render_threads <= 0:

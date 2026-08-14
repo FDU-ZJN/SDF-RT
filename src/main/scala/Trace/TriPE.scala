@@ -35,6 +35,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
     val out_best_hit = Output(Bool())
     val hit_id = Output(UInt(c.addrWidth.W))
     val t_best = Output(UInt(c.cfg.totalWidth.W))
+    val hit_u = Output(UInt(c.cfg.totalWidth.W))
+    val hit_v = Output(UInt(c.cfg.totalWidth.W))
     val out_meta = Output(new RayMeta(c.addrWidth))
     val out_done = Output(Bool())
     val out_early_stop = Output(Bool())
@@ -53,6 +55,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
 
   private val bestT = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val bestId = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
+  private val bestU = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
+  private val bestV = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val hasHit = Reg(Vec(ctxCount, Bool()))
   private val hitStop = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val triOutstanding = Reg(Vec(ctxCount, UInt(10.W)))
@@ -60,6 +64,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
   private val resultHitReg = Reg(Vec(ctxCount, Bool()))
   private val resultIdReg = Reg(Vec(ctxCount, UInt(c.addrWidth.W)))
   private val resultTReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
+  private val resultUReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
+  private val resultVReg = Reg(Vec(ctxCount, UInt(c.cfg.totalWidth.W)))
   private val resultMetaReg = Reg(Vec(ctxCount, new RayMeta(c.addrWidth)))
   private val resultValidReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
   private val resultEarlyStopReg = RegInit(VecInit(Seq.fill(ctxCount)(false.B)))
@@ -90,10 +96,14 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
       batchTrisRemaining(ctx) := 0.U
       bestT(ctx) := missT
       bestId(ctx) := 0.U
+      bestU(ctx) := 0.U
+      bestV(ctx) := 0.U
       hasHit(ctx) := false.B
       resultHitReg(ctx) := false.B
       resultIdReg(ctx) := 0.U
       resultTReg(ctx) := missT
+      resultUReg(ctx) := 0.U
+      resultVReg(ctx) := 0.U
       resultMetaReg(ctx) := 0.U.asTypeOf(new RayMeta(c.addrWidth))
       clearDataPending(ctx) := false.B
     }
@@ -119,6 +129,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
     triOutstanding(io.ray_ctx) := 0.U
     bestT(io.ray_ctx) := missT
     bestId(io.ray_ctx) := 0.U
+    bestU(io.ray_ctx) := 0.U
+    bestV(io.ray_ctx) := 0.U
     hasHit(io.ray_ctx) := false.B
     hitStop(io.ray_ctx) := false.B
     resultValidReg(io.ray_ctx) := false.B
@@ -148,6 +160,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
     val epoch = Bool()
     val id = UInt(c.addrWidth.W)
     val t = UInt(c.cfg.totalWidth.W)
+    val u = UInt(c.cfg.totalWidth.W)
+    val v = UInt(c.cfg.totalWidth.W)
   }
 
   private val memCanEnq = Wire(Vec(ctxCount, Bool()))
@@ -245,6 +259,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
     hitQs(lane).io.enq.bits.epoch := peEpochOut
     hitQs(lane).io.enq.bits.id := pes(lane).io.id
     hitQs(lane).io.enq.bits.t := pes(lane).io.t
+    hitQs(lane).io.enq.bits.u := pes(lane).io.u
+    hitQs(lane).io.enq.bits.v := pes(lane).io.v
     when(hitQs(lane).io.enq.valid) {
       assert(hitQs(lane).io.enq.ready, s"TriPE hit update queue overflow on lane $lane")
     }
@@ -284,6 +300,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
       when(SimpleFPCompare.nonNegLt(hit.t, bestT(hit.ctx)) || !hasHit(hit.ctx)) {
         bestT(hit.ctx) := hit.t
         bestId(hit.ctx) := hit.id
+        bestU(hit.ctx) := hit.u
+        bestV(hit.ctx) := hit.v
         hasHit(hit.ctx) := true.B
       }
     }
@@ -322,6 +340,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
       resultHitReg(ctx) := hasHit(ctx)
       resultIdReg(ctx) := bestId(ctx)
       resultTReg(ctx) := bestT(ctx)
+      resultUReg(ctx) := bestU(ctx)
+      resultVReg(ctx) := bestV(ctx)
       resultMetaReg(ctx) := rayMetaReg(ctx)
       resultEarlyStopReg(ctx) := hitStop(ctx)
       resultValidReg(ctx) := true.B
@@ -333,6 +353,8 @@ class TriPE(val c: TriPeConfig, val contextCount: Int = GlobalConfig.traceContex
   io.out_best_hit := resultHitReg(outSel)
   io.hit_id := resultIdReg(outSel)
   io.t_best := resultTReg(outSel)
+  io.hit_u := resultUReg(outSel)
+  io.hit_v := resultVReg(outSel)
   io.out_meta := resultMetaReg(outSel)
   io.out_early_stop := resultEarlyStopReg(outSel)
 }

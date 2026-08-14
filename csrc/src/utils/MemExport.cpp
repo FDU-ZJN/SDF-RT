@@ -119,10 +119,12 @@ static uint32_t crc32Ieee(const uint8_t* data, size_t size) {
 }
 
 namespace {
-constexpr uint32_t kSdfImageVersion = 1;
+constexpr uint32_t kSdfImageVersion = 2;
 constexpr uint32_t kSdfHeaderBytes = 64;
+// These are physical storage dimensions and intentionally remain unchanged.
 constexpr uint32_t kSdfGlobalRows = 4096;
 constexpr uint32_t kSdfMappingWords = 16384;
+constexpr uint32_t kSdfLocalStorageRows = 16384;
 constexpr uint32_t kSdfMaxLocalCells = rt::config::kSDFLocalCellCapacity;
 constexpr uint32_t kSdfGlobalSamplesPerRow = 8;
 constexpr uint32_t kSdfLocalSamplesPerRow = 64;
@@ -194,18 +196,21 @@ std::vector<uint16_t> buildGlobalSdf9Samples() {
     const size_t J = global_sdf_shape[1];
     const size_t K = global_sdf_shape[2];
     const size_t totalEntries = I * J * K;
-    if (totalEntries != kSdfGlobalRows * kSdfGlobalSamplesPerRow) {
+    const size_t expectedEntries =
+        static_cast<size_t>(rt::config::kSDFGlobalRes) *
+        rt::config::kSDFGlobalRes * rt::config::kSDFGlobalRes;
+    if (totalEntries != expectedEntries) {
         throw std::runtime_error(
-            "FP9 SDF export requires exactly 32768 global samples for the current hardware");
+            "FP9 SDF export shape does not match the configured global resolution");
     }
 
-    std::vector<uint16_t> samples;
-    samples.reserve(totalEntries);
+    std::vector<uint16_t> samples(
+        static_cast<size_t>(kSdfGlobalRows) * kSdfGlobalSamplesPerRow, 0);
     for (size_t globalIdx = 0; globalIdx < totalEntries; ++globalIdx) {
         const int gi = static_cast<int>(globalIdx % I);
         const int gj = static_cast<int>((globalIdx / I) % J);
         const int gk = static_cast<int>(globalIdx / (I * J));
-        samples.push_back(floatToSdf9(get_global_sdf(gi, gj, gk)));
+        samples[globalIdx] = floatToSdf9(get_global_sdf(gi, gj, gk));
     }
     return samples;
 }
@@ -216,9 +221,13 @@ std::vector<uint16_t> buildLocalSdf9Samples() {
     const size_t LJ = local_sdf_shape[2];
     const size_t LK = local_sdf_shape[3];
     const size_t localPerCell = LI * LJ * LK;
-    if (localCells > kSdfMaxLocalCells || localPerCell != kSdfLocalSamplesPerRow) {
+    const size_t expectedLocalPerCell =
+        static_cast<size_t>(rt::config::kSDFSubRes) *
+        rt::config::kSDFSubRes * rt::config::kSDFSubRes;
+    if (localCells > kSdfMaxLocalCells || localPerCell != expectedLocalPerCell ||
+        localPerCell % kSdfLocalSamplesPerRow != 0) {
         throw std::runtime_error(
-            "FP9 SDF export requires at most 16384 local 4x4x4 cells for the current hardware");
+            "FP9 SDF export requires at most 2048 local 8x8x8 cells aligned to 64-sample rows");
     }
     if (num_cells != localCells) {
         throw std::runtime_error("SDF local cell count does not match the mapping keys");
@@ -242,12 +251,15 @@ std::vector<uint32_t> buildSdfLocalMappingWords() {
     const size_t J = global_sdf_shape[1];
     const size_t K = global_sdf_shape[2];
     const size_t totalGlobals = I * J * K;
-    if (totalGlobals != kSdfMappingWords * 2U) {
+    const size_t expectedGlobals =
+        static_cast<size_t>(rt::config::kSDFGlobalRes) *
+        rt::config::kSDFGlobalRes * rt::config::kSDFGlobalRes;
+    if (totalGlobals != expectedGlobals) {
         throw std::runtime_error(
-            "FP9 SDF mapping export requires exactly 32768 global cells for the current hardware");
+            "FP9 SDF mapping shape does not match the configured global resolution");
     }
     if (num_cells > kSdfMaxLocalCells) {
-        throw std::runtime_error("SDF local cell count exceeds the 14-bit hardware mapping field");
+        throw std::runtime_error("SDF local cell count exceeds the configured hardware capacity");
     }
     if (local_sdf_keys_flat.size() < num_cells * 3U) {
         throw std::runtime_error("SDF local mapping key array is shorter than num_cells * 3");
@@ -287,6 +299,7 @@ std::vector<uint32_t> buildSdfLocalMappingWords() {
         }
         words.push_back(packed);
     }
+    words.resize(kSdfMappingWords, 0);
     return words;
 }
 } // namespace
@@ -485,7 +498,8 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
     // Export global SDF
     // SdfMem packs eight custom FP9 E2M6 values into every 72-bit global row
-    // and 64 values into every 576-bit local row (one local mapping subcell).
+    // and 64 values into every 576-bit local row.  Global and mapping outputs
+    // retain their deployed physical sizes; unused tail rows are zero-filled.
     {
         std::ofstream out(global_filename);
         if (!out.is_open()) {
@@ -495,6 +509,7 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
         out << "// Global SDF Memory Initialization File" << std::endl;
         out << "// Format: each line = eight packed 9-bit E2M6 SDF values" << std::endl;
+        out << "// Rows 0..511 contain the 16^3 x-fast grid; rows 512..4095 are zero" << std::endl;
         out << "// $readmemh fills sequentially (no @address for 1D array linear mapping)" << std::endl;
         out << std::endl;
 
@@ -505,7 +520,7 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
         out.close();
         std::cout << "[MemExport] Exported global SDF (" << I << "x" << J << "x" << K
-                  << " = " << globalSamples.size()
+                  << " = " << (I * J * K)
                   << " FP9 entries, " << kSdfGlobalRows
                   << " packed rows) to " << global_filename << std::endl;
     }
@@ -520,6 +535,7 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
 
         out << "// Local SDF Memory Initialization File" << std::endl;
         out << "// Format: each line = 64 packed 9-bit E2M6 SDF values" << std::endl;
+        out << "// Row = cell_id*8 + local_z; lane = local_x + local_y*8" << std::endl;
         out << "// $readmemh fills sequentially (no @address for 1D array linear mapping)" << std::endl;
         out << std::endl;
 
@@ -532,7 +548,9 @@ void export_sdf_mem(const std::string& global_filename, const std::string& local
         out.close();
         std::cout << "[MemExport] Exported local SDF (" << C << " cells x " 
                   << LI << "x" << LJ << "x" << LK << " = " << localSamples.size()
-                  << " FP9 entries, " << C << " packed rows) to "
+                  << " FP9 entries, "
+                  << (localSamples.size() / kSdfLocalSamplesPerRow)
+                  << " packed rows) to "
                   << local_filename << std::endl;
     }
 }
@@ -543,7 +561,11 @@ void export_sdf_uram_binary(const std::string& filename) {
     const std::vector<uint32_t> mappingWords = buildSdfLocalMappingWords();
 
     std::vector<uint8_t> payload;
-    const uint32_t localRows = static_cast<uint32_t>(local_sdf_shape[0]);
+    const uint32_t localCells = static_cast<uint32_t>(local_sdf_shape[0]);
+    const uint32_t localRows = static_cast<uint32_t>(
+        localSamples.size() / kSdfLocalSamplesPerRow);
+    if (localRows > kSdfLocalStorageRows)
+        throw std::runtime_error("local SDF rows exceed the fixed physical URAM layout");
     const uint32_t payloadWords =
         kSdfGlobalRows * kSdfGlobalWordsPerRow +
         localRows * kSdfLocalWordsPerRow + kSdfMappingWords;
@@ -563,7 +585,7 @@ void export_sdf_uram_binary(const std::string& filename) {
     appendU32Le(header, kSdfImageVersion);
     appendU32Le(header, kSdfHeaderBytes);
     appendU32Le(header, kSdfGlobalRows);
-    appendU32Le(header, localRows);
+    appendU32Le(header, localCells);
     appendU32Le(header, kSdfMappingWords);
     appendU32Le(header, localRows);
     appendU32Le(header, kSdfGlobalWordsPerRow);
@@ -584,6 +606,7 @@ void export_sdf_uram_binary(const std::string& filename) {
         throw std::runtime_error("failed to write SDF URAM image " + filename);
     std::cout << "[MemExport] Exported SDF URAM image to " << filename
               << " (global_rows=" << kSdfGlobalRows
+              << ", local_cells=" << localCells
               << ", local_rows=" << localRows
               << ", mapping_words=" << kSdfMappingWords
               << ", payload_bytes=" << payload.size() << ")" << std::endl;
@@ -606,6 +629,7 @@ void export_sdf_local_mapping(const std::string& filename) {
     out << "// SDF Local Mapping File" << std::endl;
     out << "// Format: two global mapping entries per 32-bit row" << std::endl;
     out << "// Data: [31:16]=odd entry, [15:0]=even entry; entry[15]=valid" << std::endl;
+    out << "// The physical 16384-word image is retained; unused tail words are zero" << std::endl;
     out << "// Linear $readmemh/XPM format: one 32-bit word per address" << std::endl;
     out << std::endl;
 
@@ -616,8 +640,8 @@ void export_sdf_local_mapping(const std::string& filename) {
 
     out.close();
     std::cout << "[MemExport] Exported local mapping (" << totalGlobals
-              << " entries, " << mappingWords.size()
-              << " packed words) to " << filename << std::endl;
+              << " logical entries, " << mappingWords.size()
+              << " physical packed words) to " << filename << std::endl;
 }
 
 void export_subgrid_sparse_mems(

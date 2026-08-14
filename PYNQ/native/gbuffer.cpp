@@ -48,132 +48,96 @@ void encode_octahedral(float x, float y, float z, std::uint8_t* out) {
     out[3] = 255;
 }
 
-struct HitWork {
-    std::uint32_t raster;
-    std::uint32_t compact_id;
-    float t;
-};
-
 }  // namespace
 
 extern "C" int sdf_rt_build_gbuffer(
     const std::uint32_t* result_words,
-    const std::int64_t* batch_raster_index,
+    const std::uint32_t* batch_raster_index,
+    const std::uint32_t* batch_local_index,
     std::uint32_t count,
     const float* directions,
     std::uint32_t pixel_count,
-    std::uint32_t image_width,
-    std::uint32_t roi_x,
-    std::uint32_t roi_y,
-    std::uint32_t roi_width,
-    std::uint32_t roi_height,
-    const float* origin,
-    const float* tri_v0,
-    const float* tri_e1,
-    const float* tri_e2,
+    std::uint32_t roi_pixel_count,
     const float* vertex_normals,
-    const float* d00,
-    const float* d01,
-    const float* d11,
-    const float* inv_denom,
     std::uint32_t triangle_count,
     const std::uint32_t* compact_src_ids,
     std::uint32_t compact_count,
     std::uint8_t* gbuffer_rgba,
     std::uint8_t* hit,
-    std::uint32_t* hit_id,
     std::uint32_t* hit_t_bits,
+    int store_results,
+    int validate_ray_ids,
     int thread_count,
     char* error,
     std::uint32_t error_size) {
-    if (!result_words || !batch_raster_index || !directions || !origin || !tri_v0 ||
-        !tri_e1 || !tri_e2 || !vertex_normals || !d00 || !d01 || !d11 ||
-        !inv_denom || !compact_src_ids || !gbuffer_rgba || !hit || !hit_id ||
-        !hit_t_bits) {
+    if (!result_words || !batch_raster_index || !batch_local_index || !directions ||
+        !vertex_normals || !compact_src_ids || !gbuffer_rgba || !hit || !hit_t_bits) {
         set_error(error, error_size, "null buffer passed to G-buffer builder");
         return -1;
     }
-    if (count == 0 || count > pixel_count || thread_count <= 0 || image_width == 0 ||
-        roi_width == 0 || roi_height == 0 || roi_x + roi_width > image_width ||
-        roi_y + roi_height > pixel_count / image_width) {
+    if (count == 0 || count > pixel_count || roi_pixel_count == 0 || thread_count <= 0) {
         set_error(error, error_size, "invalid count, pixel count, or thread count");
         return -1;
     }
 
-    std::vector<std::uint8_t> seen(count, 0);
-    std::vector<HitWork> work;
-    work.reserve(count / 8 + 1);
-    for (std::uint32_t record = 0; record < count; ++record) {
-        const std::uint32_t* words = result_words + 4u * record;
-        const std::uint32_t ray_id = words[0] & kRayIdMask;
-        if (ray_id >= count || seen[ray_id]) {
-            set_error(error, error_size, "result stream has an out-of-range or duplicate RayID");
-            return -1;
+    if (validate_ray_ids) {
+        std::vector<std::uint8_t> seen(count, 0);
+        for (std::uint32_t record = 0; record < count; ++record) {
+            const std::uint32_t ray_id = result_words[4u * record] & kRayIdMask;
+            if (ray_id >= count || seen[ray_id]) {
+                set_error(error, error_size, "result stream has an out-of-range or duplicate RayID");
+                return -1;
+            }
+            seen[ray_id] = 1;
         }
-        seen[ray_id] = 1;
-        const std::int64_t raster64 = batch_raster_index[ray_id];
-        if (raster64 < 0 || static_cast<std::uint64_t>(raster64) >= pixel_count) {
-            set_error(error, error_size, "batch raster index is out of range");
-            return -1;
-        }
-        const std::uint32_t raster = static_cast<std::uint32_t>(raster64);
-        const std::uint32_t raster_x = raster % image_width;
-        const std::uint32_t raster_y = raster / image_width;
-        if (raster_x < roi_x || raster_x >= roi_x + roi_width || raster_y < roi_y ||
-            raster_y >= roi_y + roi_height) {
-            set_error(error, error_size, "raster index is outside the compact G-buffer ROI");
-            return -1;
-        }
-        const std::uint32_t local =
-            (raster_y - roi_y) * roi_width + (raster_x - roi_x);
-        const bool is_hit = ((words[0] >> kRayIdBits) & 1u) != 0;
-        const std::uint32_t compact_id =
-            (words[0] >> (kRayIdBits + 1)) |
-            ((words[1] & kCarryMask) << (32 - (kRayIdBits + 1)));
-        const std::uint32_t t_bits =
-            (words[1] >> (kRayIdBits + 1)) |
-            ((words[2] & kCarryMask) << (32 - (kRayIdBits + 1)));
-        hit[raster] = is_hit ? 1 : 0;
-        hit_id[raster] = compact_id;
-        hit_t_bits[raster] = t_bits;
-        if (!is_hit) {
-            gbuffer_rgba[4u * local + 3] = 0;
-            continue;
-        }
-        float t = 0.0f;
-        std::memcpy(&t, &t_bits, sizeof(t));
-        if (!std::isfinite(t) || t < 0.0f || compact_id >= compact_count) {
-            set_error(error, error_size, "hit has invalid hitT or compact triangle ID");
-            return -1;
-        }
-        work.push_back({raster, compact_id, t});
     }
 
     std::atomic<int> bad_index{0};
+    std::uint32_t hit_count = 0;
 #ifdef _OPENMP
     omp_set_dynamic(0);
-#pragma omp parallel for schedule(static) num_threads(thread_count)
+#pragma omp parallel for schedule(static) num_threads(thread_count) reduction(+:hit_count)
 #endif
-    for (std::int64_t index = 0; index < static_cast<std::int64_t>(work.size()); ++index) {
-        const HitWork item = work[static_cast<std::size_t>(index)];
-        const std::uint32_t tri_id = compact_src_ids[item.compact_id];
+    for (std::int64_t record = 0; record < static_cast<std::int64_t>(count); ++record) {
+        const std::uint32_t* words = result_words + 4u * static_cast<std::uint32_t>(record);
+        const std::uint32_t ray_id = words[0] & kRayIdMask;
+        if (ray_id >= count) {
+            bad_index.store(1, std::memory_order_relaxed);
+            continue;
+        }
+        const std::uint32_t raster = batch_raster_index[ray_id];
+        const std::uint32_t local = batch_local_index[ray_id];
+        if (raster >= pixel_count || local >= roi_pixel_count) {
+            bad_index.store(1, std::memory_order_relaxed);
+            continue;
+        }
+        const bool is_hit = ((words[0] >> kRayIdBits) & 1u) != 0;
+        const std::uint32_t t_bits =
+            (words[1] >> (kRayIdBits + 1)) |
+            ((words[2] & kCarryMask) << (32 - (kRayIdBits + 1)));
+        if (store_results) {
+            hit[raster] = is_hit ? 1 : 0;
+            hit_t_bits[raster] = t_bits;
+        }
+        if (!is_hit) continue;
+
+        float t = 0.0f;
+        std::memcpy(&t, &t_bits, sizeof(t));
+        const std::uint32_t compact_id =
+            (words[0] >> (kRayIdBits + 1)) |
+            ((words[1] & kCarryMask) << (32 - (kRayIdBits + 1)));
+        if (!std::isfinite(t) || t < 0.0f || compact_id >= compact_count) {
+            bad_index.store(1, std::memory_order_relaxed);
+            continue;
+        }
+        const std::uint32_t tri_id = compact_src_ids[compact_id];
         if (tri_id >= triangle_count) {
             bad_index.store(1, std::memory_order_relaxed);
             continue;
         }
-        const float* dir = directions + 3u * item.raster;
-        const float* v0 = tri_v0 + 3u * tri_id;
-        const float* e1 = tri_e1 + 3u * tri_id;
-        const float* e2 = tri_e2 + 3u * tri_id;
-        const float v2[3] = {
-            origin[0] + dir[0] * item.t - v0[0],
-            origin[1] + dir[1] * item.t - v0[1],
-            origin[2] + dir[2] * item.t - v0[2],
-        };
-        const float d20 = dot3(v2, e1);
-        const float d21 = dot3(v2, e2);
-        const float w1 = (d11[tri_id] * d20 - d01[tri_id] * d21) * inv_denom[tri_id];
-        const float w2 = (d00[tri_id] * d21 - d01[tri_id] * d20) * inv_denom[tri_id];
+        const std::uint32_t uv = words[3];
+        const float w1 = static_cast<float>(uv >> 16) / 65535.0f;
+        const float w2 = static_cast<float>(uv & 0xffffu) / 65535.0f;
         const float w0 = 1.0f - w1 - w2;
         const float* normals = vertex_normals + 9u * tri_id;
         float normal[3] = {
@@ -190,21 +154,19 @@ extern "C" int sdf_rt_build_gbuffer(
         normal[0] *= inv_length;
         normal[1] *= inv_length;
         normal[2] *= inv_length;
+        const float* dir = directions + 3u * ray_id;
         const float view[3] = {-dir[0], -dir[1], -dir[2]};
         if (dot3(normal, view) < 0.0f) {
             normal[0] = -normal[0];
             normal[1] = -normal[1];
             normal[2] = -normal[2];
         }
-        const std::uint32_t raster_x = item.raster % image_width;
-        const std::uint32_t raster_y = item.raster / image_width;
-        const std::uint32_t local =
-            (raster_y - roi_y) * roi_width + (raster_x - roi_x);
         encode_octahedral(normal[0], normal[1], normal[2], gbuffer_rgba + 4u * local);
+        ++hit_count;
     }
     if (bad_index.load(std::memory_order_relaxed)) {
-        set_error(error, error_size, "triangle table or interpolated normal is invalid");
+        set_error(error, error_size, "result index, triangle data, hitT, or interpolated normal is invalid");
         return -1;
     }
-    return static_cast<int>(work.size());
+    return static_cast<int>(hit_count);
 }

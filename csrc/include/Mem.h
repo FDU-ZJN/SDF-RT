@@ -35,6 +35,11 @@ struct Triangle {
 
 using TriangleVertexNormals = std::array<std::array<float, 3>, 3>;
 
+enum class SdfBuildBackend {
+    Cpu,
+    Cuda,
+};
+
 void loadModelFromObj(
     const std::string& filename,
     std::vector<Triangle>& triangles,
@@ -50,7 +55,9 @@ void build_hybrid_sdf_from_mesh(
     int localResX,
     int localResY,
     int localResZ,
-    float activeBand);
+    float activeBand,
+    SdfBuildBackend backend = SdfBuildBackend::Cpu,
+    size_t maxLocalCells = 0);
 
 // Build compact triangle storage grouped by (globalIdx, subIdx) subgrid key.
 void build_subgrid_triangle_index(

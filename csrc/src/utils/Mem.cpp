@@ -17,6 +17,12 @@
 #include <algorithm>
 #include <limits>
 #include <unordered_set>
+#include <chrono>
+#include <stdexcept>
+
+#ifdef RT_ENABLE_CUDA
+#include <SdfCuda.h>
+#endif
 
 // Define epsilon for intersection tests
 constexpr float EPSILON = 1e-6f;
@@ -424,7 +430,10 @@ void build_hybrid_sdf_from_mesh(
     int localResX,
     int localResY,
     int localResZ,
-    float activeBand) {
+    float activeBand,
+    SdfBuildBackend backend,
+    size_t maxLocalCells) {
+    const auto buildStart = std::chrono::steady_clock::now();
     global_sdf_flat.clear();
     local_sdf_flat.clear();
     local_sdf_keys_flat.clear();
@@ -513,30 +522,135 @@ void build_hybrid_sdf_from_mesh(
         return std::vector<uint32_t>(uniq.begin(), uniq.end());
     };
 
+    const bool useCuda = backend == SdfBuildBackend::Cuda;
+    if (useCuda) {
+#ifdef RT_ENABLE_CUDA
+        std::string unavailableReason;
+        if (!sdf_cuda_runtime_available(unavailableReason)) {
+            throw std::runtime_error("CUDA SDF backend unavailable: " + unavailableReason);
+        }
+#else
+        throw std::runtime_error(
+            "CUDA SDF backend requested, but test_runner was built without USE_CUDA=1");
+#endif
+    }
+
+    std::vector<uint32_t> candidateOffsets;
+    std::vector<uint32_t> candidateIds;
+#ifdef RT_ENABLE_CUDA
+    std::vector<float> trianglesFlat;
+    std::vector<float> normalsFlat;
+    SdfCudaGridConfig cudaConfig{};
+    if (useCuda) {
+        candidateOffsets.resize(globalTotal + 1, 0);
+        for (int gz = 0; gz < globalResZ; ++gz) {
+            for (int gy = 0; gy < globalResY; ++gy) {
+                for (int gx = 0; gx < globalResX; ++gx) {
+                    const size_t candidateSet = static_cast<size_t>(
+                        gx + gy * globalResX + gz * globalResX * globalResY);
+                    const std::vector<uint32_t> candidates = collectNeighborCandidates(gx, gy, gz);
+                    candidateIds.insert(candidateIds.end(), candidates.begin(), candidates.end());
+                    if (candidateIds.size() > std::numeric_limits<uint32_t>::max()) {
+                        throw std::runtime_error("CUDA SDF candidate table exceeds uint32 capacity");
+                    }
+                    candidateOffsets[candidateSet + 1] = static_cast<uint32_t>(candidateIds.size());
+                }
+            }
+        }
+
+        trianglesFlat.reserve(triangles.size() * 9);
+        normalsFlat.reserve(triangles.size() * 3);
+        for (size_t triId = 0; triId < triangles.size(); ++triId) {
+            const Triangle& tri = triangles[triId];
+            trianglesFlat.insert(trianglesFlat.end(), tri.v0.begin(), tri.v0.end());
+            trianglesFlat.insert(trianglesFlat.end(), tri.v1.begin(), tri.v1.end());
+            trianglesFlat.insert(trianglesFlat.end(), tri.v2.begin(), tri.v2.end());
+            const std::array<float, 3> normal = triId < normals.size()
+                ? normals[triId] : std::array<float, 3>{0.0f, 0.0f, 0.0f};
+            normalsFlat.insert(normalsFlat.end(), normal.begin(), normal.end());
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            cudaConfig.gridMin[axis] = gridMin[axis];
+            cudaConfig.gridMax[axis] = gridMax[axis];
+        }
+        cudaConfig.globalRes[0] = globalResX;
+        cudaConfig.globalRes[1] = globalResY;
+        cudaConfig.globalRes[2] = globalResZ;
+        cudaConfig.localRes[0] = localResX;
+        cudaConfig.localRes[1] = localResY;
+        cudaConfig.localRes[2] = localResZ;
+
+        std::string cudaError;
+        std::printf("[HybridSDF] building global field with CUDA (%zu samples, %zu candidate refs)...\n",
+                    globalTotal, candidateIds.size());
+        if (!sdf_cuda_compute_global(
+                cudaConfig, trianglesFlat, normalsFlat, candidateOffsets, candidateIds,
+                global_sdf_flat, cudaError)) {
+            throw std::runtime_error("CUDA global SDF build failed: " + cudaError);
+        }
+    }
+#endif
+
     const float localPositiveBand = activeBand;
-    const float localNegativeBand = -0.4f * activeBand;
+    const float localNegativeBand = -0.7f * activeBand;
 
     std::vector<std::array<int, 3>> activeCells;
     activeCells.reserve(globalTotal / 2);
 
+    if (!useCuda) {
+        std::printf("[HybridSDF] building global field with CPU (%zu samples)...\n", globalTotal);
+        for (int gx = 0; gx < globalResX; ++gx) {
+            const float px = gridMin[0] + (static_cast<float>(gx) + 0.5f) * cellSizeX;
+            for (int gy = 0; gy < globalResY; ++gy) {
+                const float py = gridMin[1] + (static_cast<float>(gy) + 0.5f) * cellSizeY;
+                for (int gz = 0; gz < globalResZ; ++gz) {
+                    const float pz = gridMin[2] + (static_cast<float>(gz) + 0.5f) * cellSizeZ;
+                    const std::array<float, 3> p = {px, py, pz};
+                    const std::vector<uint32_t> candidates = collectNeighborCandidates(gx, gy, gz);
+                    const size_t idx =
+                        static_cast<size_t>(gx) * globalResY * globalResZ +
+                        static_cast<size_t>(gy) * globalResZ +
+                        static_cast<size_t>(gz);
+                    global_sdf_flat[idx] = signedDistanceToTriangles(p, candidates);
+                }
+            }
+        }
+    }
+
     for (int gx = 0; gx < globalResX; ++gx) {
-        const float px = gridMin[0] + (static_cast<float>(gx) + 0.5f) * cellSizeX;
         for (int gy = 0; gy < globalResY; ++gy) {
-            const float py = gridMin[1] + (static_cast<float>(gy) + 0.5f) * cellSizeY;
             for (int gz = 0; gz < globalResZ; ++gz) {
-                const float pz = gridMin[2] + (static_cast<float>(gz) + 0.5f) * cellSizeZ;
-                const std::array<float, 3> p = {px, py, pz};
-                const std::vector<uint32_t> candidates = collectNeighborCandidates(gx, gy, gz);
-
-                const float sdf = signedDistanceToTriangles(p, candidates);
-                const size_t idx = static_cast<size_t>(gx + gy * globalResX + gz * globalResX * globalResY);
-                global_sdf_flat[idx] = sdf;
-
+                const size_t idx =
+                    static_cast<size_t>(gx) * globalResY * globalResZ +
+                    static_cast<size_t>(gy) * globalResZ +
+                    static_cast<size_t>(gz);
+                const float sdf = global_sdf_flat[idx];
                 if (sdf <= localPositiveBand && sdf >= localNegativeBand) {
                     activeCells.push_back({gx, gy, gz});
                 }
             }
         }
+    }
+
+    if (maxLocalCells > 0 && activeCells.size() > maxLocalCells) {
+        const size_t eligibleCells = activeCells.size();
+        auto globalValue = [&](const std::array<int, 3>& cell) {
+            const size_t idx =
+                static_cast<size_t>(cell[0]) * globalResY * globalResZ +
+                static_cast<size_t>(cell[1]) * globalResZ +
+                static_cast<size_t>(cell[2]);
+            return global_sdf_flat[idx];
+        };
+        std::stable_sort(activeCells.begin(), activeCells.end(), [&](const auto& lhs, const auto& rhs) {
+            return std::fabs(globalValue(lhs)) < std::fabs(globalValue(rhs));
+        });
+        activeCells.resize(maxLocalCells);
+        const float retainedMaxAbsDistance = std::fabs(globalValue(activeCells.back()));
+        std::sort(activeCells.begin(), activeCells.end());
+        std::printf(
+            "[HybridSDF] selected %zu/%zu band-eligible global cells for local refinement "
+            "(hardware limit=%zu, max |global SDF|=%.6f).\n",
+            activeCells.size(), eligibleCells, maxLocalCells, retainedMaxAbsDistance);
     }
 
     num_cells = activeCells.size();
@@ -559,39 +673,58 @@ void build_hybrid_sdf_from_mesh(
     const size_t localPerCell = static_cast<size_t>(localResX) * localResY * localResZ;
     local_sdf_flat.resize(num_cells * localPerCell, 0.0f);
 
-    for (size_t c = 0; c < num_cells; ++c) {
-        const int gx = activeCells[c][0];
-        const int gy = activeCells[c][1];
-        const int gz = activeCells[c][2];
+#ifdef RT_ENABLE_CUDA
+    if (useCuda) {
+        std::string cudaError;
+        std::printf("[HybridSDF] building local field with CUDA (%zu samples)...\n",
+                    local_sdf_flat.size());
+        if (!sdf_cuda_compute_local(
+                cudaConfig, trianglesFlat, normalsFlat, candidateOffsets, candidateIds,
+                local_sdf_keys_flat, local_sdf_flat, cudaError)) {
+            throw std::runtime_error("CUDA local SDF build failed: " + cudaError);
+        }
+    }
+#endif
+    if (!useCuda) {
+        std::printf("[HybridSDF] building local field with CPU (%zu samples)...\n",
+                    local_sdf_flat.size());
+        for (size_t c = 0; c < num_cells; ++c) {
+            const int gx = activeCells[c][0];
+            const int gy = activeCells[c][1];
+            const int gz = activeCells[c][2];
+            const std::vector<uint32_t> candidates = collectNeighborCandidates(gx, gy, gz);
+            const float cellMinX = gridMin[0] + static_cast<float>(gx) * cellSizeX;
+            const float cellMinY = gridMin[1] + static_cast<float>(gy) * cellSizeY;
+            const float cellMinZ = gridMin[2] + static_cast<float>(gz) * cellSizeZ;
 
-        const std::vector<uint32_t> candidates = collectNeighborCandidates(gx, gy, gz);
-
-        const float cellMinX = gridMin[0] + static_cast<float>(gx) * cellSizeX;
-        const float cellMinY = gridMin[1] + static_cast<float>(gy) * cellSizeY;
-        const float cellMinZ = gridMin[2] + static_cast<float>(gz) * cellSizeZ;
-
-        for (int li = 0; li < localResX; ++li) {
-            const float px = cellMinX + (static_cast<float>(li) + 0.5f) * (cellSizeX / static_cast<float>(localResX));
-            for (int lj = 0; lj < localResY; ++lj) {
-                const float py = cellMinY + (static_cast<float>(lj) + 0.5f) * (cellSizeY / static_cast<float>(localResY));
-                for (int lk = 0; lk < localResZ; ++lk) {
-                    const float pz = cellMinZ + (static_cast<float>(lk) + 0.5f) * (cellSizeZ / static_cast<float>(localResZ));
-                    const std::array<float, 3> p = {px, py, pz};
-                    const float sdf = signedDistanceToTriangles(p, candidates);
-
-                    const size_t localOffset =
-                        c * localPerCell +
-                        static_cast<size_t>(li) * static_cast<size_t>(localResY) * static_cast<size_t>(localResZ) +
-                        static_cast<size_t>(lj) * static_cast<size_t>(localResZ) +
-                        static_cast<size_t>(lk);
-                    local_sdf_flat[localOffset] = sdf;
+            for (int li = 0; li < localResX; ++li) {
+                const float px = cellMinX + (static_cast<float>(li) + 0.5f) *
+                    (cellSizeX / static_cast<float>(localResX));
+                for (int lj = 0; lj < localResY; ++lj) {
+                    const float py = cellMinY + (static_cast<float>(lj) + 0.5f) *
+                        (cellSizeY / static_cast<float>(localResY));
+                    for (int lk = 0; lk < localResZ; ++lk) {
+                        const float pz = cellMinZ + (static_cast<float>(lk) + 0.5f) *
+                            (cellSizeZ / static_cast<float>(localResZ));
+                        const std::array<float, 3> p = {px, py, pz};
+                        const size_t localOffset =
+                            c * localPerCell +
+                            static_cast<size_t>(li) * static_cast<size_t>(localResY) * localResZ +
+                            static_cast<size_t>(lj) * localResZ +
+                            static_cast<size_t>(lk);
+                        local_sdf_flat[localOffset] = signedDistanceToTriangles(p, candidates);
+                    }
                 }
             }
         }
     }
 
+    const double elapsedSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - buildStart).count();
     std::printf(
-        "[HybridSDF] built in-memory | global=(%zu,%zu,%zu) local=(%zu,%zu,%zu,%zu) local_range=[%.6f, %.6f] num_cells=%zu\n",
+        "[HybridSDF] built in-memory with %s in %.3f s | global=(%zu,%zu,%zu) local=(%zu,%zu,%zu,%zu) local_range=[%.6f, %.6f] num_cells=%zu\n",
+        useCuda ? "CUDA" : "CPU",
+        elapsedSeconds,
         global_sdf_shape[0], global_sdf_shape[1], global_sdf_shape[2],
         local_sdf_shape[0], local_sdf_shape[1], local_sdf_shape[2], local_sdf_shape[3],
         localNegativeBand,
@@ -1211,6 +1344,13 @@ void build_subgrid_triangle_index(
              }
          }
      }
+
+    if (refs.size() > static_cast<size_t>(rt::config::kMaxCompactTriangles)) {
+        throw std::runtime_error(
+            "compact triangle reference count " + std::to_string(refs.size()) +
+            " exceeds hardware capacity " +
+            std::to_string(rt::config::kMaxCompactTriangles));
+    }
 
     const std::vector<uint32_t> oldToNewTriId =
         reorder_triangles_by_subgrid_bank_dispersion(

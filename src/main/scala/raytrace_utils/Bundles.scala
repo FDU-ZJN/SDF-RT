@@ -77,18 +77,30 @@ class TriBatch(addrWidth: Int) extends Bundle {
 }
 
 class TraceResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val meta = new RayMeta(addrWidth)
+  val rayId = UInt(GlobalConfig.rayIdWidth.W)
   val hit = Bool()
   val hitId = UInt(addrWidth.W)
   val hitT = UInt(cfg.totalWidth.W)
+  val hitU = UInt(cfg.totalWidth.W)
+  val hitV = UInt(cfg.totalWidth.W)
 }
 
 class RenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
-  val meta = new RayMeta(addrWidth)
+  val rayId = UInt(GlobalConfig.rayIdWidth.W)
   val hit = Bool()
   val hitId = UInt(addrWidth.W)
   val hitT = UInt(cfg.totalWidth.W)
-  val rgb8 = UInt(24.W)
+  val hitU = UInt(16.W)
+  val hitV = UInt(16.W)
+}
+
+class FloatRenderResult(cfg: FloatConfig = FloatConfig.FP32, addrWidth: Int = 32) extends Bundle {
+  val rayId = UInt(GlobalConfig.rayIdWidth.W)
+  val hit = Bool()
+  val hitId = UInt(addrWidth.W)
+  val hitT = UInt(cfg.totalWidth.W)
+  val hitU = UInt(cfg.totalWidth.W)
+  val hitV = UInt(cfg.totalWidth.W)
 }
 
 class SdfStepReq(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {

@@ -92,10 +92,12 @@ class HostRendererCache:
         hit,
         hit_id,
         hit_t_bits,
+        hit_u,
+        hit_v,
         shade_chunk_pixels,
     ):
         """Decode and shade one unordered DMA result batch into the frame."""
-        ray_id, batch_hit, batch_hit_id, batch_hit_t = decode_result_records(result_words, count)
+        ray_id, batch_hit, batch_hit_id, batch_hit_t, batch_hit_u, batch_hit_v = decode_result_records(result_words, count)
         if np.any(ray_id >= count):
             raise RuntimeError(
                 f"batch returned out-of-range RayID {int(ray_id.max())} for {count} rays"
@@ -112,6 +114,8 @@ class HostRendererCache:
         hit[raster_index] = batch_hit
         hit_id[raster_index] = batch_hit_id
         hit_t_bits[raster_index] = batch_hit_t
+        hit_u[raster_index] = batch_hit_u
+        hit_v[raster_index] = batch_hit_v
 
         hit_t = hit_t_bits.view(np.float32)
         batch_hit_t_float = batch_hit_t.view(np.float32)
@@ -123,7 +127,7 @@ class HostRendererCache:
         hit_indices = raster_index[valid]
         for start in range(0, hit_indices.size, shade_chunk_pixels):
             chunk_indices = hit_indices[start:start + shade_chunk_pixels]
-            self._shade_hit_chunk(image, chunk_indices, hit_id, hit_t)
+            self._shade_hit_chunk(image, chunk_indices, hit_id, hit_t, hit_u, hit_v)
         return int(hit_indices.size)
 
     def render(self, hit, hit_id, hit_t_bits, shade_chunk_pixels):
@@ -145,7 +149,7 @@ class HostRendererCache:
             self._shade_hit_chunk(image, chunk_indices, hit_id, hit_t)
         return image.reshape(self.height, self.width, 3)
 
-    def _shade_hit_chunk(self, image, hit_indices, hit_id, hit_t):
+    def _shade_hit_chunk(self, image, hit_indices, hit_id, hit_t, hit_u=None, hit_v=None):
         compact_ids = hit_id[hit_indices].astype(np.int64)
         if np.any(compact_ids >= self.compact_src_ids.size):
             bad = hit_indices[compact_ids >= self.compact_src_ids.size][:8]
@@ -154,12 +158,16 @@ class HostRendererCache:
 
         ray_dir = self.directions[hit_indices]
         t = hit_t[hit_indices]
-        point = self.origin[None, :] + ray_dir * t[:, None]
-        v2 = point - self.tri_v0[tri_ids]
-        d20 = np.einsum("ij,ij->i", v2, self.tri_e1[tri_ids]).astype(np.float32)
-        d21 = np.einsum("ij,ij->i", v2, self.tri_e2[tri_ids]).astype(np.float32)
-        w1 = (self.d11[tri_ids] * d20 - self.d01[tri_ids] * d21) * self.inv_denom[tri_ids]
-        w2 = (self.d00[tri_ids] * d21 - self.d01[tri_ids] * d20) * self.inv_denom[tri_ids]
+        if hit_u is not None and hit_v is not None:
+            w1 = hit_u[hit_indices].astype(np.float32) / np.float32(65535.0)
+            w2 = hit_v[hit_indices].astype(np.float32) / np.float32(65535.0)
+        else:
+            point = self.origin[None, :] + ray_dir * t[:, None]
+            v2 = point - self.tri_v0[tri_ids]
+            d20 = np.einsum("ij,ij->i", v2, self.tri_e1[tri_ids]).astype(np.float32)
+            d21 = np.einsum("ij,ij->i", v2, self.tri_e2[tri_ids]).astype(np.float32)
+            w1 = (self.d11[tri_ids] * d20 - self.d01[tri_ids] * d21) * self.inv_denom[tri_ids]
+            w2 = (self.d00[tri_ids] * d21 - self.d01[tri_ids] * d20) * self.inv_denom[tri_ids]
         w0 = np.float32(1.0) - w1 - w2
 
         normals = (

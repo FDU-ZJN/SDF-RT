@@ -6,7 +6,7 @@ This library implements the software prototype data path:
 FPGA hitId/hitT
   -> OpenMP C++ triangle lookup, normal interpolation and raster scatter
   -> RGBA8 G-buffer (octahedral normal in RG, material in B, hit mask in A)
-  -> OpenGL ES 2.0 compact-ROI BRDF shader over a cached static background
+  -> OpenGL ES 2.0 full-frame BRDF shader over a per-frame environment
   -> either RGB NumPy readback for PYNQ DisplayPort, or EGLImage/DRM scanout
 ```
 
@@ -14,7 +14,7 @@ Build directly on the KV260:
 
 ```bash
 make -C native clean all
-python3 pynq.py --render-threads 4 --width 320 --height 180
+python3 pynq.py --render-threads 1 --width 320 --height 180
 ```
 
 The optional direct scanout path is selected by
@@ -27,11 +27,10 @@ Xilinx Mali headers, and links the headless Mali library. EGL is offscreen and
 does not create a window. The rendered RGB frame is sent only
 through the existing PYNQ HDMI/DisplayPort output thread.
 
-The default renderer reads only the block-aligned hit ROI from the GLES
-framebuffer into the shared RGB image consumed by the HDMI/DisplayPort output
-thread. The environment background is rendered once per EGL renderer lifetime;
-later miss fragments preserve it with `discard`. Uniform locations and the
-fullscreen-triangle VBO are persistent across frames.
+The default renderer uploads and shades the full-frame G-buffer. The environment
+background is refreshed for every orbit-camera frame, and miss fragments preserve
+that frame's background with `discard`. Uniform locations and the fullscreen-
+triangle VBO are persistent across frames.
 
 For zero-copy output, pass `--direct-scanout`. The native backend allocates an
 RGB888 CRTC base buffer, two PRIME XRGB8888 scanout buffers, imports those

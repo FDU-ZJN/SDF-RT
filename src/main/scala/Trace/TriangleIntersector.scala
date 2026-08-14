@@ -157,7 +157,8 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val det_is_zero_pre_cmp = PipeUtils.pipeData(det_is_zero, preCmpLatency - stageCLatency)
 
   val totalLatency = RayTriangleIntersection.totalLatency(cfg)
-  val out_valid_final = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
+  val baseValid = PipeUtils.pipeBool(io.in_valid, totalLatency, false.B)
+  val out_valid_final = baseValid
   io.id:=PipeUtils.pipeData(io.tri.id, totalLatency)
   io.out_valid := out_valid_final
 
@@ -176,7 +177,8 @@ class RayTriangleIntersection(cfg: FloatConfig = FloatConfig.FP32) extends Modul
   val u_final = u_d26
   val v_final = v_d26
 
-  io.hit := out_valid_final && !det_is_zero_final && u_pos_final && v_pos_final && t_pos_final && uv_le_one
+  val baseHit = baseValid && !det_is_zero_final && u_pos_final && v_pos_final && t_pos_final && uv_le_one
+  io.hit := baseHit && out_valid_final
 
   io.t := Mux(det_is_zero_final, 0.U, t_final)
   io.u := Mux(det_is_zero_final, 0.U, u_final)

@@ -36,7 +36,9 @@ public:
         const Ray& ray,
         float hitT,
         const Triangle& triangle,
-        const TriangleVertexNormals& vertexNormals) const;
+        const TriangleVertexNormals& vertexNormals,
+        float baryU = -1.0f,
+        float baryV = -1.0f) const;
     Vec3 sampleEnvironment(const Vec3& direction) const;
     std::array<uint8_t, 3> encode(const Vec3& linearColor) const;
 

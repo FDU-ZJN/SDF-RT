@@ -12,8 +12,9 @@ constexpr float kFovDegrees = 60.0f;
 constexpr float kRoughness = 0.06f;
 constexpr float kExposure = 1.1f;
 constexpr Vec3 kGoldF0 = {1.0f, 0.766f, 0.336f};
-constexpr Vec3 kSourceCenter = {0.0796971726f, -47.2750625f, -49.2204103f};
-constexpr float kSourceToObjScale = 0.0050387813f;
+constexpr Vec3 kCameraTarget = {0.0f, 0.0f, 0.0f};
+constexpr Vec3 kCameraOrigin = {-0.000068515f, 0.514165f, 1.499898f};
+constexpr Vec3 kCameraUp = {0.0f, 1.0f, 0.0f};
 
 Vec3 add(const Vec3& a, const Vec3& b) {
     return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
@@ -59,10 +60,6 @@ float saturate(float value) {
     return std::clamp(value, 0.0f, 1.0f);
 }
 
-Vec3 transformSourcePoint(const Vec3& point) {
-    return mul(sub(point, kSourceCenter), kSourceToObjScale);
-}
-
 float gaussianLobe(const Vec3& direction, const Vec3& center, float sharpness) {
     return std::exp((dot(direction, center) - 1.0f) * sharpness);
 }
@@ -72,13 +69,13 @@ float gaussianLobe(const Vec3& direction, const Vec3& center, float sharpness) {
 HostRenderer::HostRenderer(int width, int height)
     : width_(width),
       height_(height),
-      origin_(transformSourcePoint({200.0f, 250.0f, 70.0f})),
-      target_(transformSourcePoint({0.0f, 33.0f, -50.0f})) {
+      origin_(kCameraOrigin),
+      target_(kCameraTarget) {
     if (width <= 0 || height <= 0) {
         throw std::invalid_argument("HostRenderer dimensions must be positive");
     }
     forward_ = normalize(sub(target_, origin_));
-    right_ = normalize(cross(forward_, {0.0f, 0.0f, 1.0f}));
+    right_ = normalize(cross(forward_, kCameraUp));
     up_ = normalize(cross(right_, forward_));
 }
 
@@ -162,12 +159,17 @@ Vec3 HostRenderer::shadeHit(
     const Ray& ray,
     float hitT,
     const Triangle& triangle,
-    const TriangleVertexNormals& vertexNormals) const {
+    const TriangleVertexNormals& vertexNormals,
+    float baryU,
+    float baryV) const {
     if (!std::isfinite(hitT) || hitT < 0.0f) {
         throw std::runtime_error("HostRenderer received invalid hitT");
     }
     const Vec3 point = add(ray.origin, mul(ray.direction, hitT));
-    Vec3 normal = interpolateNormal(barycentrics(point, triangle), vertexNormals);
+    const Barycentrics bary = (baryU >= 0.0f && baryV >= 0.0f)
+        ? Barycentrics{1.0f - baryU - baryV, baryU, baryV}
+        : barycentrics(point, triangle);
+    Vec3 normal = interpolateNormal(bary, vertexNormals);
     const Vec3 view = mul(ray.direction, -1.0f);
     if (dot(normal, view) < 0.0f) {
         normal = mul(normal, -1.0f);

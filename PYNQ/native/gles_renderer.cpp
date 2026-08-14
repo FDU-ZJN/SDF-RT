@@ -494,10 +494,12 @@ extern "C" int sdf_rt_gles_enable_direct_scanout(
 extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba,
                                     std::uint8_t* image_rgb, std::uint32_t roi_x,
                                     std::uint32_t roi_y, std::uint32_t roi_width,
-                                    std::uint32_t roi_height, char* error,
+                                    std::uint32_t roi_height, const float* forward,
+                                    const float* right, const float* up, char* error,
                                     std::uint32_t error_size) {
     auto* renderer = static_cast<Renderer*>(handle);
-    if (!renderer || !gbuffer_rgba || (!image_rgb && !renderer->scanout) ||
+    if (!renderer || !gbuffer_rgba || !forward || !right || !up ||
+        (!image_rgb && !renderer->scanout) ||
         roi_width == 0 || roi_height == 0 ||
         roi_x + roi_width > renderer->width || roi_y + roi_height > renderer->height) {
         set_error(error, error_size, "invalid GLES render arguments");
@@ -507,6 +509,9 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
         set_error(error, error_size, egl_error("eglMakeCurrent"));
         return -1;
     }
+    std::copy_n(forward, 3, renderer->forward.begin());
+    std::copy_n(right, 3, renderer->right.begin());
+    std::copy_n(up, 3, renderer->up.begin());
     const std::uint32_t full_gl_y = renderer->height - roi_y - roi_height;
     std::uint32_t draw_x = roi_x;
     std::uint32_t draw_y = full_gl_y;
@@ -524,12 +529,31 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
         draw_height = bottom > draw_y ? bottom - draw_y : 0;
         scanout_index = renderer->scanout->next_index();
         glBindFramebuffer(GL_FRAMEBUFFER, renderer->scanout->framebuffer(scanout_index));
-        glViewport(draw_x - renderer->crop_x, draw_y - renderer->crop_y,
-                   draw_width, draw_height);
     } else {
         glBindFramebuffer(GL_FRAMEBUFFER, renderer->framebuffer);
-        glViewport(draw_x, draw_y, draw_width, draw_height);
     }
+
+    // The orbit camera changes every frame. Refresh the entire background in
+    // the selected output buffer before the full-frame BRDF pass preserves misses.
+    glUseProgram(renderer->background_program);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);
+    glUniform3fv(glGetUniformLocation(renderer->background_program, "uForward"),
+                 1, renderer->forward.data());
+    glUniform3fv(glGetUniformLocation(renderer->background_program, "uRight"),
+                 1, renderer->right.data());
+    glUniform3fv(glGetUniformLocation(renderer->background_program, "uUp"),
+                 1, renderer->up.data());
+    glUniform2f(glGetUniformLocation(renderer->background_program, "uPixelOffset"),
+                static_cast<float>(renderer->scanout ? renderer->crop_x : 0u),
+                static_cast<float>(renderer->scanout ? renderer->crop_y : 0u));
+    glViewport(0, 0,
+               renderer->scanout ? renderer->output_width : renderer->width,
+               renderer->scanout ? renderer->output_height : renderer->height);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glViewport(renderer->scanout ? draw_x - renderer->crop_x : draw_x,
+               renderer->scanout ? draw_y - renderer->crop_y : draw_y,
+               draw_width, draw_height);
     const std::uint8_t* texture_source = gbuffer_rgba;
     std::uint32_t texture_width = roi_width;
     std::uint32_t texture_height = roi_height;
@@ -563,6 +587,9 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texture_width, texture_height,
                     GL_RGBA, GL_UNSIGNED_BYTE, texture_source);
     glUseProgram(renderer->program);
+    glUniform3fv(renderer->forward_location, 1, renderer->forward.data());
+    glUniform3fv(renderer->right_location, 1, renderer->right.data());
+    glUniform3fv(renderer->up_location, 1, renderer->up.data());
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);

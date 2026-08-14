@@ -182,6 +182,21 @@ Vivado 2024.2 is invoked remotely by absolute path:
   -mode batch -nojournal -nolog -source KV260/build.tcl -tclargs all
 ```
 
+After staging any updated RTL, always run `KV260/create_project.tcl` before
+`KV260/build.tcl`. The FPGA core is packaged as the `fpga_top` out-of-context
+(OOC) IP; resetting only the top-level `synth_1` run can reuse an old
+`design_1_fpga_top_0_0_synth_1` checkpoint and produce a new bitstream that
+still contains the previous core. `create_project.tcl` deletes and rebuilds
+the generated project and IP repository, repackages `fpga_top`, and recreates
+all OOC runs. Then run `build.tcl -tclargs all` for the complete implementation.
+Do not treat a top-level `synth_1` rebuild alone as an RTL deployment.
+
+Before accepting the bitstream, verify that
+`KV260/KV260.runs/design_1_fpga_top_0_0_synth_1/design_1_fpga_top_0_0.dcp`
+was regenerated after the staged RTL. The build log must also show that
+`design_1_fpga_top_0_0_synth_1` was launched. This prevents a "new bitstream,
+old core" deployment.
+
 Those `create_project.tcl` and `build.tcl` paths refer to the remote project
 when they are absent locally. The tracked local block-design source is
 `KV260/scripts/create_bd.tcl`; inspect the remote checkout before assuming a

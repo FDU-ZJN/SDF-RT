@@ -95,9 +95,12 @@ private class SdfMemResourceBB(
         "DATA_WIDTH"       -> dataWidth,
         "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
         "GLOBAL_SDF_SIZE"  -> GlobalConfig.sdfGlobalMemDepth,
+        "GLOBAL_STORAGE_ROWS" -> GlobalConfig.sdfMemGlobalPhysicalRows,
         "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
         "LOCAL_CELL_COUNT" -> GlobalConfig.LocalCell,
-        "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell
+        "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell,
+        "LOCAL_STORAGE_ROWS" -> GlobalConfig.sdfMemLocalPhysicalRows,
+        "MAPPING_STORAGE_WORDS" -> GlobalConfig.sdfMemMappingPhysicalWords
       )
     )
     with HasBlackBoxResource {
@@ -125,9 +128,12 @@ private class SdfMemIpBB(
         "DATA_WIDTH"       -> dataWidth,
         "GLOBAL_ADDR_BITS" -> GlobalConfig.sdfMemGlobalAddrWidth,
         "GLOBAL_SDF_SIZE"  -> GlobalConfig.sdfGlobalMemDepth,
+        "GLOBAL_STORAGE_ROWS" -> GlobalConfig.sdfMemGlobalPhysicalRows,
         "LATENCY"          -> GlobalConfig.sdfMemDpiLatency,
         "LOCAL_CELL_COUNT" -> GlobalConfig.LocalCell,
         "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell,
+        "LOCAL_STORAGE_ROWS" -> GlobalConfig.sdfMemLocalPhysicalRows,
+        "MAPPING_STORAGE_WORDS" -> GlobalConfig.sdfMemMappingPhysicalWords,
         "LOCAL_IDX_INIT_FILE" -> StringParam("sdf_local_mapping.mem")
       )
     )

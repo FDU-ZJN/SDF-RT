@@ -51,7 +51,7 @@ class FpgaTop extends Module {
   val setupUnit = Module(new SetupUnit(c.cfg, sdfCfg))
   val frontend = Module(new Frontend(c))
   val backend = Module(new Backend(c, sdfCfg.DDAGlobalRes, sdfCfg.SubRes, sdfCfg.DDAMaxSteps))
-  val traceQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), GlobalConfig.traceNumWorkers, GlobalConfig.resultArbiterFifoDepth))
+  val traceQ = Module(new BufferedRRArbiter(new FloatRenderResult(c.cfg, c.addrWidth), GlobalConfig.traceNumWorkers, GlobalConfig.resultArbiterFifoDepth))
   val resultQ = Module(new BufferedRRArbiter(new RenderResult(c.cfg, c.addrWidth), 2, GlobalConfig.resultArbiterFifoDepth))
 
   val setupPending = RegInit(false.B)
@@ -66,6 +66,8 @@ class FpgaTop extends Module {
   }.elsewhen(setupUnit.io.setup_finish) {
     setupPending := false.B
   }
+
+  // AXI result sideband fields are packed by RayAxisAdapter.sv.
   setupUnit.io.setup_valid := setupPending
   setupUnit.io.setup_origin := setupOrigin
   setupUnit.io.setup_grid_min := setupGridMin
@@ -110,17 +112,34 @@ class FpgaTop extends Module {
   for (worker <- 0 until GlobalConfig.traceNumWorkers) {
     val result = backend.io.result_out(worker)
     traceQ.io.enq(worker).valid := result.valid
-    traceQ.io.enq(worker).bits.meta.rayId := result.bits.meta.rayId
+    traceQ.io.enq(worker).bits.rayId := result.bits.rayId
     traceQ.io.enq(worker).bits.hit := result.bits.hit
     traceQ.io.enq(worker).bits.hitId := result.bits.hitId
     traceQ.io.enq(worker).bits.hitT := result.bits.hitT
-    traceQ.io.enq(worker).bits.rgb8 := 0.U
+    traceQ.io.enq(worker).bits.hitU := result.bits.hitU
+    traceQ.io.enq(worker).bits.hitV := result.bits.hitV
     result.ready := traceQ.io.enq(worker).ready
   }
 
   resultQ.io.enq(0) <> frontend.io.miss_out
-  resultQ.io.enq(1) <> traceQ.io.deq
-  
+  val traceResult = traceQ.io.deq.bits
+  def quantizeUnitFp32(value: UInt): UInt = {
+    val sign = value(31)
+    val exponent = value(30, 23)
+    val significand = Cat(1.U(1.W), value(22, 0))
+    val shift = 134.U(8.W) - exponent
+    Mux(sign || exponent <= 110.U, 0.U,
+      Mux(exponent >= 127.U, "hffff".U, (significand >> shift)(15, 0)))
+  }
+  resultQ.io.enq(1).valid := traceQ.io.deq.valid
+  resultQ.io.enq(1).bits.rayId := traceResult.rayId
+  resultQ.io.enq(1).bits.hit := traceResult.hit
+  resultQ.io.enq(1).bits.hitId := traceResult.hitId
+  resultQ.io.enq(1).bits.hitT := traceResult.hitT
+  resultQ.io.enq(1).bits.hitU := Mux(traceResult.hit, quantizeUnitFp32(traceResult.hitU), 0.U)
+  resultQ.io.enq(1).bits.hitV := Mux(traceResult.hit, quantizeUnitFp32(traceResult.hitV), 0.U)
+  traceQ.io.deq.ready := resultQ.io.enq(1).ready
+
   io.result_valid := resultQ.io.deq.valid
   io.result := resultQ.io.deq.bits
   val finalResult = batchClosed && (emittedCount + 1.U === acceptedCount)

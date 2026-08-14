@@ -71,11 +71,12 @@ class Frontend(c: TriPeConfig = TriPeConfig()) extends Module {
 
   def missResult(rayId: UInt): RenderResult = {
     val result = Wire(new RenderResult(c.cfg, c.addrWidth))
-    result.meta.rayId := rayId
+    result.rayId := rayId
     result.hit := false.B
     result.hitId := 0.U
     result.hitT := missT
-    result.rgb8 := 0.U
+    result.hitU := 0.U
+    result.hitV := 0.U
     result
   }
 

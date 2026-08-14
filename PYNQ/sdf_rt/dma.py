@@ -23,6 +23,8 @@ from .config import (
     LOCAL_SDF_BASE_WORD,
     LOCAL_SDF_COMMIT_SLOT,
     LOCAL_SDF_MAX_ROWS,
+    LOCAL_SDF_MAX_CELLS,
+    LOCAL_SDF_ROWS_PER_CELL,
     LOCAL_SDF_STRIDE_WORDS,
     LOCAL_SDF_WORDS_PER_ROW,
     MAPPING_BASE_WORD,
@@ -67,7 +69,6 @@ from .formats import (
     parse_hwh_master_ranges,
     parse_mapping_words,
     parse_packed_sdf_rows,
-    rewrite_batch_ray_ids,
 )
 
 
@@ -123,7 +124,7 @@ class Kv260Runner:
         ]
         self.result_buffer = self.result_buffers[0]
         self.frame_ray_buffer = None
-        self.roi_ray_buffer = None
+        self.rotating_ray_buffers = []
         self.triangle_buffer = None
         for index, result_buffer in enumerate(self.result_buffers):
             self._require_dma_range(
@@ -169,6 +170,16 @@ class Kv260Runner:
         local_row_count = local_words.shape[0]
         if local_row_count > LOCAL_SDF_MAX_ROWS:
             raise ValueError(f"local SDF contains {local_row_count} rows; capacity is {LOCAL_SDF_MAX_ROWS}")
+        if local_row_count % LOCAL_SDF_ROWS_PER_CELL:
+            raise ValueError(
+                f"local SDF contains {local_row_count} rows; 8x8x8 blocks require "
+                f"{LOCAL_SDF_ROWS_PER_CELL}-row alignment"
+            )
+        local_cell_count = local_row_count // LOCAL_SDF_ROWS_PER_CELL
+        if local_cell_count > LOCAL_SDF_MAX_CELLS:
+            raise ValueError(
+                f"local SDF contains {local_cell_count} cells; capacity is {LOCAL_SDF_MAX_CELLS}"
+            )
 
         start = time.perf_counter()
         self.write_core(SDF_LOCAL_CELLS_REG, local_row_count)
@@ -224,7 +235,8 @@ class Kv260Runner:
                     LOCAL_SDF_WORDS_PER_ROW + 1
                 ) + MAPPING_WORDS
                 print(
-                    f"[SDF] ready, global_rows={global_count} local_rows={local_count} "
+                    f"[SDF] ready, global_rows={global_count} local_cells={local_cell_count} "
+                    f"local_rows={local_count} "
                     f"mapping_words={mapping_count}, wrote {total_words} AXI words in {elapsed:.3f}s"
                 )
                 return
@@ -300,6 +312,11 @@ class Kv260Runner:
         )
         return self.frame_ray_buffer
 
+    def release_frame_ray_buffer(self):
+        if self.frame_ray_buffer is not None:
+            self.frame_ray_buffer.freebuffer()
+            self.frame_ray_buffer = None
+
     def allocate_staging_ray_buffer(self):
         """Allocate the on-demand ray source used only without prepacking."""
         if self.ray_buffer is not None:
@@ -313,29 +330,22 @@ class Kv260Runner:
         )
         return self.ray_buffer
 
-    def allocate_roi_ray_buffer(self, source_buffer, source_positions, batch_rays):
-        count = int(source_positions.size)
-        if count <= 0:
-            raise ValueError("ROI must contain at least one ray")
-        if not 1 <= batch_rays <= self.max_batch_rays:
-            raise ValueError(f"ROI batch size {batch_rays} is outside 1..{self.max_batch_rays}")
-        if self.roi_ray_buffer is not None:
-            if self.roi_ray_buffer.shape[0] == count:
-                return self.roi_ray_buffer
-            self.roi_ray_buffer.freebuffer()
-        self.roi_ray_buffer = allocate(shape=(count, 8), dtype=np.uint32)
-        self._require_dma_range(
-            self.roi_ray_buffer.physical_address,
-            self.roi_ray_buffer.nbytes,
-            "ROI prepacked ray",
-            self.ray_ranges,
-        )
-        for start in range(0, count, batch_rays):
-            end = min(start + batch_rays, count)
-            self.roi_ray_buffer[start:end] = source_buffer[source_positions[start:end]]
-        rewrite_batch_ray_ids(self.roi_ray_buffer, batch_rays)
-        self.roi_ray_buffer.flush()
-        return self.roi_ray_buffer
+    def allocate_rotating_ray_buffers(self, ray_count, depth=2):
+        if ray_count <= 0 or depth <= 0:
+            raise ValueError("rotating ray buffer dimensions must be positive")
+        for buffer in self.rotating_ray_buffers:
+            buffer.freebuffer()
+        self.rotating_ray_buffers = []
+        for index in range(depth):
+            buffer = allocate(shape=(ray_count, 8), dtype=np.uint32)
+            self._require_dma_range(
+                buffer.physical_address,
+                buffer.nbytes,
+                f"rotating ray[{index}]",
+                self.ray_ranges,
+            )
+            self.rotating_ray_buffers.append(buffer)
+        return tuple(self.rotating_ray_buffers)
 
     def launch_batch(self, slot, count, ray_address=None, flush_ray=True):
         if not 0 <= slot < RESULT_BUFFER_COUNT:
@@ -403,7 +413,7 @@ class Kv260Runner:
             *self.result_buffers,
             self.ray_buffer,
             self.frame_ray_buffer,
-            self.roi_ray_buffer,
+            *self.rotating_ray_buffers,
             self.triangle_buffer,
         ):
             if buffer is not None:

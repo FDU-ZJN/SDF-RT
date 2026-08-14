@@ -14,7 +14,6 @@ from .shading import HostRendererCache
 
 _U8_P = ctypes.POINTER(ctypes.c_uint8)
 _U32_P = ctypes.POINTER(ctypes.c_uint32)
-_I64_P = ctypes.POINTER(ctypes.c_int64)
 _F32_P = ctypes.POINTER(ctypes.c_float)
 
 
@@ -43,12 +42,11 @@ class NativeRenderLibrary:
 
     def _bind(self):
         self.lib.sdf_rt_build_gbuffer.argtypes = [
-            _U32_P, _I64_P, ctypes.c_uint32, _F32_P, ctypes.c_uint32,
-            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_uint32, _F32_P,
-            _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P, _F32_P,
-            ctypes.c_uint32, _U32_P, ctypes.c_uint32, _U8_P, _U8_P, _U32_P,
-            _U32_P, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32,
+            _U32_P, _U32_P, _U32_P, ctypes.c_uint32, _F32_P,
+            ctypes.c_uint32, ctypes.c_uint32, _F32_P, ctypes.c_uint32,
+            _U32_P, ctypes.c_uint32, _U8_P, _U8_P, _U32_P,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint32,
         ]
         self.lib.sdf_rt_build_gbuffer.restype = ctypes.c_int
         self.lib.sdf_rt_gles_create.argtypes = [
@@ -69,7 +67,8 @@ class NativeRenderLibrary:
         self.lib.sdf_rt_gles_dump_scanout_ppm.restype = ctypes.c_int
         self.lib.sdf_rt_gles_render.argtypes = [
             ctypes.c_void_p, _U8_P, _U8_P, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, _F32_P, _F32_P, _F32_P,
+            ctypes.c_char_p, ctypes.c_uint32,
         ]
         self.lib.sdf_rt_gles_render.restype = ctypes.c_int
         self.lib.sdf_rt_gles_destroy.argtypes = [ctypes.c_void_p]
@@ -90,7 +89,7 @@ class MaliBrdfRenderer:
         width,
         height,
         render_data_path,
-        thread_count=4,
+        thread_count=1,
     ):
         self.reference = HostRendererCache(width, height, render_data_path)
         self.width = self.reference.width
@@ -179,18 +178,21 @@ class MaliBrdfRenderer:
         self,
         gbuffer,
         batch_raster_index,
+        batch_local_index,
+        batch_directions,
         result_words,
         count,
         hit,
-        hit_id,
         hit_t_bits,
+        store_results,
+        validate_ray_ids,
         shade_chunk_pixels,
-        roi,
     ):
         del shade_chunk_pixels
-        roi = tuple(int(value) for value in roi)
         words = np.asarray(result_words[:count], dtype=np.uint32)
-        raster = np.ascontiguousarray(batch_raster_index, dtype=np.int64)
+        raster = np.ascontiguousarray(batch_raster_index, dtype=np.uint32)
+        local = np.ascontiguousarray(batch_local_index, dtype=np.uint32)
+        directions = np.ascontiguousarray(batch_directions, dtype=np.float32)
         if words.ndim != 2 or words.shape[1] != 4:
             raise ValueError(f"result buffer must have shape (N, 4), got {words.shape}")
         error = self.native.error_buffer()
@@ -200,31 +202,21 @@ class MaliBrdfRenderer:
             build_start = time.perf_counter()
             result = self.native.lib.sdf_rt_build_gbuffer(
                 _pointer(words, _U32_P),
-                _pointer(raster, _I64_P),
+                _pointer(raster, _U32_P),
+                _pointer(local, _U32_P),
                 count,
-                _pointer(self.directions, _F32_P),
+                _pointer(directions, _F32_P),
                 self.width * self.height,
-                self.width,
-                roi[0],
-                roi[1],
-                roi[2],
-                roi[3],
-                _pointer(self.origin, _F32_P),
-                _pointer(self.tri_v0, _F32_P),
-                _pointer(self.tri_e1, _F32_P),
-                _pointer(self.tri_e2, _F32_P),
+                self.width * self.height,
                 _pointer(self.vertex_normals, _F32_P),
-                _pointer(self.reference.d00, _F32_P),
-                _pointer(self.reference.d01, _F32_P),
-                _pointer(self.reference.d11, _F32_P),
-                _pointer(self.reference.inv_denom, _F32_P),
                 self.tri_v0.shape[0],
                 _pointer(self.reference.compact_src_ids, _U32_P),
                 self.reference.compact_src_ids.size,
                 _pointer(gbuffer, _U8_P),
                 _pointer(hit.view(np.uint8), _U8_P),
-                _pointer(hit_id, _U32_P),
                 _pointer(hit_t_bits, _U32_P),
+                int(store_results),
+                int(validate_ray_ids),
                 self.thread_count,
                 error,
                 len(error),
@@ -234,25 +226,30 @@ class MaliBrdfRenderer:
             raise RuntimeError(error.value.decode(errors="replace"))
         return result, build_elapsed
 
-    def finish_frame(self, gbuffer, image, roi):
+    def finish_frame(self, gbuffer, image, forward, right, up):
         if not self._handle:
             raise RuntimeError("GLES renderer is closed")
-        roi = tuple(int(value) for value in roi)
         gbuffer = np.ascontiguousarray(gbuffer, dtype=np.uint8)
         output = None
         output_pointer = ctypes.cast(None, _U8_P)
         if not self.direct_scanout:
             output = np.asarray(image, dtype=np.uint8).reshape(self.height, self.width, 3)
             output_pointer = _pointer(output, _U8_P)
+        forward = np.ascontiguousarray(forward, dtype=np.float32)
+        right = np.ascontiguousarray(right, dtype=np.float32)
+        up = np.ascontiguousarray(up, dtype=np.float32)
         error = self.native.error_buffer()
         result = self.native.lib.sdf_rt_gles_render(
             self._handle,
             _pointer(gbuffer, _U8_P),
             output_pointer,
-            roi[0],
-            roi[1],
-            roi[2],
-            roi[3],
+            0,
+            0,
+            self.width,
+            self.height,
+            _pointer(forward, _F32_P),
+            _pointer(right, _F32_P),
+            _pointer(up, _F32_P),
             error,
             len(error),
         )

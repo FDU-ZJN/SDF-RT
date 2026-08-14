@@ -93,7 +93,7 @@ class TraceController(c: TriPeConfig = TriPeConfig()) extends Module {
     // be re-enqueued every cycle and later appear as duplicate RayIDs.
     when(p.io.out_done && !resultValid(w)(p.io.out_ctx)) {
       val l = p.io.out_ctx
-      results(w)(l).meta := p.io.out_meta; results(w)(l).hit := p.io.out_best_hit; results(w)(l).hitId := p.io.hit_id; results(w)(l).hitT := p.io.t_best
+      results(w)(l).rayId := p.io.out_meta.rayId; results(w)(l).hit := p.io.out_best_hit; results(w)(l).hitId := p.io.hit_id; results(w)(l).hitT := p.io.t_best; results(w)(l).hitU := p.io.hit_u; results(w)(l).hitV := p.io.hit_v
       resultValid(w)(l) := true.B; p.io.clear_ctx(l) := true.B
       io.trace_stop(w).valid := p.io.out_early_stop; io.trace_stop(w).bits := (w * contextsPerWorker).U + l
     }

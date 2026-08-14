@@ -157,6 +157,12 @@ class TriangleMemCachedBank(
   val headSet = setIdxOf(headReq.addr)
   val lookupSet = setIdxOf(tagPipeReq.addr)
   val lookupTag = tagOf(tagPipeReq.addr)
+  // Keep the RAM addresses independent of their enables.  Driving zero while
+  // idle made response-queue credit and refill arbitration part of the wide
+  // XPM address mux feeding every physical BRAM slice.
+  dataReadSetIdx := lookupSet
+  tagReadSetIdx := headSet
+  writeSetIdx := io.refillDone.bits.set
   val lookupHit = tagPipeEntry(tagW) &&
     tagPipeEntry(tagW - 1, 0) === lookupTag
 
@@ -246,9 +252,7 @@ class TriangleMemCachedBank(
   when(!reset.asBool) {
     refillTagBypassValid := false.B
     tagReadEn := reqFire
-    tagReadSetIdx := headSet
     when(dataReadAttempt) {
-      dataReadSetIdx := lookupSet
       wayReadEn := true.B
     }
 
@@ -263,7 +267,6 @@ class TriangleMemCachedBank(
       "TriangleMemCachedBank refill set disagrees with address")
     assert(io.refillDone.bits.tag === tagOf(io.refillDone.bits.addr),
       "TriangleMemCachedBank refill tag disagrees with address")
-    writeSetIdx := io.refillDone.bits.set
     writeData := io.refillDone.bits.data
     emitMshrId := doneId
     emitIdx := 0.U
