@@ -152,15 +152,13 @@ SDF-RT/
 │   │   ├── golden_model.h        # Reference implementation
 │   │   └── test_framework.h      # Test infrastructure
 │   ├── src/utils/                # C++ utilities (11 files)
-│   │   ├── MemExport.cpp         # Vivado memory export
+│   │   ├── MemExport.cpp         # RTL/PS deployment asset export
 │   │   ├── BVH.cpp / SDF.cpp     # Data structure implementations
 │   │   └── golden_model.cpp      # Software reference algorithms
-│   └── vivado_mem/               # Exported memory files for Vivado
-│       ├── triangle_mem.mem
-│       ├── normal_mem.mem
-│       ├── bvh_mem.mem
-│       ├── sdf_global_mem.mem
-│       ├── sdf_local_mem.mem
+│   └── vivado_mem/mem_<model>/   # Model deployment assets
+│       ├── triangle_ddr.bin
+│       ├── pynq_render_data.bin
+│       ├── sdf_uram.bin
 │       ├── subgrid_block_dir.mem
 │       └── subgrid_compact_meta.mem
 ├── build/                        # Build outputs (Verilog, objects)
@@ -349,32 +347,24 @@ inline constexpr bool kEnableProgressPrint = true;
 
 ---
 
-### Vivado Simulation
+### FPGA Simulation Assets
 
-**Purpose:** Bit-accururate timing verification
+**Purpose:** Model data shared by Verilator, Vivado implementation, and PYNQ
 
 **Workflow:**
 
-1. **Generate memory files:**
+1. **Generate and validate the deployment assets:**
    ```bash
-   cd csrc
-   make run  # Auto-exports all .mem files to ./vivado_mem/
+   make sim
    ```
 
-2. **Configure +plusargs in Vivado:**
-   ```
-   +TRI_MEM_FILE=./vivado_mem/triangle_mem.mem
-   +NORMAL_MEM_FILE=./vivado_mem/normal_mem.mem
-   +BVH_MEM_FILE=./vivado_mem/bvh_mem.mem
-   +SDF_GLOBAL_MEM_FILE=./vivado_mem/sdf_global_mem.mem
-   +SDF_LOCAL_MEM_FILE=./vivado_mem/sdf_local_mem.mem
-   +SUBGRID_BLOCK_DIR_MEM_FILE=./vivado_mem/subgrid_block_dir.mem
-   +SUBGRID_COMPACT_META_MEM_FILE=./vivado_mem/subgrid_compact_meta.mem
-   ```
+2. **Stage the two RTL initialization files:**
+   `subgrid_block_dir.mem` and `subgrid_compact_meta.mem` are the only
+   model-dependent files packaged into the FPGA IP.
 
-3. **Set in Vivado GUI:**
-   - Flow Navigator → Simulation Settings
-   - xsim.simulate.custom_options → Add plusargs
+3. **Deploy the PS assets:**
+   `sdf_uram.bin`, `triangle_ddr.bin`, and `pynq_render_data.bin` are loaded at
+   runtime and must be copied together with the matching bitstream/HWH.
 
 **BlackBox Files:** Located in `src/main/resources/`:
 - `TriangleMemBlackBox.sv` - Triangle geometry memory (36 words/entry)

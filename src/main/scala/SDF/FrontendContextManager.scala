@@ -53,6 +53,7 @@ class FrontendContextManager(
     val completeId = io.init_complete.bits.contextId
     assert(active(completeId), "Init completed an inactive frontend context")
     when(io.init_complete.bits.hit) {
+      immutableTable(completeId).dir := io.init_complete.bits.transformedDir
       stateTable(completeId).dist := io.init_complete.bits.entryT
       stateTable(completeId).iter := 0.U
       stateTable(completeId).prevSdf := 0.U

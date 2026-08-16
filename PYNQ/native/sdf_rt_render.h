@@ -10,6 +10,8 @@ int sdf_rt_build_gbuffer(
     const std::uint32_t* batch_local_index,
     std::uint32_t count,
     const float* directions,
+    float rotation_cos,
+    float rotation_sin,
     std::uint32_t pixel_count,
     std::uint32_t roi_pixel_count,
     const float* vertex_normals,
@@ -42,17 +44,9 @@ int sdf_rt_gles_enable_direct_scanout(
     char* error,
     std::uint32_t error_size);
 
-std::uint32_t sdf_rt_gles_scanout_crc32(void* renderer);
-int sdf_rt_gles_dump_scanout_ppm(
-    void* renderer,
-    const char* path,
-    char* error,
-    std::uint32_t error_size);
-
 int sdf_rt_gles_render(
     void* renderer,
     const std::uint8_t* gbuffer_rgba,
-    std::uint8_t* image_rgb,
     std::uint32_t roi_x,
     std::uint32_t roi_y,
     std::uint32_t roi_width,

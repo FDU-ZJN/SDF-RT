@@ -17,7 +17,6 @@
 #endif
 #include <cerrno>
 #include <cstring>
-#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -410,55 +409,6 @@ GLuint DrmScanout::framebuffer(std::uint32_t index) const {
 }
 
 std::uint32_t DrmScanout::next_index() const { return impl_->active ^ 1u; }
-
-std::uint32_t DrmScanout::crc32(std::uint32_t index) const {
-    const Buffer& buffer = impl_->buffers[index];
-    drm_mode_map_dumb map{};
-    map.handle = buffer.handle;
-    if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) return 0;
-    void* data = mmap(nullptr, buffer.size, PROT_READ, MAP_SHARED, impl_->fd, map.offset);
-    if (data == MAP_FAILED) return 0;
-    std::uint32_t crc = 0xffffffffu;
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::uint64_t i = 0; i < buffer.size; ++i) {
-        crc ^= bytes[i];
-        for (int bit = 0; bit < 8; ++bit)
-            crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
-    }
-    munmap(data, buffer.size);
-    return ~crc;
-}
-
-bool DrmScanout::dump_ppm(std::uint32_t index, const char* path, std::string& error) const {
-    const Buffer& buffer = impl_->buffers[index];
-    drm_mode_map_dumb map{};
-    map.handle = buffer.handle;
-    if (drmIoctl(impl_->fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
-        error = system_error("DRM_IOCTL_MODE_MAP_DUMB diagnostic");
-        return false;
-    }
-    void* data = mmap(nullptr, buffer.size, PROT_READ, MAP_SHARED, impl_->fd, map.offset);
-    if (data == MAP_FAILED) {
-        error = system_error("mmap scanout diagnostic");
-        return false;
-    }
-    std::ofstream output(path, std::ios::binary);
-    output << "P6\n" << impl_->width << ' ' << impl_->height << "\n255\n";
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::uint32_t y = 0; y < impl_->height; ++y) {
-        const auto* row = bytes + static_cast<std::size_t>(impl_->height - 1u - y) * buffer.pitch;
-        for (std::uint32_t x = 0; x < impl_->width; ++x) {
-            const std::uint8_t rgb[3] = {row[4u * x + 2], row[4u * x + 1], row[4u * x + 0]};
-            output.write(reinterpret_cast<const char*>(rgb), 3);
-        }
-    }
-    munmap(data, buffer.size);
-    if (!output) {
-        error = "cannot write scanout diagnostic PPM";
-        return false;
-    }
-    return true;
-}
 
 DrmScanout::~DrmScanout() {
     if (!impl_) return;

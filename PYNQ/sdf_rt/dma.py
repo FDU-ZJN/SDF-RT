@@ -1,11 +1,11 @@
 """PYNQ overlay setup, SDF loading, CMA ownership, and AXI DMA control."""
 
-import shutil
 import time
 from pathlib import Path
 
 import numpy as np
 from pynq import MMIO, Overlay, allocate
+from pynq.pl_server import embedded_device
 
 from .config import (
     CORE_REQUIRED_RANGE,
@@ -44,7 +44,7 @@ from .config import (
     S2MM_LENGTH,
     SDF_CTRL_REG,
     SDF_GLOBAL_ROWS_REG,
-    SDF_LOCAL_CELLS_REG,
+    SDF_EXPECTED_LOCAL_ROWS_REG,
     SDF_LOCAL_ROWS_REG,
     SDF_MAPPING_WORDS_REG,
     SDF_STATUS_REG,
@@ -58,17 +58,21 @@ from .config import (
     TRI_DATAMOVER_NAME,
     TRI_ISSUED_REG,
     TRI_STATUS_REG,
+    TRANSFORM_COS_REG,
+    TRANSFORM_CTRL_REG,
+    TRANSFORM_ORIGIN_REGS,
+    TRANSFORM_SIN_REG,
+    TRANSFORM_STATUS_REG,
     word_offset,
 )
 from .formats import (
     decode_core_status,
     decode_sdf_status,
+    decode_transform_status,
     float_to_u32,
     format_ranges,
-    packed_rows_to_u32,
+    load_sdf_runtime_image,
     parse_hwh_master_ranges,
-    parse_mapping_words,
-    parse_packed_sdf_rows,
 )
 
 
@@ -81,21 +85,31 @@ class Kv260Runner:
             raise FileNotFoundError(bitstream)
         if bitstream.suffix.lower() == ".bit":
             sidecar = bitstream.with_suffix(".hwh")
-            if not sidecar.exists() and hwh:
-                source_hwh = Path(hwh).expanduser().resolve()
-                if not source_hwh.exists():
-                    raise FileNotFoundError(source_hwh)
-                shutil.copyfile(source_hwh, sidecar)
-                print(f"[OVERLAY] installed HWH sidecar {sidecar}")
             if not sidecar.exists():
                 raise FileNotFoundError(
-                    f"PYNQ needs {sidecar} next to the bitstream; pass Vivado's "
-                    "design_1.hwh with --hwh"
+                    f"PYNQ needs the read-only HWH sidecar {sidecar} next to "
+                    "the bitstream"
                 )
             hwh_path = sidecar
         else:
             hwh_path = Path(hwh).expanduser().resolve()
-        self.overlay = Overlay(str(bitstream), download=True)
+        # PYNQ 3.0 classifies a .bit as an XSA whenever a same-stem .xsa is
+        # adjacent, then incorrectly passes the .bit path to the XSA parser.
+        # Select the standalone-bit handler only while constructing this
+        # overlay so KV260.bit/.hwh can remain read-only beside KV260.xsa.
+        bit_handler = embedded_device._bitstream_handlers.get(".bit")
+        if bitstream.suffix.lower() == ".bit" and bit_handler is not None:
+            class StandaloneBitfileHandler(bit_handler):
+                def is_xsa(self):
+                    return False
+
+            embedded_device._bitstream_handlers[".bit"] = StandaloneBitfileHandler
+            try:
+                self.overlay = Overlay(str(bitstream), download=True)
+            finally:
+                embedded_device._bitstream_handlers[".bit"] = bit_handler
+        else:
+            self.overlay = Overlay(str(bitstream), download=True)
         try:
             self.core_ip = getattr(self.overlay, ip_name)
             self.dma_ip = getattr(self.overlay, dma_name)
@@ -124,7 +138,6 @@ class Kv260Runner:
         ]
         self.result_buffer = self.result_buffers[0]
         self.frame_ray_buffer = None
-        self.rotating_ray_buffers = []
         self.triangle_buffer = None
         for index, result_buffer in enumerate(self.result_buffers):
             self._require_dma_range(
@@ -157,16 +170,10 @@ class Kv260Runner:
     def write_dma(self, offset, value):
         self.dma.write(offset, int(value) & 0xFFFFFFFF)
 
-    def load_sdf(self, global_path, local_path, mapping_path, timeout_s):
-        global_rows = parse_packed_sdf_rows(
-            global_path, 18, "global", expected_rows=GLOBAL_SDF_ROWS
+    def load_sdf(self, image_path, timeout_s):
+        global_words, local_words, mapping_words, image_local_cells = (
+            load_sdf_runtime_image(image_path)
         )
-        local_rows = parse_packed_sdf_rows(
-            local_path, 144, "local", max_rows=LOCAL_SDF_MAX_ROWS
-        )
-        mapping_words = parse_mapping_words(mapping_path)
-        global_words = packed_rows_to_u32(global_rows, GLOBAL_SDF_WORDS_PER_ROW)
-        local_words = packed_rows_to_u32(local_rows, LOCAL_SDF_WORDS_PER_ROW)
         local_row_count = local_words.shape[0]
         if local_row_count > LOCAL_SDF_MAX_ROWS:
             raise ValueError(f"local SDF contains {local_row_count} rows; capacity is {LOCAL_SDF_MAX_ROWS}")
@@ -176,13 +183,17 @@ class Kv260Runner:
                 f"{LOCAL_SDF_ROWS_PER_CELL}-row alignment"
             )
         local_cell_count = local_row_count // LOCAL_SDF_ROWS_PER_CELL
+        if local_cell_count != image_local_cells:
+            raise ValueError(
+                f"SDF header declares {image_local_cells} local cells, payload has {local_cell_count}"
+            )
         if local_cell_count > LOCAL_SDF_MAX_CELLS:
             raise ValueError(
                 f"local SDF contains {local_cell_count} cells; capacity is {LOCAL_SDF_MAX_CELLS}"
             )
 
         start = time.perf_counter()
-        self.write_core(SDF_LOCAL_CELLS_REG, local_row_count)
+        self.write_core(SDF_EXPECTED_LOCAL_ROWS_REG, local_row_count)
         self.write_core(SDF_CTRL_REG, 1)
 
         for row_index in range(GLOBAL_SDF_ROWS):
@@ -284,6 +295,29 @@ class Kv260Runner:
             time.sleep(0.001)
         raise TimeoutError(f"setup did not complete, status=0x{self.read_core(CORE_STATUS_REG):08X}")
 
+    def program_transform(self, origin, cosine, sine, timeout_s):
+        for register, value in zip(TRANSFORM_ORIGIN_REGS, origin):
+            self.write_core(register, float_to_u32(value))
+        self.write_core(TRANSFORM_COS_REG, float_to_u32(cosine))
+        self.write_core(TRANSFORM_SIN_REG, float_to_u32(sine))
+        self.write_core(TRANSFORM_CTRL_REG, 1)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            status = self.read_core(TRANSFORM_STATUS_REG)
+            if status & 0x4:
+                raise RuntimeError(
+                    f"transform commit failed: status=0x{status:08X} "
+                    f"({decode_transform_status(status)})"
+                )
+            if (status & 0x3) == 0x3:
+                return
+            time.sleep(0.0001)
+        raise TimeoutError(
+            f"transform commit did not complete, status="
+            f"0x{self.read_core(TRANSFORM_STATUS_REG):08X} "
+            f"({decode_transform_status(self.read_core(TRANSFORM_STATUS_REG))})"
+        )
+
     def reset_dma(self, timeout_s=1.0):
         self.write_dma(MM2S_DMACR, DMA_RESET)
         self.write_dma(S2MM_DMACR, DMA_RESET)
@@ -329,23 +363,6 @@ class Kv260Runner:
             self.ray_ranges,
         )
         return self.ray_buffer
-
-    def allocate_rotating_ray_buffers(self, ray_count, depth=2):
-        if ray_count <= 0 or depth <= 0:
-            raise ValueError("rotating ray buffer dimensions must be positive")
-        for buffer in self.rotating_ray_buffers:
-            buffer.freebuffer()
-        self.rotating_ray_buffers = []
-        for index in range(depth):
-            buffer = allocate(shape=(ray_count, 8), dtype=np.uint32)
-            self._require_dma_range(
-                buffer.physical_address,
-                buffer.nbytes,
-                f"rotating ray[{index}]",
-                self.ray_ranges,
-            )
-            self.rotating_ray_buffers.append(buffer)
-        return tuple(self.rotating_ray_buffers)
 
     def launch_batch(self, slot, count, ray_address=None, flush_ray=True):
         if not 0 <= slot < RESULT_BUFFER_COUNT:
@@ -413,7 +430,6 @@ class Kv260Runner:
             *self.result_buffers,
             self.ray_buffer,
             self.frame_ray_buffer,
-            *self.rotating_ray_buffers,
             self.triangle_buffer,
         ):
             if buffer is not None:

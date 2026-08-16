@@ -1,6 +1,7 @@
 // Memory export utility for Vivado simulation
 // This file should be compiled separately and linked with main.cpp
 
+#include <GlobalConfig.h>
 #include <Mem.h>
 #include <fstream>
 #include <sstream>
@@ -680,13 +681,11 @@ void export_subgrid_sparse_mems(
               << "%" << std::endl;
 }
 
-// Master export function
 void export_all_mems_for_vivado(const std::string& output_dir) {
-    std::cout << "\n========== Memory Export for Vivado Simulation ==========" << std::endl;
+    std::cout << "\n========== Legacy SimTop Memory Export ==========" << std::endl;
     std::filesystem::create_directories(output_dir);
     export_triangle_ddr_binary(output_dir + "/triangle_ddr.bin");
     export_pynq_render_data(output_dir + "/pynq_render_data.bin");
-
     for (int bank = 0; bank < rt::config::kTriNumBanks; ++bank) {
         export_triangle_mem(
             output_dir + "/triangle_mem_bank" + std::to_string(bank) + ".mem",
@@ -701,6 +700,38 @@ void export_all_mems_for_vivado(const std::string& output_dir) {
     export_subgrid_sparse_mems(
         output_dir + "/subgrid_block_dir.mem",
         output_dir + "/subgrid_compact_meta.mem");
+    std::cout << "========== Legacy SimTop Memory Export Complete ==========\n" << std::endl;
+}
 
-    std::cout << "========== Memory Export Complete ==========\n" << std::endl;
+void export_deployment_assets(const std::string& output_dir) {
+    std::cout << "\n========== Deployment Asset Export ==========" << std::endl;
+    std::filesystem::create_directories(output_dir);
+
+    // These files belonged to the old preinitialized SDF/triangle path. The
+    // deployed core writes SDF through io_sdf_mem_wr and fetches triangles from
+    // PS DDR, so leaving them beside current assets is actively misleading.
+    for (const auto& entry : std::filesystem::directory_iterator(output_dir)) {
+        const std::string name = entry.path().filename().string();
+        const bool legacyTriangleBank =
+            name.rfind("triangle_mem_bank", 0) == 0 && entry.path().extension() == ".mem";
+        const bool legacyStandalone =
+            name == "normal_mem.mem" || name == "triangle_mem.mem" ||
+            name == "sdf_global_mem.mem" || name == "sdf_local_mem.mem" ||
+            name == "sdf_local_mapping.mem";
+        if (legacyTriangleBank || legacyStandalone) {
+            std::filesystem::remove(entry.path());
+        }
+    }
+
+    // PS/runtime assets.
+    export_triangle_ddr_binary(output_dir + "/triangle_ddr.bin");
+    export_pynq_render_data(output_dir + "/pynq_render_data.bin");
+    export_sdf_uram_binary(output_dir + "/sdf_uram.bin");
+
+    // The only model-dependent memories baked into the FPGA image.
+    export_subgrid_sparse_mems(
+        output_dir + "/subgrid_block_dir.mem",
+        output_dir + "/subgrid_compact_meta.mem");
+
+    std::cout << "========== Deployment Asset Export Complete ==========\n" << std::endl;
 }

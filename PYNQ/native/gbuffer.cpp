@@ -56,6 +56,8 @@ extern "C" int sdf_rt_build_gbuffer(
     const std::uint32_t* batch_local_index,
     std::uint32_t count,
     const float* directions,
+    float rotation_cos,
+    float rotation_sin,
     std::uint32_t pixel_count,
     std::uint32_t roi_pixel_count,
     const float* vertex_normals,
@@ -154,8 +156,12 @@ extern "C" int sdf_rt_build_gbuffer(
         normal[0] *= inv_length;
         normal[1] *= inv_length;
         normal[2] *= inv_length;
-        const float* dir = directions + 3u * ray_id;
-        const float view[3] = {-dir[0], -dir[1], -dir[2]};
+        const float* base_dir = directions + 3u * ray_id;
+        const float view[3] = {
+            -(rotation_cos * base_dir[0] + rotation_sin * base_dir[2]),
+            -base_dir[1],
+            -(-rotation_sin * base_dir[0] + rotation_cos * base_dir[2]),
+        };
         if (dot3(normal, view) < 0.0f) {
             normal[0] = -normal[0];
             normal[1] = -normal[1];

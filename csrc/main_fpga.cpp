@@ -42,6 +42,72 @@ constexpr size_t kTriangleDmaBlockBytes =
 static_assert(kTriangleDmaBlockBytes % kTriangleDmaBeatBytes == 0,
               "Triangle DMA block must be an integer number of 128-bit beats");
 constexpr int kTriangleDmaBeats = kTriangleDmaBlockBytes / kTriangleDmaBeatBytes;
+constexpr uint32_t kSdfGlobalBaseWord = 0x00000;
+constexpr uint32_t kSdfLocalBaseWord = 0x10000;
+constexpr uint32_t kSdfMappingBaseWord = 0xC0000;
+constexpr uint32_t kSdfGlobalStrideWords = 4;
+constexpr uint32_t kSdfLocalStrideWords = 32;
+
+uint32_t readU32Le(const uint8_t* bytes) {
+    return static_cast<uint32_t>(bytes[0]) |
+           (static_cast<uint32_t>(bytes[1]) << 8) |
+           (static_cast<uint32_t>(bytes[2]) << 16) |
+           (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+uint32_t crc32Ieee(const uint8_t* data, size_t size) {
+    uint32_t crc = 0xffffffffU;
+    for (size_t index = 0; index < size; ++index) {
+        crc ^= data[index];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
+
+struct SdfRuntimeImage {
+    uint32_t globalRows = 0;
+    uint32_t localCells = 0;
+    uint32_t mappingWords = 0;
+    uint32_t localRows = 0;
+    uint32_t globalWordsPerRow = 0;
+    uint32_t localWordsPerRow = 0;
+    std::vector<uint32_t> payload;
+};
+
+SdfRuntimeImage loadSdfRuntimeImage(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open SDF runtime image: " + path);
+    const std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), {});
+    if (bytes.size() < 64 || std::string(reinterpret_cast<const char*>(bytes.data()), 7) != "SDF9IMG")
+        throw std::runtime_error("Invalid SDF runtime image header: " + path);
+
+    const uint32_t version = readU32Le(bytes.data() + 8);
+    const uint32_t headerBytes = readU32Le(bytes.data() + 12);
+    SdfRuntimeImage image;
+    image.globalRows = readU32Le(bytes.data() + 16);
+    image.localCells = readU32Le(bytes.data() + 20);
+    image.mappingWords = readU32Le(bytes.data() + 24);
+    image.localRows = readU32Le(bytes.data() + 28);
+    image.globalWordsPerRow = readU32Le(bytes.data() + 32);
+    image.localWordsPerRow = readU32Le(bytes.data() + 36);
+    const uint32_t payloadWords = readU32Le(bytes.data() + 40);
+    const uint32_t expectedCrc = readU32Le(bytes.data() + 44);
+    if (version != 2 || headerBytes != 64 ||
+        image.globalRows != 4096 || image.mappingWords != 16384 ||
+        image.globalWordsPerRow != 3 || image.localWordsPerRow != 18 ||
+        image.localRows != image.localCells * 8 ||
+        bytes.size() != static_cast<size_t>(headerBytes) + static_cast<size_t>(payloadWords) * 4U) {
+        throw std::runtime_error("Unsupported SDF runtime image layout: " + path);
+    }
+    const uint8_t* payloadBytes = bytes.data() + headerBytes;
+    if (crc32Ieee(payloadBytes, static_cast<size_t>(payloadWords) * 4U) != expectedCrc)
+        throw std::runtime_error("SDF runtime image CRC mismatch: " + path);
+    image.payload.resize(payloadWords);
+    for (size_t index = 0; index < image.payload.size(); ++index)
+        image.payload[index] = readU32Le(payloadBytes + index * 4U);
+    return image;
+}
 
 struct DmaReadTransaction {
     std::array<uint8_t, kTriangleDmaBlockBytes> line{};
@@ -163,11 +229,50 @@ void tick(VFpgaTop* dut) {
     }
 }
 
+void writeSdfRuntimeImage(VFpgaTop* dut, const SdfRuntimeImage& image) {
+    size_t payloadIndex = 0;
+    const auto writeWord = [&](uint32_t address, uint32_t data) {
+        dut->io_sdf_mem_wr_wr_en = 1;
+        dut->io_sdf_mem_wr_wr_addr = address;
+        dut->io_sdf_mem_wr_wr_data = data;
+        tick(dut);
+    };
+    for (uint32_t row = 0; row < image.globalRows; ++row) {
+        for (uint32_t slot = 0; slot < image.globalWordsPerRow; ++slot)
+            writeWord(kSdfGlobalBaseWord + row * kSdfGlobalStrideWords + slot,
+                      image.payload.at(payloadIndex++));
+        writeWord(kSdfGlobalBaseWord + row * kSdfGlobalStrideWords + 3U, 0);
+    }
+    for (uint32_t row = 0; row < image.localRows; ++row) {
+        for (uint32_t slot = 0; slot < image.localWordsPerRow; ++slot)
+            writeWord(kSdfLocalBaseWord + row * kSdfLocalStrideWords + slot,
+                      image.payload.at(payloadIndex++));
+        writeWord(kSdfLocalBaseWord + row * kSdfLocalStrideWords + 31U, 0);
+    }
+    for (uint32_t word = 0; word < image.mappingWords; ++word)
+        writeWord(kSdfMappingBaseWord + word, image.payload.at(payloadIndex++));
+    if (payloadIndex != image.payload.size())
+        throw std::runtime_error("SDF runtime image contains trailing payload words");
+    dut->io_sdf_mem_wr_wr_en = 0;
+    dut->io_sdf_mem_wr_wr_addr = 0;
+    dut->io_sdf_mem_wr_wr_data = 0;
+    tick(dut);
+    std::cout << "Loaded SDF through runtime write port: global_rows=" << image.globalRows
+              << " local_cells=" << image.localCells << " local_rows=" << image.localRows
+              << " mapping_words=" << image.mappingWords << std::endl;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::string runtimeVcdPath = kVcdPath;
     bool runtimeRebuildSdf = kForceRebuildSdfCacheFpga;
+    bool runtimeExportOnly = false;
+    float runtimePositiveBand = kLocalActiveBand;
+    float runtimeNegativeBand = 0.7f * kLocalActiveBand;
+    std::string runtimeObjPath = kObjPath;
+    std::string runtimeSdfCachePath = kComputedSdfOutPath;
+    std::string runtimeMemExportDir = modelMemDirFromObjPath(kObjPath);
 #ifdef RT_ENABLE_CUDA
     SdfBuildBackend runtimeSdfBackend = SdfBuildBackend::Cuda;
 #else
@@ -184,6 +289,12 @@ int main(int argc, char** argv) {
         constexpr const char* kSdfBackendPrefix = "+RT_SDF_BACKEND=";
         constexpr const char* kWidthPrefix = "+RT_WIDTH=";
         constexpr const char* kHeightPrefix = "+RT_HEIGHT=";
+        constexpr const char* kPositiveBandPrefix = "+RT_LOCAL_POSITIVE_BAND=";
+        constexpr const char* kNegativeBandPrefix = "+RT_LOCAL_NEGATIVE_BAND=";
+        constexpr const char* kObjPathPrefix = "+RT_OBJ_PATH=";
+        constexpr const char* kSdfCachePathPrefix = "+RT_SDF_CACHE_PATH=";
+        constexpr const char* kMemExportDirPrefix = "+RT_MEM_EXPORT_DIR=";
+        constexpr const char* kExportOnlyPrefix = "+RT_EXPORT_ONLY=";
         if (arg.rfind(kVcdArgPrefix, 0) == 0) {
             runtimeVcdPath = arg.substr(std::char_traits<char>::length(kVcdArgPrefix));
         } else if (arg.rfind(kSdfRebuildPrefix, 0) == 0) {
@@ -207,6 +318,24 @@ int main(int argc, char** argv) {
             runtimeWidth = std::stoi(arg.substr(std::char_traits<char>::length(kWidthPrefix)));
         } else if (arg.rfind(kHeightPrefix, 0) == 0) {
             runtimeHeight = std::stoi(arg.substr(std::char_traits<char>::length(kHeightPrefix)));
+        } else if (arg.rfind(kPositiveBandPrefix, 0) == 0) {
+            runtimePositiveBand = std::stof(
+                arg.substr(std::char_traits<char>::length(kPositiveBandPrefix)));
+        } else if (arg.rfind(kNegativeBandPrefix, 0) == 0) {
+            runtimeNegativeBand = std::stof(
+                arg.substr(std::char_traits<char>::length(kNegativeBandPrefix)));
+        } else if (arg.rfind(kObjPathPrefix, 0) == 0) {
+            runtimeObjPath = arg.substr(std::char_traits<char>::length(kObjPathPrefix));
+        } else if (arg.rfind(kSdfCachePathPrefix, 0) == 0) {
+            runtimeSdfCachePath =
+                arg.substr(std::char_traits<char>::length(kSdfCachePathPrefix));
+        } else if (arg.rfind(kMemExportDirPrefix, 0) == 0) {
+            runtimeMemExportDir =
+                arg.substr(std::char_traits<char>::length(kMemExportDirPrefix));
+        } else if (arg.rfind(kExportOnlyPrefix, 0) == 0) {
+            const std::string value =
+                arg.substr(std::char_traits<char>::length(kExportOnlyPrefix));
+            runtimeExportOnly = (value == "1" || value == "true" || value == "TRUE");
         }
     }
 
@@ -215,13 +344,18 @@ int main(int argc, char** argv) {
                   << " by 1.." << kHeight << std::endl;
         return 1;
     }
+    if (!std::isfinite(runtimePositiveBand) || runtimePositiveBand < 0.0f ||
+        !std::isfinite(runtimeNegativeBand) || runtimeNegativeBand < 0.0f) {
+        std::cerr << "SDF local active bands must be finite and non-negative." << std::endl;
+        return 1;
+    }
 
     cout << "FPGA_TOP " << runtimeWidth << "x" << runtimeHeight << " frame rendering..." << endl;
     Verilated::commandArgs(argc, argv);
     host_renderer::HostRenderer renderer(runtimeWidth, runtimeHeight);
 
     printf("Loading model...\n");
-    loadModelFromObj(kObjPath, triangles, normals);
+    loadModelFromObj(runtimeObjPath, triangles, normals);
     if (triangles.empty()) {
         std::cerr << "No triangles loaded." << endl;
         return 1;
@@ -237,7 +371,7 @@ int main(int argc, char** argv) {
               << "), max=(" << gridMax[0] << ", " << gridMax[1] << ", " << gridMax[2] << ")"
               << std::endl;
 
-    const bool sdfCacheExists = std::filesystem::exists(kComputedSdfOutPath);
+    const bool sdfCacheExists = std::filesystem::exists(runtimeSdfCachePath);
     const bool shouldRebuildSdf = runtimeRebuildSdf || !sdfCacheExists;
     if (shouldRebuildSdf) {
         const char* backendName = runtimeSdfBackend == SdfBuildBackend::Cuda ? "cuda" : "cpu";
@@ -248,17 +382,18 @@ int main(int argc, char** argv) {
                 gridMin, gridMax,
                 kSDFGlobalRes, kSDFGlobalRes, kSDFGlobalRes,
                 kSDFSubRes, kSDFSubRes, kSDFSubRes,
-                kLocalActiveBand,
+                runtimePositiveBand,
                 runtimeSdfBackend,
-                kSDFLocalCellCapacity);
+                kSDFLocalCellCapacity,
+                runtimeNegativeBand);
         } catch (const std::exception& error) {
             std::cerr << "SDF rebuild failed: " << error.what() << std::endl;
             return 2;
         }
-        save_sdf_npz(kComputedSdfOutPath);
+        save_sdf_npz(runtimeSdfCachePath);
     } else {
         printf("Loading SDF cache...\n");
-        load_sdf_npz(kComputedSdfOutPath);
+        load_sdf_npz(runtimeSdfCachePath);
     }
     if (global_sdf_flat.empty()) {
         std::cerr << "SDF cache is empty." << endl;
@@ -294,9 +429,13 @@ int main(int argc, char** argv) {
     }
     writeSubgridTriCountHistogramPPM("subgrid_tricount_hist_fpga.ppm", kDdaGlobalRes, kDdaSubRes);
 
-    const std::string memExportDir = modelMemDirFromObjPath(kObjPath);
+    const std::string memExportDir = runtimeMemExportDir;
     std::cout << "\nExporting memories to: " << memExportDir << std::endl;
-    export_all_mems_for_vivado(memExportDir);
+    export_deployment_assets(memExportDir);
+    if (runtimeExportOnly) {
+        std::cout << "Export-only mode completed." << std::endl;
+        return 0;
+    }
     TriangleDmaResponder triangleDma(memExportDir + "/triangle_ddr.bin");
 
     const size_t framePixels = static_cast<size_t>(runtimeWidth) * runtimeHeight;
@@ -323,9 +462,18 @@ int main(int argc, char** argv) {
     dut->io_setup_grid_max_x = floatToU32(gridMax[0]);
     dut->io_setup_grid_max_y = floatToU32(gridMax[1]);
     dut->io_setup_grid_max_z = floatToU32(gridMax[2]);
+    dut->io_transform_valid = 0;
+    dut->io_transform_origin_x = floatToU32(setupOrigin[0]);
+    dut->io_transform_origin_y = floatToU32(setupOrigin[1]);
+    dut->io_transform_origin_z = floatToU32(setupOrigin[2]);
+    dut->io_transform_cos = floatToU32(1.0f);
+    dut->io_transform_sin = floatToU32(0.0f);
     dut->io_ray_in_valid = 0;
     dut->io_ray_in_last = 0;
     dut->io_result_ready = 1;
+    dut->io_sdf_mem_wr_wr_en = 0;
+    dut->io_sdf_mem_wr_wr_addr = 0;
+    dut->io_sdf_mem_wr_wr_data = 0;
     dut->io_triangle_base_address = 0;
     dut->io_tri_dma_cmd_ready = 1;
     dut->io_tri_dma_data_valid = 0;
@@ -339,6 +487,9 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 4; ++i) tick(dut);
     dut->reset = 0;
     for (int i = 0; i < 4; ++i) tick(dut);
+
+    writeSdfRuntimeImage(
+        dut, loadSdfRuntimeImage(memExportDir + "/sdf_uram.bin"));
 
     std::cout << "Phase 1: Sending setup configuration..." << std::endl;
     dut->io_setup_valid = 1;
@@ -355,6 +506,15 @@ int main(int argc, char** argv) {
         }
     }
     std::cout << "Setup ready after " << setupWait << " cycles." << std::endl;
+
+    dut->io_transform_valid = 1;
+    tick(dut);
+    dut->io_transform_valid = 0;
+    if (!dut->io_transform_configured) {
+        std::cerr << "Transform configuration was not accepted." << std::endl;
+        delete dut;
+        return 3;
+    }
 
     std::cout << "Phase 2: Streaming rays and collecting unordered results..." << std::endl;
     // Inject pixels in 4x4 tiles.  The hardware still receives one ray per

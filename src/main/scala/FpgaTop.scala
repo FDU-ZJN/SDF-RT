@@ -22,6 +22,13 @@ class FpgaTop extends Module {
     val setup_grid_max = Input(new Vec3(c.cfg))
     val setup_ready = Output(Bool())
 
+    val transform_valid = Input(Bool())
+    val transform_origin = Input(new Vec3(c.cfg))
+    val transform_cos = Input(UInt(c.cfg.totalWidth.W))
+    val transform_sin = Input(UInt(c.cfg.totalWidth.W))
+    val transform_ready = Output(Bool())
+    val transform_configured = Output(Bool())
+
     val ray_in_valid = Input(Bool())
     val ray_in = Input(new RayIngress(c.cfg))
     val ray_in_last = Input(Bool())
@@ -85,6 +92,31 @@ class FpgaTop extends Module {
   val acceptedCount = RegInit(0.U(32.W))
   val emittedCount = RegInit(0.U(32.W))
   val protocolError = RegInit(false.B)
+  val transformOrigin = RegInit(0.U.asTypeOf(new Vec3(c.cfg)))
+  val transformCos = RegInit(c.cfg.oneBigInt.U(c.cfg.totalWidth.W))
+  val transformSin = RegInit(0.U(c.cfg.totalWidth.W))
+  val transformConfigured = RegInit(false.B)
+  val transformReady = !batchClosed && acceptedCount === 0.U && emittedCount === 0.U
+  val transformFire = io.transform_valid && transformReady
+  io.transform_ready := transformReady
+  io.transform_configured := transformConfigured
+  when(io.transform_valid) {
+    when(transformReady) {
+      transformOrigin := io.transform_origin
+      transformCos := io.transform_cos
+      transformSin := io.transform_sin
+      transformConfigured := true.B
+    }.otherwise {
+      protocolError := true.B
+    }
+  }
+
+  // A transform commit and the first ray may arrive on the same cycle. Bypass
+  // the active registers for that ray while keeping both interfaces independent.
+  frontend.io.camera_origin := Mux(transformFire, io.transform_origin, transformOrigin)
+  frontend.io.rotation_cos := Mux(transformFire, io.transform_cos, transformCos)
+  frontend.io.rotation_sin := Mux(transformFire, io.transform_sin, transformSin)
+
   val inputEnabled = !batchClosed && setupUnit.io.setup_finish
   io.ray_in_ready := frontend.io.ingress.ready && inputEnabled
   val inputFire = io.ray_in_valid && io.ray_in_ready

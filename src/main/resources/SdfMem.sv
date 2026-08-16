@@ -9,8 +9,7 @@ module SdfMem #(
   parameter int LOCAL_PER_CELL = 64,
   parameter int LOCAL_STORAGE_ROWS = 16384,
   parameter int MAPPING_STORAGE_WORDS = 16384,
-  parameter int LOCAL_SDF_SIZE = LOCAL_CELL_COUNT * LOCAL_PER_CELL,
-  parameter string LOCAL_IDX_INIT_FILE = "sdf_local_mapping.mem"
+  parameter int LOCAL_SDF_SIZE = LOCAL_CELL_COUNT * LOCAL_PER_CELL
 ) (
   input logic clk, input logic reset,
   input logic [ADDR_WIDTH-1:0] globalIdx, localIdx, input logic en,
@@ -70,6 +69,7 @@ module SdfMem #(
   logic has_local;
   logic [CELL_INDEX_BITS-1:0] cell_idx;
   logic [CELL_INDEX_BITS-1:0] cell_idx_q;
+  logic [LOCAL_BLOCK_ROW_W-1:0] local_row_q;
   logic [$clog2(GLOBAL_STORAGE_ROWS)-1:0] global_row_q;
   assign mapping_addr = globalIdx[GLOBAL_ADDR_BITS-1:MAPPING_PACK_BITS+1];
   assign mapping_wr_addr = (wr_addr - MAPPING_WRITE_BASE) >> MAPPING_PACK_BITS;
@@ -145,10 +145,11 @@ module SdfMem #(
       global_stage_row <= '0; local_stage_row <= '0;
       global_stage_mask <= '0; local_stage_mask <= '0;
       global_idx_q <= 0; local_idx_q <= 0;
-      cell_idx_q <= 0; global_row_q <= 0;
+      cell_idx_q <= 0; local_row_q <= 0; global_row_q <= 0;
     end else begin
       global_idx_q <= globalIdx; local_idx_q <= localIdx;
       cell_idx_q <= cell_idx;
+      local_row_q <= local_idx_q[LOCAL_LANE_W-1:LOCAL_ROW_LANE_W];
       global_row_q <= global_idx_q[GLOBAL_ADDR_BITS-1:3];
       if (wr_en && wr_addr >= GLOBAL_WRITE_BASE &&
           wr_addr < GLOBAL_WRITE_BASE + GLOBAL_STORAGE_ROWS * GLOBAL_WRITE_STRIDE &&
@@ -194,7 +195,9 @@ module SdfMem #(
   assign global_dina = global_stage[71:0];
   assign local_dina = local_stage;
   assign global_uram_addr = global_write_commit ? global_write_row : global_row_q;
-  assign local_read_row = {cell_idx_q, local_idx_q[LOCAL_LANE_W-1:LOCAL_ROW_LANE_W]};
+  // The mapping BRAM adds one cycle before cell_idx_q.  Delay the local row
+  // by the same cycle so back-to-back requests cannot mix different samples.
+  assign local_read_row = {cell_idx_q, local_row_q};
   assign local_uram_addr = local_write_commit ? local_write_row : local_read_row;
 
   xpm_memory_spram #(

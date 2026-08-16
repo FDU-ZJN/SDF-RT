@@ -35,8 +35,8 @@ inline constexpr bool kUseComputedHybridSdf = false;
 inline constexpr bool kForceRebuildSdfCacheFpga = false;
 inline constexpr float kLocalActiveBand = 0.08f;
 
-inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/fufu.obj";
-inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_fufu_g16_l8_fp9.npz";
+inline constexpr const char* kObjPath = "/home/fate/code/SDF-RT/csrc/david.obj";
+inline constexpr const char* kComputedSdfOutPath = "/home/fate/code/SDF-RT/csrc/sdf_david_gold_g16_l8_fp9.npz";
 #ifdef RT_VCD_PATH
 inline constexpr const char* kVcdPath = RT_VCD_PATH;
 #else

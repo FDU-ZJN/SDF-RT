@@ -13,10 +13,6 @@
 #include <string>
 #include <vector>
 
-#if defined(__aarch64__)
-#include <arm_neon.h>
-#endif
-
 namespace {
 
 void set_error(char* error, std::uint32_t size, const std::string& text) {
@@ -211,8 +207,6 @@ struct Renderer {
     GLuint background_program = 0;
     GLuint vertex_buffer = 0;
     GLuint gbuffer_texture = 0;
-    GLuint output_texture = 0;
-    GLuint framebuffer = 0;
     std::uint32_t gbuffer_width = 0;
     std::uint32_t gbuffer_height = 0;
     GLint position_location = -1;
@@ -229,9 +223,6 @@ struct Renderer {
     std::array<float, 3> up{};
     float fov_degrees = 60.0f;
     std::string renderer_name;
-    GLenum read_format = GL_RGBA;
-    std::size_t read_channels = 4;
-    std::vector<std::uint8_t> readback;
     std::vector<std::uint8_t> scanout_gbuffer;
     std::unique_ptr<DrmScanout> scanout;
     std::uint32_t output_width = 0;
@@ -243,9 +234,7 @@ struct Renderer {
         if (display == EGL_NO_DISPLAY) return;
         eglMakeCurrent(display, surface, surface, context);
         scanout.reset();
-        if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
         if (vertex_buffer) glDeleteBuffers(1, &vertex_buffer);
-        if (output_texture) glDeleteTextures(1, &output_texture);
         if (gbuffer_texture) glDeleteTextures(1, &gbuffer_texture);
         if (program) glDeleteProgram(program);
         if (background_program) glDeleteProgram(background_program);
@@ -347,20 +336,6 @@ bool initialize(Renderer& renderer, std::string& error) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
-    glGenTextures(1, &renderer.output_texture);
-    glBindTexture(GL_TEXTURE_2D, renderer.output_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, renderer.width, renderer.height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glGenFramebuffers(1, &renderer.framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, renderer.framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           renderer.output_texture, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        error = "OpenGL ES framebuffer is incomplete";
-        return false;
-    }
     constexpr float kPi = 3.14159265358979323846f;
     const float tan_half_fov = std::tan(renderer.fov_degrees * kPi / 360.0f);
     const auto set_camera_uniforms = [&](GLuint program) {
@@ -373,16 +348,12 @@ bool initialize(Renderer& renderer, std::string& error) {
         glUniform2f(glGetUniformLocation(program, "uPixelOffset"), 0.0f, 0.0f);
     };
 
-    // The environment is static for this camera. Render it once, then preserve
-    // miss pixels with discard in every BRDF pass.
-    glViewport(0, 0, renderer.width, renderer.height);
     glUseProgram(renderer.background_program);
     set_camera_uniforms(renderer.background_program);
     const GLint background_position =
         glGetAttribLocation(renderer.background_program, "aPosition");
     glEnableVertexAttribArray(background_position);
     glVertexAttribPointer(background_position, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
 
     glUseProgram(renderer.program);
     glUniform1i(renderer.gbuffer_location, 0);
@@ -401,17 +372,6 @@ bool initialize(Renderer& renderer, std::string& error) {
     }
     const char* name = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     renderer.renderer_name = name ? name : "unknown";
-    GLint implementation_format = GL_RGBA;
-    GLint implementation_type = GL_UNSIGNED_BYTE;
-    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &implementation_format);
-    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &implementation_type);
-    if (implementation_format == GL_RGB && implementation_type == GL_UNSIGNED_BYTE) {
-        renderer.read_format = GL_RGB;
-        renderer.read_channels = 3;
-        renderer.renderer_name += " readback=RGB-direct";
-    } else {
-        renderer.renderer_name += " readback=RGBA-NEON";
-    }
     // The context is owned by the BRDF worker after initialization. Releasing
     // it here allows eglMakeCurrent from that thread without EGL_BAD_ACCESS.
     eglMakeCurrent(renderer.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -492,14 +452,13 @@ extern "C" int sdf_rt_gles_enable_direct_scanout(
 }
 
 extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba,
-                                    std::uint8_t* image_rgb, std::uint32_t roi_x,
-                                    std::uint32_t roi_y, std::uint32_t roi_width,
+                                    std::uint32_t roi_x, std::uint32_t roi_y,
+                                    std::uint32_t roi_width,
                                     std::uint32_t roi_height, const float* forward,
                                     const float* right, const float* up, char* error,
                                     std::uint32_t error_size) {
     auto* renderer = static_cast<Renderer*>(handle);
-    if (!renderer || !gbuffer_rgba || !forward || !right || !up ||
-        (!image_rgb && !renderer->scanout) ||
+    if (!renderer || !renderer->scanout || !gbuffer_rgba || !forward || !right || !up ||
         roi_width == 0 || roi_height == 0 ||
         roi_x + roi_width > renderer->width || roi_y + roi_height > renderer->height) {
         set_error(error, error_size, "invalid GLES render arguments");
@@ -513,25 +472,18 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     std::copy_n(right, 3, renderer->right.begin());
     std::copy_n(up, 3, renderer->up.begin());
     const std::uint32_t full_gl_y = renderer->height - roi_y - roi_height;
-    std::uint32_t draw_x = roi_x;
-    std::uint32_t draw_y = full_gl_y;
-    std::uint32_t draw_width = roi_width;
-    std::uint32_t draw_height = roi_height;
-    std::uint32_t scanout_index = 0;
-    if (renderer->scanout) {
-        const std::uint32_t right = std::min(roi_x + roi_width,
-                                             renderer->crop_x + renderer->output_width);
-        const std::uint32_t bottom = std::min(full_gl_y + roi_height,
-                                              renderer->crop_y + renderer->output_height);
-        draw_x = std::max(roi_x, renderer->crop_x);
-        draw_y = std::max(full_gl_y, renderer->crop_y);
-        draw_width = right > draw_x ? right - draw_x : 0;
-        draw_height = bottom > draw_y ? bottom - draw_y : 0;
-        scanout_index = renderer->scanout->next_index();
-        glBindFramebuffer(GL_FRAMEBUFFER, renderer->scanout->framebuffer(scanout_index));
-    } else {
-        glBindFramebuffer(GL_FRAMEBUFFER, renderer->framebuffer);
-    }
+    const std::uint32_t draw_right = std::min(
+        roi_x + roi_width, renderer->crop_x + renderer->output_width
+    );
+    const std::uint32_t draw_bottom = std::min(
+        full_gl_y + roi_height, renderer->crop_y + renderer->output_height
+    );
+    const std::uint32_t draw_x = std::max(roi_x, renderer->crop_x);
+    const std::uint32_t draw_y = std::max(full_gl_y, renderer->crop_y);
+    const std::uint32_t draw_width = draw_right > draw_x ? draw_right - draw_x : 0;
+    const std::uint32_t draw_height = draw_bottom > draw_y ? draw_bottom - draw_y : 0;
+    const std::uint32_t scanout_index = renderer->scanout->next_index();
+    glBindFramebuffer(GL_FRAMEBUFFER, renderer->scanout->framebuffer(scanout_index));
 
     // The orbit camera changes every frame. Refresh the entire background in
     // the selected output buffer before the full-frame BRDF pass preserves misses.
@@ -544,39 +496,30 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     glUniform3fv(glGetUniformLocation(renderer->background_program, "uUp"),
                  1, renderer->up.data());
     glUniform2f(glGetUniformLocation(renderer->background_program, "uPixelOffset"),
-                static_cast<float>(renderer->scanout ? renderer->crop_x : 0u),
-                static_cast<float>(renderer->scanout ? renderer->crop_y : 0u));
-    glViewport(0, 0,
-               renderer->scanout ? renderer->output_width : renderer->width,
-               renderer->scanout ? renderer->output_height : renderer->height);
+                static_cast<float>(renderer->crop_x),
+                static_cast<float>(renderer->crop_y));
+    glViewport(0, 0, renderer->output_width, renderer->output_height);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
-    glViewport(renderer->scanout ? draw_x - renderer->crop_x : draw_x,
-               renderer->scanout ? draw_y - renderer->crop_y : draw_y,
+    glViewport(draw_x - renderer->crop_x,
+               draw_y - renderer->crop_y,
                draw_width, draw_height);
     const std::uint8_t* texture_source = gbuffer_rgba;
-    std::uint32_t texture_width = roi_width;
-    std::uint32_t texture_height = roi_height;
-    if (renderer->scanout) {
-        // Keep direct-scanout sampling in a compact 0..1 texture. Sampling a
-        // 1920-wide texture through mediump transform constants can move a
-        // nearest-neighbour edge by one texel on Mali-400.
-        texture_width = draw_width;
-        texture_height = draw_height;
-        renderer->scanout_gbuffer.resize(
-            static_cast<std::size_t>(texture_width) * texture_height * 4u);
-        const std::uint32_t source_x = draw_x - roi_x;
-        const std::uint32_t source_y =
-            renderer->height - draw_y - draw_height - roi_y;
-        for (std::uint32_t row = 0; row < texture_height; ++row) {
-            const auto* source = gbuffer_rgba +
-                (static_cast<std::size_t>(source_y + row) * roi_width + source_x) * 4u;
-            auto* destination = renderer->scanout_gbuffer.data() +
-                static_cast<std::size_t>(row) * texture_width * 4u;
-            std::memcpy(destination, source, static_cast<std::size_t>(texture_width) * 4u);
-        }
-        texture_source = renderer->scanout_gbuffer.data();
+    const std::uint32_t texture_width = draw_width;
+    const std::uint32_t texture_height = draw_height;
+    renderer->scanout_gbuffer.resize(
+        static_cast<std::size_t>(texture_width) * texture_height * 4u);
+    const std::uint32_t source_x = draw_x - roi_x;
+    const std::uint32_t source_y =
+        renderer->height - draw_y - draw_height - roi_y;
+    for (std::uint32_t row = 0; row < texture_height; ++row) {
+        const auto* source = gbuffer_rgba +
+            (static_cast<std::size_t>(source_y + row) * roi_width + source_x) * 4u;
+        auto* destination = renderer->scanout_gbuffer.data() +
+            static_cast<std::size_t>(row) * texture_width * 4u;
+        std::memcpy(destination, source, static_cast<std::size_t>(texture_width) * 4u);
     }
+    texture_source = renderer->scanout_gbuffer.data();
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
     if (renderer->gbuffer_width != texture_width || renderer->gbuffer_height != texture_height) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_width, texture_height, 0,
@@ -594,95 +537,23 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);
     glUniform2f(renderer->pixel_offset_location,
-                static_cast<float>(renderer->scanout ? renderer->crop_x : 0u),
-                static_cast<float>(renderer->scanout ? renderer->crop_y : 0u));
+                static_cast<float>(renderer->crop_x),
+                static_cast<float>(renderer->crop_y));
     glUniform4f(
         renderer->gbuffer_transform_location,
-        renderer->scanout ? 0.0f : static_cast<float>(draw_x - roi_x) /
-            static_cast<float>(roi_width),
-        renderer->scanout ? 1.0f : static_cast<float>(draw_width) /
-            static_cast<float>(roi_width),
-        renderer->scanout ? 1.0f : static_cast<float>(renderer->height - draw_y - roi_y) /
-            static_cast<float>(roi_height),
-        renderer->scanout ? 1.0f : static_cast<float>(draw_height) /
-            static_cast<float>(roi_height));
+        0.0f, 1.0f, 1.0f, 1.0f);
     if (draw_width && draw_height) glDrawArrays(GL_TRIANGLES, 0, 3);
-    // glReadPixels below is a synchronization point for the framebuffer. An
-    // explicit glFinish here only serializes the CPU before the readback.
     if (glGetError() != GL_NO_ERROR) {
         set_error(error, error_size, "OpenGL ES rendering failed");
         return -1;
     }
-    if (renderer->scanout) {
-        glFinish();
-        std::string detail;
-        const std::uint32_t dirty_x = draw_width ? draw_x - renderer->crop_x : 0;
-        const std::uint32_t dirty_y = draw_height
-            ? renderer->output_height - (draw_y - renderer->crop_y) - draw_height : 0;
-        if (!renderer->scanout->present(scanout_index, dirty_x, dirty_y,
-                                        draw_width, draw_height, detail)) {
-            set_error(error, error_size, detail);
-            return -1;
-        }
-        return 0;
-    }
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    renderer->readback.resize(
-        static_cast<std::size_t>(roi_width) * roi_height * renderer->read_channels);
-    glReadPixels(roi_x, full_gl_y, roi_width, roi_height, renderer->read_format, GL_UNSIGNED_BYTE,
-                 renderer->readback.data());
-    for (std::uint32_t y = 0; y < roi_height; ++y) {
-        const std::size_t source_row =
-            static_cast<std::size_t>(roi_height - 1u - y) * roi_width;
-        const std::size_t destination_row =
-            static_cast<std::size_t>(roi_y + y) * renderer->width + roi_x;
-        const std::uint8_t* source =
-            renderer->readback.data() + renderer->read_channels * source_row;
-        std::uint8_t* destination = image_rgb + 3u * destination_row;
-        if (renderer->read_channels == 3) {
-            std::memcpy(destination, source, 3u * roi_width);
-            continue;
-        }
-#if defined(__aarch64__)
-        std::uint32_t x = 0;
-        for (; x + 16u <= roi_width; x += 16u) {
-            const uint8x16x4_t rgba = vld4q_u8(source + 4u * x);
-            const uint8x16x3_t rgb = {rgba.val[0], rgba.val[1], rgba.val[2]};
-            vst3q_u8(destination + 3u * x, rgb);
-        }
-        for (; x < roi_width; ++x) {
-            destination[3u * x + 0] = source[4u * x + 0];
-            destination[3u * x + 1] = source[4u * x + 1];
-            destination[3u * x + 2] = source[4u * x + 2];
-        }
-#else
-        for (std::uint32_t x = 0; x < roi_width; ++x) {
-            destination[3u * x + 0] = source[4u * x + 0];
-            destination[3u * x + 1] = source[4u * x + 1];
-            destination[3u * x + 2] = source[4u * x + 2];
-        }
-#endif
-    }
-    return 0;
-}
-
-extern "C" std::uint32_t sdf_rt_gles_scanout_crc32(void* handle) {
-    auto* renderer = static_cast<Renderer*>(handle);
-    return renderer && renderer->scanout
-               ? renderer->scanout->crc32(renderer->scanout->next_index() ^ 1u)
-               : 0u;
-}
-
-extern "C" int sdf_rt_gles_dump_scanout_ppm(
-    void* handle, const char* path, char* error, std::uint32_t error_size) {
-    auto* renderer = static_cast<Renderer*>(handle);
-    if (!renderer || !renderer->scanout || !path) {
-        set_error(error, error_size, "scanout diagnostic is unavailable");
-        return -1;
-    }
+    glFinish();
     std::string detail;
-    const std::uint32_t active = renderer->scanout->next_index() ^ 1u;
-    if (!renderer->scanout->dump_ppm(active, path, detail)) {
+    const std::uint32_t dirty_x = draw_width ? draw_x - renderer->crop_x : 0;
+    const std::uint32_t dirty_y = draw_height
+        ? renderer->output_height - (draw_y - renderer->crop_y) - draw_height : 0;
+    if (!renderer->scanout->present(scanout_index, dirty_x, dirty_y,
+                                    draw_width, draw_height, detail)) {
         set_error(error, error_size, detail);
         return -1;
     }

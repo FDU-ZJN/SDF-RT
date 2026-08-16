@@ -4,7 +4,12 @@ import math
 
 import numpy as np
 
-from .config import CAMERA_FOV_DEGREES, TRACE_BLOCK_SIZE
+from .config import (
+    CAMERA_FOV_DEGREES,
+    DEFAULT_CAMERA_ORIGIN,
+    DEFAULT_CAMERA_TARGET,
+    TRACE_BLOCK_SIZE,
+)
 
 
 def normalize_rows(values):
@@ -15,24 +20,22 @@ def normalize_rows(values):
 
 
 def camera_vectors(rotation_radians=0.0):
-    source_center = np.asarray((0.0796971726, -47.2750625, -49.2204103), dtype=np.float32)
-    scale = np.float32(0.0050387813)
-    base_origin = (np.asarray((200.0, 250.0, 70.0), dtype=np.float32) - source_center) * scale
-    target = np.zeros(3, dtype=np.float32)
+    base_origin = np.asarray(DEFAULT_CAMERA_ORIGIN, dtype=np.float32)
+    target = np.asarray(DEFAULT_CAMERA_TARGET, dtype=np.float32)
     angle = float(rotation_radians)
     cosine = np.float32(math.cos(angle))
     sine = np.float32(math.sin(angle))
     offset = base_origin - target
     origin = target + np.asarray(
         (
-            cosine * offset[0] - sine * offset[1],
-            sine * offset[0] + cosine * offset[1],
-            offset[2],
+            cosine * offset[0] + sine * offset[2],
+            offset[1],
+            -sine * offset[0] + cosine * offset[2],
         ),
         dtype=np.float32,
     )
     forward = normalize_rows((target - origin)[None, :])[0]
-    right = normalize_rows(np.cross(forward, np.asarray((0.0, 0.0, 1.0)))[None, :])[0]
+    right = normalize_rows(np.cross(forward, np.asarray((0.0, 1.0, 0.0)))[None, :])[0]
     up = normalize_rows(np.cross(right, forward)[None, :])[0]
     return origin, forward, right, up
 

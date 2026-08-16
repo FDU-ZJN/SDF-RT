@@ -6,15 +6,14 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 remote_dir="${KV260_RT_REMOTE_DIR:-kv260_rt}"
 sudo_password="${KV260_SUDO_PASSWORD:-xilinx123}"
 render_threads="${KV260_RT_RENDER_THREADS:-1}"
-save_ppm="${KV260_RT_SAVE_PPM:-}"
 display_hold_seconds="${KV260_RT_DISPLAY_HOLD_SECONDS:-3}"
-direct_scanout="${KV260_RT_DIRECT_SCANOUT:-1}"
 validate_result_stream="${KV260_RT_VALIDATE_RESULT_STREAM:-0}"
 rotation_period_frames="${KV260_RT_ROTATION_PERIOD_FRAMES:-180}"
-scanout_ppm="${KV260_RT_SCANOUT_PPM:-}"
+grid_min="${KV260_RT_GRID_MIN:-}"
+grid_max="${KV260_RT_GRID_MAX:-}"
 printf -v remote_command \
-    "cd %q && exec sudo -S -p '' -E env KV260_RT_RENDER_THREADS=%q KV260_RT_SAVE_PPM=%q KV260_RT_SCANOUT_PPM=%q KV260_RT_DISPLAY_HOLD_SECONDS=%q KV260_RT_DIRECT_SCANOUT=%q KV260_RT_VALIDATE_RESULT_STREAM=%q KV260_RT_ROTATION_PERIOD_FRAMES=%q ./verify_render.sh" \
-    "${remote_dir}" "${render_threads}" "${save_ppm}" "${scanout_ppm}" "${display_hold_seconds}" "${direct_scanout}" "${validate_result_stream}" "${rotation_period_frames}"
+    "cd %q && exec sudo -S -p '' -E env KV260_RT_RENDER_THREADS=%q KV260_RT_DISPLAY_HOLD_SECONDS=%q KV260_RT_VALIDATE_RESULT_STREAM=%q KV260_RT_ROTATION_PERIOD_FRAMES=%q KV260_RT_GRID_MIN=%q KV260_RT_GRID_MAX=%q ./verify_render.sh" \
+    "${remote_dir}" "${render_threads}" "${display_hold_seconds}" "${validate_result_stream}" "${rotation_period_frames}" "${grid_min}" "${grid_max}"
 
 [[ -x "${script_dir}/kv260_rt/verify_render.sh" ]] || {
     echo "Board verification script is missing or not executable: ${script_dir}/kv260_rt/verify_render.sh" >&2

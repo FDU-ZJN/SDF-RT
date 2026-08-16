@@ -1,7 +1,6 @@
 package SDF
 
 import chisel3._
-import chisel3.experimental.StringParam
 import chisel3.util.{HasBlackBoxInline, HasBlackBoxResource}
 import raytrace_utils.GlobalConfig
 
@@ -133,8 +132,7 @@ private class SdfMemIpBB(
         "LOCAL_CELL_COUNT" -> GlobalConfig.LocalCell,
         "LOCAL_PER_CELL"   -> GlobalConfig.sdfMemLocalPerCell,
         "LOCAL_STORAGE_ROWS" -> GlobalConfig.sdfMemLocalPhysicalRows,
-        "MAPPING_STORAGE_WORDS" -> GlobalConfig.sdfMemMappingPhysicalWords,
-        "LOCAL_IDX_INIT_FILE" -> StringParam("sdf_local_mapping.mem")
+        "MAPPING_STORAGE_WORDS" -> GlobalConfig.sdfMemMappingPhysicalWords
       )
     )
     with HasBlackBoxResource {

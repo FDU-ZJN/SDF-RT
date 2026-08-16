@@ -20,8 +20,6 @@ public:
                  std::string& error);
     GLuint framebuffer(std::uint32_t index) const;
     std::uint32_t next_index() const;
-    std::uint32_t crc32(std::uint32_t index) const;
-    bool dump_ppm(std::uint32_t index, const char* path, std::string& error) const;
 
 private:
     struct Impl;

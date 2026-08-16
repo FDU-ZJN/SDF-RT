@@ -7,7 +7,10 @@ rotating camera rays -> AABB/init -> FP9 hybrid SDF march
                      -> 64^3 sparse DDA -> compact triangle Trace
 ```
 
-It reads the same `.mem` and binary images as the FPGA build. It models the
+It reads the same `.mem` and binary images as the FPGA build. The tracked
+hardware layout is a `16^3` global SDF with `8^3` local blocks (128 samples
+per axis), a `16^3 x 4^3 = 64^3` sparse DDA, and at most 2048 local SDF
+cells. It models the
 RTL control decisions, FP9 decode, staged thresholds, near-surface backoff,
 strict DDA tie-breaking, the current 64-step traversal limit, sparse metadata
 lookup and first-hit triangle-batch stop. Candidate-only parameters can then
@@ -45,7 +48,7 @@ sim/.venv/bin/python sim/hw_sim.py \
   --output-dir sim/out/killeroo_180
 ```
 
-Render the 180-view hardware-behavior rotation directly to H.264 video:
+Render one orbit directly to H.264 video:
 
 ```bash
 sim/.venv/bin/python sim/hw_sim.py \
@@ -53,18 +56,21 @@ sim/.venv/bin/python sim/hw_sim.py \
   --width 1920 --height 1080 --angles 0:360:2 --fps 30
 ```
 
-Video mode uses the full-HD validated profile (64 SDF steps, thresholds
-`0.0575/0.08/0.08`, backoff `0.0025`, step scale `0.375`, and 96 DDA steps). It
+Video mode uses the current RTL profile (32 SDF steps, thresholds
+`0.01/0.02/0.04`, backoff `0.005`, step scale `1.0`, and 64 DDA steps). The
+camera starts at the C++ simulation camera position, looks at the origin, and
+orbits around the model's Y-up axis. For non-centered memory images, the
+simulator derives the expanded grid bounds from the stored render triangles,
+targets their bounding-box center, and scales camera distance with model
+height. Use `--video-config` for an explicit
+experimental profile. It
 renders the compact hardware triangle result and interpolates the stored
 vertex normals using the hardware barycentric coordinates. The adjacent JSON
 file records the exact angles, dimensions, frame rate and hardware profile.
 
-At 1920x1080 across all 180 two-degree views, this profile has 865 total
-oracle misses and a worst-frame count of 96 at 220 degrees, with two false
-hits. Its all-ray averages are 5.758 DDA cells and 2.491 triangle tests. The
-streaming report is written by `--stream-report`; exact candidates are supplied
-with repeatable `--stream-config` arguments so the full-HD search does not need
-to allocate all 373 million rays at once.
+The streaming report is written by `--stream-report`; exact candidates are
+supplied with repeatable `--stream-config` arguments so a full-resolution
+search does not need to allocate all views at once.
 
 Useful controls are `--max-steps`, `--thresholds`, `--backoffs` and
 `--step-scales`. `--dda-backtracks` and `--dda-halos 0,1` are diagnostic
@@ -87,9 +93,12 @@ The output contains:
 - `current_failures.csv` and `recommended_failures.csv`: replay coordinates,
   per-frame RayID, SDF termination and DDA work for every missed oracle hit.
 
-## Current finding
+## Historical sweep
 
-On the tracked `mem_killeroo_gold` image, 180 angles at 128x72 produce 121,673
+The results below predate the current Y-up, centered Killeroo memory image and
+are retained only as tuning history. Regenerate them before using the values
+for RTL decisions. On the earlier `mem_killeroo_gold` image, 180 angles at
+128x72 produce 121,673
 oracle-hit rays. Current RTL parameters (`32`, `0.01/0.02/0.04`, backoff
 `0.005`, step scale `1.0`, DDA 64 steps) miss 20,145 after the complete
 pipeline. The balanced zero-hole configuration found by the joint sweep is

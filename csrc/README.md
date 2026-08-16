@@ -43,12 +43,10 @@ csrc/
 │   ├── golden_model.cpp          # Reference algorithms (Möller-Trumbore)
 │   ├── test_framework.cpp        # Test framework implementation
 │   └── rsqrt_dpi.cpp             # DPI-C reciprocal square root
-└── vivado_mem/                   # Exported memory files for Vivado
-    ├── triangle_mem.mem          # 14203 compact triangles (36 words/entry)
-    ├── normal_mem.mem            # 14203 normals (3 words/entry)
-    ├── sdf_global_mem.mem        # Global SDF (16³ grid)
-    ├── sdf_local_mem.mem         # Local SDF (4³ per cell)
-    ├── sdf_local_mapping.mem     # Local SDF cell mapping
+└── vivado_mem/mem_<model>/       # Current deployment assets
+    ├── triangle_ddr.bin           # Compact triangles loaded into PS DDR
+    ├── pynq_render_data.bin       # PS shading geometry and normal sidecar
+    ├── sdf_uram.bin               # Versioned PS-loaded FP9 SDF image
     ├── subgrid_block_dir.mem     # 32-cell occupancy/base directory
     └── subgrid_compact_meta.mem  # Metadata for non-empty cells
 ```
@@ -161,16 +159,18 @@ inline constexpr bool kEnableProgressPrint = true;  // Print progress messages
 
 ### 4. Memory Export
 
-`MemExport.cpp` exports all data structures to `.mem` files for Vivado simulation:
+The supported `MODE=fpga` flow exports only deployed RTL and PS assets:
 
 | File | Content | Format |
 |------|---------|--------|
-| `triangle_mem.mem` | Compact triangles | 36 floats/address |
-| `normal_mem.mem` | Vertex normals | 3 floats/address |
-| `sdf_global_mem.mem` | Global SDF | 1 word/address |
-| `sdf_local_mem.mem` | Local SDF | 1 word/address |
+| `triangle_ddr.bin` | Compact triangles fetched through DataMover | Binary cache lines |
+| `pynq_render_data.bin` | PS shading geometry, normals, and compact IDs | Versioned binary |
+| `sdf_uram.bin` | Global/local/mapping SDF written through the runtime port | Versioned FP9 binary |
 | `subgrid_block_dir.mem` | Sparse lookup directory | 48-bit (base, occupancy mask) |
 | `subgrid_compact_meta.mem` | Non-empty subgrid metadata | 32-bit (triStart, triCount) |
+
+Only the two subgrid `.mem` files are initialized into RTL. The SDF image and
+triangle binaries are loaded by the simulation harness or board PS at runtime.
 
 ### 5. Simulation Execution
 

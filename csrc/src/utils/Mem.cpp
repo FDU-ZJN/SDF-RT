@@ -1,5 +1,6 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
+#include <GlobalConfig.h>
 #include <Mem.h>
 #include <cmath>
 #include <array>
@@ -432,7 +433,8 @@ void build_hybrid_sdf_from_mesh(
     int localResZ,
     float activeBand,
     SdfBuildBackend backend,
-    size_t maxLocalCells) {
+    size_t maxLocalCells,
+    float negativeActiveBand) {
     const auto buildStart = std::chrono::steady_clock::now();
     global_sdf_flat.clear();
     local_sdf_flat.clear();
@@ -591,8 +593,14 @@ void build_hybrid_sdf_from_mesh(
     }
 #endif
 
+    if (!std::isfinite(activeBand) || activeBand < 0.0f ||
+        !std::isfinite(negativeActiveBand)) {
+        throw std::invalid_argument("SDF active bands must be finite and non-negative");
+    }
     const float localPositiveBand = activeBand;
-    const float localNegativeBand = -0.7f * activeBand;
+    const float localNegativeMagnitude =
+        negativeActiveBand >= 0.0f ? negativeActiveBand : 0.7f * activeBand;
+    const float localNegativeBand = -localNegativeMagnitude;
 
     std::vector<std::array<int, 3>> activeCells;
     activeCells.reserve(globalTotal / 2);

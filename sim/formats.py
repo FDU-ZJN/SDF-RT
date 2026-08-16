@@ -38,6 +38,55 @@ def _unpack_sdf(path: Path, lanes: int) -> np.ndarray:
     return values
 
 
+def _unpack_sdf_words(rows: np.ndarray, lanes: int) -> np.ndarray:
+    values = np.empty(rows.shape[0] * lanes, dtype=np.float32)
+    for row_index, words in enumerate(rows):
+        packed = 0
+        for word_index, word in enumerate(words):
+            packed |= int(word) << (word_index * 32)
+        for lane in range(lanes):
+            values[row_index * lanes + lane] = _sdf9_to_float((packed >> (lane * 9)) & 0x1FF)
+    return values
+
+
+def _load_sdf_runtime_image(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    blob = path.read_bytes()
+    if len(blob) < 64:
+        raise ValueError(f"SDF runtime image is truncated: {path}")
+    (
+        magic, version, header_bytes, global_rows, local_cells, mapping_words,
+        local_rows, global_words_per_row, local_words_per_row, payload_words, crc,
+    ) = struct.unpack("<8s10I", blob[:48])
+    if (
+        magic != b"SDF9IMG\0" or version != 2 or header_bytes != 64
+        or global_rows != 4096 or mapping_words != 16384
+        or local_rows != local_cells * 8
+        or global_words_per_row != 3 or local_words_per_row != 18
+    ):
+        raise ValueError(f"unsupported SDF runtime image layout: {path}")
+    payload = memoryview(blob)[header_bytes:]
+    if len(payload) != payload_words * 4 or zlib.crc32(payload) & 0xFFFFFFFF != crc:
+        raise ValueError(f"SDF runtime image size/CRC mismatch: {path}")
+    expected_words = (
+        global_rows * global_words_per_row
+        + local_rows * local_words_per_row
+        + mapping_words
+    )
+    if payload_words != expected_words:
+        raise ValueError(f"SDF runtime image payload layout mismatch: {path}")
+    words = np.frombuffer(payload, dtype="<u4")
+    global_end = global_rows * global_words_per_row
+    local_end = global_end + local_rows * local_words_per_row
+    global_data = words[:global_end].reshape(global_rows, global_words_per_row)
+    local_data = words[global_end:local_end].reshape(local_rows, local_words_per_row)
+    mapping_data = words[local_end:].copy()
+    return (
+        _unpack_sdf_words(global_data, 8),
+        _unpack_sdf_words(local_data, 64),
+        mapping_data,
+    )
+
+
 def _load_render_data(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     blob = path.read_bytes()
     if len(blob) < 64:
@@ -165,7 +214,7 @@ class HardwareImage:
 def load_hardware_image(mem_dir: Path) -> HardwareImage:
     mem_dir = mem_dir.resolve()
     triangles, normals, compact_ids = _load_render_data(mem_dir / "pynq_render_data.bin")
-    mapping_words = _hex_rows(mem_dir / "sdf_local_mapping.mem")
+    global_sdf, local_sdf, mapping_words = _load_sdf_runtime_image(mem_dir / "sdf_uram.bin")
     if len(mapping_words) != 16384:
         raise ValueError("SDF mapping must contain 16384 packed words")
     mapping = np.empty(32768, dtype=np.int32)
@@ -177,8 +226,8 @@ def load_hardware_image(mem_dir: Path) -> HardwareImage:
     )
     compact_triangles = _load_triangle_ddr(mem_dir / "triangle_ddr.bin", len(compact_ids))
     return HardwareImage(
-        global_sdf=_unpack_sdf(mem_dir / "sdf_global_mem.mem", 8),
-        local_sdf=_unpack_sdf(mem_dir / "sdf_local_mem.mem", 64),
+        global_sdf=global_sdf,
+        local_sdf=local_sdf,
         local_mapping=mapping,
         subgrid_start=starts,
         subgrid_count=counts,

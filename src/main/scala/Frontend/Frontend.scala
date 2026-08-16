@@ -13,6 +13,9 @@ class Frontend(c: TriPeConfig = TriPeConfig()) extends Module {
     val setup_origin = Input(new Vec3(c.cfg))
     val setup_grid_min = Input(new Vec3(c.cfg))
     val setup_grid_max = Input(new Vec3(c.cfg))
+    val camera_origin = Input(new Vec3(c.cfg))
+    val rotation_cos = Input(UInt(c.cfg.totalWidth.W))
+    val rotation_sin = Input(UInt(c.cfg.totalWidth.W))
     val inv_voxel = Input(new Vec3(c.cfg))
     val inv_sub_voxel = Input(new Vec3(c.cfg))
 
@@ -54,12 +57,16 @@ class Frontend(c: TriPeConfig = TriPeConfig()) extends Module {
   val initCapacityUsed = RegInit(0.U(log2Ceil(GlobalConfig.frontendContextCount + 1).W))
   val initCapacityAvailable = initCapacityUsed < GlobalConfig.frontendContextCount.U
   contexts.io.ingress.valid := io.ingress.valid && initCapacityAvailable
-  contexts.io.ingress.bits := io.ingress.bits
+  contexts.io.ingress.bits.origin := io.camera_origin
+  contexts.io.ingress.bits.dir := io.ingress.bits.dir
+  contexts.io.ingress.bits.rayId := io.ingress.bits.rayId
   io.ingress.ready := contexts.io.ingress.ready && initCapacityAvailable
 
   init.io.setup_origin := io.setup_origin
   init.io.setup_grid_min := io.setup_grid_min
   init.io.setup_grid_max := io.setup_grid_max
+  init.io.rotation_cos := io.rotation_cos
+  init.io.rotation_sin := io.rotation_sin
   init.io.in <> contexts.io.init_issue
   contexts.io.read_id(0) := init.io.context_id
   init.io.immutable := contexts.io.immutable(0)

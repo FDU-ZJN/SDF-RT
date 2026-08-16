@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import CAMERA_FOV_DEGREES
-from .shading import HostRendererCache
+from .render_data import RenderDataCache
 
 
 _U8_P = ctypes.POINTER(ctypes.c_uint8)
@@ -43,6 +43,7 @@ class NativeRenderLibrary:
     def _bind(self):
         self.lib.sdf_rt_build_gbuffer.argtypes = [
             _U32_P, _U32_P, _U32_P, ctypes.c_uint32, _F32_P,
+            ctypes.c_float, ctypes.c_float,
             ctypes.c_uint32, ctypes.c_uint32, _F32_P, ctypes.c_uint32,
             _U32_P, ctypes.c_uint32, _U8_P, _U8_P, _U32_P,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
@@ -59,14 +60,8 @@ class NativeRenderLibrary:
             ctypes.c_char_p, ctypes.c_uint32,
         ]
         self.lib.sdf_rt_gles_enable_direct_scanout.restype = ctypes.c_int
-        self.lib.sdf_rt_gles_scanout_crc32.argtypes = [ctypes.c_void_p]
-        self.lib.sdf_rt_gles_scanout_crc32.restype = ctypes.c_uint32
-        self.lib.sdf_rt_gles_dump_scanout_ppm.argtypes = [
-            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32,
-        ]
-        self.lib.sdf_rt_gles_dump_scanout_ppm.restype = ctypes.c_int
         self.lib.sdf_rt_gles_render.argtypes = [
-            ctypes.c_void_p, _U8_P, _U8_P, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, _U8_P, ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_uint32, ctypes.c_uint32, _F32_P, _F32_P, _F32_P,
             ctypes.c_char_p, ctypes.c_uint32,
         ]
@@ -91,7 +86,7 @@ class MaliBrdfRenderer:
         render_data_path,
         thread_count=1,
     ):
-        self.reference = HostRendererCache(width, height, render_data_path)
+        self.reference = RenderDataCache(width, height, render_data_path)
         self.width = self.reference.width
         self.height = self.reference.height
         self.origin = self.reference.origin
@@ -99,12 +94,8 @@ class MaliBrdfRenderer:
         self.right = self.reference.right
         self.up = self.reference.up
         self.directions = self.reference.directions
-        self.background = self.reference.background
-        # HostRendererCache keeps convenient NumPy views. The native ABI uses
-        # dense SoA tables so each OpenMP worker can gather one float3 directly.
-        self.tri_v0 = np.ascontiguousarray(self.reference.tri_v0, dtype=np.float32)
-        self.tri_e1 = np.ascontiguousarray(self.reference.tri_e1, dtype=np.float32)
-        self.tri_e2 = np.ascontiguousarray(self.reference.tri_e2, dtype=np.float32)
+        # The native ABI uses a dense normal table so each OpenMP worker can
+        # gather one interpolated float3 directly.
         self.vertex_normals = np.ascontiguousarray(
             self.reference.vertex_normals, dtype=np.float32
         )
@@ -114,7 +105,6 @@ class MaliBrdfRenderer:
         self.native = NativeRenderLibrary()
         self._build_lock = threading.Lock()
         self._handle = None
-        self.direct_scanout = False
         self._create_gles_renderer()
 
     def _create_gles_renderer(self):
@@ -158,11 +148,6 @@ class MaliBrdfRenderer:
     def allocate_gbuffer(self):
         return np.zeros((self.height, self.width, 4), dtype=np.uint8)
 
-    def allocate_image(self):
-        if self.direct_scanout:
-            return None
-        return np.zeros((self.height * self.width, 3), dtype=np.uint8)
-
     def enable_direct_scanout(self, output_width, output_height):
         error = self.native.error_buffer()
         result = self.native.lib.sdf_rt_gles_enable_direct_scanout(
@@ -170,7 +155,6 @@ class MaliBrdfRenderer:
         )
         if result != 0:
             raise RuntimeError(error.value.decode(errors="replace"))
-        self.direct_scanout = True
         name = self.native.lib.sdf_rt_gles_renderer(self._handle).decode(errors="replace")
         print(f"[DISPLAY] direct renderer={name} mode={output_width}x{output_height}")
 
@@ -180,15 +164,15 @@ class MaliBrdfRenderer:
         batch_raster_index,
         batch_local_index,
         batch_directions,
+        rotation_cos,
+        rotation_sin,
         result_words,
         count,
         hit,
         hit_t_bits,
         store_results,
         validate_ray_ids,
-        shade_chunk_pixels,
     ):
-        del shade_chunk_pixels
         words = np.asarray(result_words[:count], dtype=np.uint32)
         raster = np.ascontiguousarray(batch_raster_index, dtype=np.uint32)
         local = np.ascontiguousarray(batch_local_index, dtype=np.uint32)
@@ -206,10 +190,12 @@ class MaliBrdfRenderer:
                 _pointer(local, _U32_P),
                 count,
                 _pointer(directions, _F32_P),
+                ctypes.c_float(rotation_cos),
+                ctypes.c_float(rotation_sin),
                 self.width * self.height,
                 self.width * self.height,
                 _pointer(self.vertex_normals, _F32_P),
-                self.tri_v0.shape[0],
+                self.reference.triangle_count,
                 _pointer(self.reference.compact_src_ids, _U32_P),
                 self.reference.compact_src_ids.size,
                 _pointer(gbuffer, _U8_P),
@@ -226,15 +212,10 @@ class MaliBrdfRenderer:
             raise RuntimeError(error.value.decode(errors="replace"))
         return result, build_elapsed
 
-    def finish_frame(self, gbuffer, image, forward, right, up):
+    def finish_frame(self, gbuffer, forward, right, up):
         if not self._handle:
             raise RuntimeError("GLES renderer is closed")
         gbuffer = np.ascontiguousarray(gbuffer, dtype=np.uint8)
-        output = None
-        output_pointer = ctypes.cast(None, _U8_P)
-        if not self.direct_scanout:
-            output = np.asarray(image, dtype=np.uint8).reshape(self.height, self.width, 3)
-            output_pointer = _pointer(output, _U8_P)
         forward = np.ascontiguousarray(forward, dtype=np.float32)
         right = np.ascontiguousarray(right, dtype=np.float32)
         up = np.ascontiguousarray(up, dtype=np.float32)
@@ -242,7 +223,6 @@ class MaliBrdfRenderer:
         result = self.native.lib.sdf_rt_gles_render(
             self._handle,
             _pointer(gbuffer, _U8_P),
-            output_pointer,
             0,
             0,
             self.width,
@@ -252,18 +232,6 @@ class MaliBrdfRenderer:
             _pointer(up, _F32_P),
             error,
             len(error),
-        )
-        if result != 0:
-            raise RuntimeError(error.value.decode(errors="replace"))
-        return output
-
-    def scanout_crc32(self):
-        return int(self.native.lib.sdf_rt_gles_scanout_crc32(self._handle))
-
-    def dump_scanout_ppm(self, path):
-        error = self.native.error_buffer()
-        result = self.native.lib.sdf_rt_gles_dump_scanout_ppm(
-            self._handle, os.fsencode(path), error, len(error)
         )
         if result != 0:
             raise RuntimeError(error.value.decode(errors="replace"))

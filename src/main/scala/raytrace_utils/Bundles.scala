@@ -51,6 +51,7 @@ class FrontendInitResp(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {
   val contextId = UInt(GlobalConfig.frontendContextBits.W)
   val hit = Bool()
   val entryT = UInt(cfg.totalWidth.W)
+  val transformedDir = new Vec3(cfg)
 }
 
 class FrontendSdfResult(cfg: FloatConfig = FloatConfig.FP32) extends Bundle {

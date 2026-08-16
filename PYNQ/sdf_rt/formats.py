@@ -73,6 +73,64 @@ def packed_rows_to_u32(rows, words_per_row):
     return out
 
 
+def load_sdf_runtime_image(path):
+    """Load the versioned FP9 image shared by Verilator and the board loader."""
+    blob = Path(path).read_bytes()
+    if len(blob) < 64:
+        raise ValueError(f"{path} is too small to be an SDF runtime image")
+    fields = struct.unpack("<8s10I", blob[:48])
+    (
+        magic,
+        version,
+        header_bytes,
+        global_rows,
+        local_cells,
+        mapping_words,
+        local_rows,
+        global_words_per_row,
+        local_words_per_row,
+        payload_words,
+        payload_crc,
+    ) = fields
+    if magic != b"SDF9IMG\0" or version != 2 or header_bytes != 64:
+        raise ValueError(f"{path} has an unsupported SDF runtime image header")
+    if (
+        global_rows != GLOBAL_SDF_ROWS
+        or mapping_words != MAPPING_WORDS
+        or global_words_per_row != 3
+        or local_words_per_row != 18
+        or local_rows != local_cells * 8
+        or local_rows > LOCAL_SDF_MAX_ROWS
+    ):
+        raise ValueError(
+            f"{path} layout does not match the deployed SDF memory: "
+            f"global_rows={global_rows} local_cells={local_cells} "
+            f"local_rows={local_rows} mapping_words={mapping_words}"
+        )
+    payload = memoryview(blob)[header_bytes:]
+    if len(payload) != payload_words * 4:
+        raise ValueError(f"{path} SDF payload size mismatch")
+    if (zlib.crc32(payload) & 0xFFFFFFFF) != payload_crc:
+        raise ValueError(f"{path} SDF payload CRC mismatch")
+    expected_words = (
+        global_rows * global_words_per_row
+        + local_rows * local_words_per_row
+        + mapping_words
+    )
+    if payload_words != expected_words:
+        raise ValueError(f"{path} SDF payload word count mismatch")
+
+    words = np.frombuffer(payload, dtype="<u4")
+    global_end = global_rows * global_words_per_row
+    local_end = global_end + local_rows * local_words_per_row
+    return (
+        words[:global_end].reshape(global_rows, global_words_per_row).copy(),
+        words[global_end:local_end].reshape(local_rows, local_words_per_row).copy(),
+        words[local_end:].copy(),
+        int(local_cells),
+    )
+
+
 def pack_ray_records(destination_words, origins, directions, count):
     """Pack the exact non-word-aligned layout used by RayAxisAdapter.sv."""
     origin_bits = np.ascontiguousarray(origins, dtype=np.float32).view(np.uint32)
@@ -123,24 +181,6 @@ def rewrite_batch_ray_ids(records, batch_rays):
         )
 
 
-def decode_result_records(words, count):
-    """Decode {u16, v16, reserved, hitT, hitId, hit, rayId}."""
-    records = np.asarray(words[:count], dtype=np.uint32)
-    ray_mask = np.uint32((1 << RAY_ID_BITS) - 1)
-    carry_mask = np.uint32((1 << (RAY_ID_BITS + 1)) - 1)
-    ray_id = (records[:, 0] & ray_mask).astype(np.uint32)
-    hit_u = (records[:, 3] >> np.uint32(16)).astype(np.uint16)
-    hit_v = (records[:, 3] & np.uint32(0xffff)).astype(np.uint16)
-    hit = ((records[:, 0] >> np.uint32(RAY_ID_BITS)) & np.uint32(1)).astype(bool)
-    hit_id = (records[:, 0] >> np.uint32(RAY_ID_BITS + 1)) | (
-        (records[:, 1] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
-    )
-    hit_t_bits = (records[:, 1] >> np.uint32(RAY_ID_BITS + 1)) | (
-        (records[:, 2] & carry_mask) << np.uint32(32 - (RAY_ID_BITS + 1))
-    )
-    return ray_id, hit, hit_id.astype(np.uint32), hit_t_bits.astype(np.uint32), hit_u, hit_v
-
-
 def decode_core_status(value):
     flags = []
     if value & 0x1:
@@ -158,6 +198,17 @@ def decode_sdf_status(value):
         flags.append("load_active")
     if value & 0x2:
         flags.append("ready")
+    if value & 0x4:
+        flags.append("protocol_error")
+    return ",".join(flags) if flags else "none"
+
+
+def decode_transform_status(value):
+    flags = []
+    if value & 0x1:
+        flags.append("ready")
+    if value & 0x2:
+        flags.append("configured")
     if value & 0x4:
         flags.append("protocol_error")
     return ",".join(flags) if flags else "none"

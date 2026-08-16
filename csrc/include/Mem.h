@@ -7,7 +7,6 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include <GlobalConfig.h>
 
 #if defined(__has_include)
 #if __has_include("svdpi.h")
@@ -57,7 +56,8 @@ void build_hybrid_sdf_from_mesh(
     int localResZ,
     float activeBand,
     SdfBuildBackend backend = SdfBuildBackend::Cpu,
-    size_t maxLocalCells = 0);
+    size_t maxLocalCells = 0,
+    float negativeActiveBand = -1.0f);
 
 // Build compact triangle storage grouped by (globalIdx, subIdx) subgrid key.
 void build_subgrid_triangle_index(
@@ -113,7 +113,7 @@ extern "C" void tri_mem_read_bank(int bank, int addr, const svOpenArrayHandle da
 extern "C" void tri_cache_stats_record(int bank, int hit);
 extern "C" void tri_cache_refill_stats_record(int busy_cycle, int stall_cycle, int refill_fire);
 
-// Memory export utilities for Vivado simulation with $readmemh
+// Focused export helpers used by tests and legacy simulation modes.
 void export_triangle_mem(const std::string& filename, int numPEs, int numBanks = 1, int bankId = 0);
 // Export compact triangles in the DDR refill layout: one 144-byte little-endian block per 4-triangle cache block.
 void export_triangle_ddr_binary(const std::string& filename);
@@ -122,12 +122,17 @@ void export_pynq_render_data(const std::string& filename);
 void export_normal_mem(const std::string& filename);
 void export_sdf_mem(const std::string& global_filename, const std::string& local_filename);
 void export_sdf_local_mapping(const std::string& filename);
-// Packed runtime image consumed by software/sdf_loader/sdf_uram_loader.
+// Packed runtime image consumed by Verilator and the board PS loader.
 void export_sdf_uram_binary(const std::string& filename);
 void export_subgrid_sparse_mems(
     const std::string& block_dir_filename,
     const std::string& compact_meta_filename);
+// Legacy SimTop/useblackbox fixture export. The deployed FpgaTop flow must use
+// export_deployment_assets instead.
 void export_all_mems_for_vivado(const std::string& output_dir);
+// Emit only deployed assets: two RTL initialization files and three PS/runtime
+// binaries. Stale legacy initialization files are removed from output_dir.
+void export_deployment_assets(const std::string& output_dir);
 
 // Subgrid metadata accessors for export
 uint32_t get_subgrid_tri_start_uint32(unsigned int global_idx, unsigned int local_idx);

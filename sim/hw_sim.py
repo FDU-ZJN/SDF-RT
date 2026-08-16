@@ -20,10 +20,21 @@ from formats import HardwareImage, load_hardware_image
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MEM = ROOT / "csrc/vivado_mem/mem_killeroo_gold"
-GRID_MIN = np.asarray((-0.199076, -1.1, -0.505496), np.float32)
-GRID_MAX = np.asarray((0.199076, 1.1, 0.505496), np.float32)
+GRID_MIN = np.asarray((-0.199076317, -0.505496047, -1.1), np.float32)
+GRID_MAX = np.asarray((0.199076317, 0.505496047, 1.1), np.float32)
+SDF_GLOBAL_RES = 16
+SDF_LOCAL_RES = 8
+SDF_FULL_RES = SDF_GLOBAL_RES * SDF_LOCAL_RES
+DDA_GLOBAL_RES = 16
+DDA_SUB_RES = 4
+DDA_FULL_RES = DDA_GLOBAL_RES * DDA_SUB_RES
 CURRENT_RTL = (32, 0.01, 0.02, 0.04, 0.005, 1.0, 0.0, 0, 64)
-VIDEO_CONFIG = (64, 0.0575, 0.08, 0.08, 0.0025, 0.375, 0.0, 0, 96)
+CAMERA_ORIGIN = np.asarray((-0.000068515, 0.514165, 1.499898), np.float32)
+CAMERA_TARGET = np.zeros(3, np.float32)
+CAMERA_UP = np.asarray((0.0, 1.0, 0.0), np.float32)
+SDF_LOCAL_CELL_CAPACITY = 2048
+REFERENCE_MODEL_HEIGHT = np.float32(0.919083722)
+REFERENCE_CAMERA_OFFSET = CAMERA_ORIGIN.copy()
 
 
 @dataclass(frozen=True)
@@ -64,11 +75,62 @@ def parse_exact_config(text: str) -> MarchConfig:
     )
 
 
+def validate_hardware_image(image: HardwareImage) -> None:
+    logical_global_samples = SDF_GLOBAL_RES ** 3
+    local_samples_per_cell = SDF_LOCAL_RES ** 3
+    if len(image.global_sdf) < logical_global_samples:
+        raise ValueError(
+            f"global SDF has {len(image.global_sdf)} samples, need {logical_global_samples}"
+        )
+    if len(image.local_mapping) < logical_global_samples:
+        raise ValueError(
+            f"local mapping has {len(image.local_mapping)} entries, need {logical_global_samples}"
+        )
+    active = image.local_mapping[:logical_global_samples]
+    active = active[(active & 0x8000) != 0] & 0x3FFF
+    if active.size and int(active.max()) >= SDF_LOCAL_CELL_CAPACITY:
+        raise ValueError(
+            f"local SDF mapping references cell {int(active.max())}, "
+            f"capacity is {SDF_LOCAL_CELL_CAPACITY}"
+        )
+    stored_local_cells = len(image.local_sdf) // local_samples_per_cell
+    required_local_cells = int(active.max()) + 1 if active.size else 0
+    if len(image.local_sdf) % local_samples_per_cell or stored_local_cells < required_local_cells:
+        raise ValueError(
+            f"local SDF stores {stored_local_cells} complete cells, "
+            f"mapping requires {required_local_cells}"
+        )
+    expected_dda_cells = DDA_FULL_RES ** 3
+    if len(image.subgrid_start) != expected_dda_cells:
+        raise ValueError(
+            f"DDA metadata has {len(image.subgrid_start)} cells, need {expected_dda_cells}"
+        )
+    print(
+        "Hardware layout: "
+        f"SDF={SDF_GLOBAL_RES}^3x{SDF_LOCAL_RES}^3 "
+        f"active_local_cells={len(np.unique(active))} "
+        f"stored_local_cells={stored_local_cells}/{SDF_LOCAL_CELL_CAPACITY} "
+        f"DDA={DDA_GLOBAL_RES}^3x{DDA_SUB_RES}^3 "
+        f"grid_min={GRID_MIN.tolist()} grid_max={GRID_MAX.tolist()}"
+    )
+
+
+def configure_scene(image: HardwareImage) -> None:
+    global GRID_MIN, GRID_MAX, CAMERA_ORIGIN, CAMERA_TARGET
+    bounds_min = image.original_triangles.min(axis=(0, 1)).astype(np.float32)
+    bounds_max = image.original_triangles.max(axis=(0, 1)).astype(np.float32)
+    center = ((bounds_min + bounds_max) * np.float32(0.5)).astype(np.float32)
+    half_extent = ((bounds_max - bounds_min) * np.float32(0.55)).astype(np.float32)
+    if np.any(~np.isfinite(half_extent)) or np.any(half_extent <= 0.0):
+        raise ValueError("render geometry has invalid bounds")
+    camera_scale = (bounds_max[1] - bounds_min[1]) / REFERENCE_MODEL_HEIGHT
+    GRID_MIN = center - half_extent
+    GRID_MAX = center + half_extent
+    CAMERA_TARGET = center
+    CAMERA_ORIGIN = center + REFERENCE_CAMERA_OFFSET * camera_scale
+
+
 def camera_rays(width: int, height: int, angles: list[float]):
-    source_center = np.asarray((0.0796971726, -47.2750625, -49.2204103), np.float32)
-    scale = np.float32(0.0050387813)
-    base_origin = (np.asarray((200.0, 250.0, 70.0), np.float32) - source_center) * scale
-    target = (np.asarray((0.0, 33.0, -50.0), np.float32) - source_center) * scale
     yy, xx = np.mgrid[0:height, 0:width]
     sx = ((2.0 * (xx.astype(np.float32) + 0.5) / width) - 1.0) * (width / height)
     sy = 1.0 - 2.0 * (yy.astype(np.float32) + 0.5) / height
@@ -77,11 +139,14 @@ def camera_rays(width: int, height: int, angles: list[float]):
     for frame, degrees in enumerate(angles):
         angle = np.float32(math.radians(degrees))
         c, s = np.float32(math.cos(angle)), np.float32(math.sin(angle))
-        offset = base_origin - target
-        origin = target + np.asarray((c * offset[0] - s * offset[1], s * offset[0] + c * offset[1], offset[2]), np.float32)
-        forward = target - origin
+        offset = CAMERA_ORIGIN - CAMERA_TARGET
+        origin = CAMERA_TARGET + np.asarray(
+            (c * offset[0] + s * offset[2], offset[1], -s * offset[0] + c * offset[2]),
+            np.float32,
+        )
+        forward = CAMERA_TARGET - origin
         forward /= np.linalg.norm(forward)
-        right = np.cross(forward, np.asarray((0.0, 0.0, 1.0), np.float32))
+        right = np.cross(forward, CAMERA_UP)
         right /= np.linalg.norm(right)
         up = np.cross(right, forward)
         direction = forward + (sx * tan_half)[..., None] * right + (sy * tan_half)[..., None] * up
@@ -291,19 +356,19 @@ class HardwareSimulator:
         coord = ti.Vector.zero(ti.i32, 3)
         inside = 1
         for axis in ti.static(range(3)):
-            mapped = (point[axis] - ti.static(GRID_MIN[axis])) * ti.static(np.float32(128.0 / (GRID_MAX[axis] - GRID_MIN[axis])))
-            if mapped < 0.0 or mapped >= 128.0:
+            mapped = (point[axis] - ti.static(GRID_MIN[axis])) * ti.static(np.float32(SDF_FULL_RES / (GRID_MAX[axis] - GRID_MIN[axis])))
+            if mapped < 0.0 or mapped >= ti.static(float(SDF_FULL_RES)):
                 inside = 0
             coord[axis] = ti.cast(mapped, ti.i32)
         sample = ti.cast(0.0, ti.f32)
         if inside:
-            gx, gy, gz = coord[0] // 4, coord[1] // 4, coord[2] // 4
-            lx, ly, lz = coord[0] & 3, coord[1] & 3, coord[2] & 3
-            global_index = gx + gy * 32 + gz * 1024
-            local_index = lx + ly * 4 + lz * 16
+            gx, gy, gz = coord[0] // SDF_LOCAL_RES, coord[1] // SDF_LOCAL_RES, coord[2] // SDF_LOCAL_RES
+            lx, ly, lz = coord[0] & (SDF_LOCAL_RES - 1), coord[1] & (SDF_LOCAL_RES - 1), coord[2] & (SDF_LOCAL_RES - 1)
+            global_index = gx + gy * SDF_GLOBAL_RES + gz * SDF_GLOBAL_RES * SDF_GLOBAL_RES
+            local_index = lx + ly * SDF_LOCAL_RES + lz * SDF_LOCAL_RES * SDF_LOCAL_RES
             mapping = self.mapping[global_index]
             if mapping & 0x8000:
-                sample = self.local_sdf[(mapping & 0x3FFF) * 64 + local_index]
+                sample = self.local_sdf[(mapping & 0x3FFF) * (SDF_LOCAL_RES ** 3) + local_index]
             else:
                 sample = self.global_sdf[global_index]
         return inside, sample
@@ -383,14 +448,14 @@ class HardwareSimulator:
                 tmax = ti.Vector.zero(ti.f32, 3)
                 tdelta = ti.Vector.zero(ti.f32, 3)
                 for axis in ti.static(range(3)):
-                    mapped[axis] = (point[axis] - ti.static(GRID_MIN[axis])) * ti.static(np.float32(64.0 / (GRID_MAX[axis] - GRID_MIN[axis])))
+                    mapped[axis] = (point[axis] - ti.static(GRID_MIN[axis])) * ti.static(np.float32(DDA_FULL_RES / (GRID_MAX[axis] - GRID_MIN[axis])))
                     coord[axis] = ti.cast(mapped[axis], ti.i32)
                     if mapped[axis] < 0.0:
                         coord[axis] = -1
                     fraction = mapped[axis] - ti.cast(coord[axis], ti.f32)
                     tdelta[axis] = 1.0 / ti.abs(
                         direction[axis]
-                        * ti.static(np.float32(64.0 / (GRID_MAX[axis] - GRID_MIN[axis])))
+                        * ti.static(np.float32(DDA_FULL_RES / (GRID_MAX[axis] - GRID_MIN[axis])))
                     )
                     distance = ti.select(direction[axis] < 0.0, fraction, 1.0 - fraction)
                     tmax[axis] = distance * tdelta[axis] + dda_t
@@ -398,7 +463,7 @@ class HardwareSimulator:
                 dda_limit = ti.cast(self.config[config_index][8], ti.i32)
                 for dda_step in range(256):
                     if active and dda_step < dda_limit:
-                        inside = coord[0] >= 0 and coord[1] >= 0 and coord[2] >= 0 and coord[0] < 64 and coord[1] < 64 and coord[2] < 64
+                        inside = coord[0] >= 0 and coord[1] >= 0 and coord[2] >= 0 and coord[0] < DDA_FULL_RES and coord[1] < DDA_FULL_RES and coord[2] < DDA_FULL_RES
                         if not inside:
                             active = 0
                         else:
@@ -408,11 +473,11 @@ class HardwareSimulator:
                             for dz, dy, dx in ti.ndrange((-1, 2), (-1, 2), (-1, 2)):
                                 if ti.abs(dx) <= halo and ti.abs(dy) <= halo and ti.abs(dz) <= halo:
                                     neighbor = coord + ti.Vector([dx, dy, dz])
-                                    neighbor_inside = neighbor[0] >= 0 and neighbor[1] >= 0 and neighbor[2] >= 0 and neighbor[0] < 64 and neighbor[1] < 64 and neighbor[2] < 64
+                                    neighbor_inside = neighbor[0] >= 0 and neighbor[1] >= 0 and neighbor[2] >= 0 and neighbor[0] < DDA_FULL_RES and neighbor[1] < DDA_FULL_RES and neighbor[2] < DDA_FULL_RES
                                     if neighbor_inside:
-                                        global_index = (neighbor[0] >> 2) + (neighbor[1] >> 2) * 16 + (neighbor[2] >> 2) * 256
-                                        local_index = (neighbor[0] & 3) + (neighbor[1] & 3) * 4 + (neighbor[2] & 3) * 16
-                                        dense = global_index * 64 + local_index
+                                        global_index = (neighbor[0] >> 2) + (neighbor[1] >> 2) * DDA_GLOBAL_RES + (neighbor[2] >> 2) * DDA_GLOBAL_RES * DDA_GLOBAL_RES
+                                        local_index = (neighbor[0] & 3) + (neighbor[1] & 3) * DDA_SUB_RES + (neighbor[2] & 3) * DDA_SUB_RES * DDA_SUB_RES
+                                        dense = global_index * (DDA_SUB_RES ** 3) + local_index
                                         start, count = self.sub_start[dense], self.sub_count[dense]
                                         triangle_tests += count
                                         for offset in range(count):
@@ -533,11 +598,11 @@ def encode_color(linear: np.ndarray) -> np.ndarray:
 
 
 def environment_color(directions: np.ndarray) -> np.ndarray:
-    vertical = np.clip(directions[:, 2] * 0.5 + 0.5, 0.0, 1.0)
+    vertical = np.clip(directions[:, 1] * 0.5 + 0.5, 0.0, 1.0)
     low = np.asarray((0.035, 0.045, 0.06), np.float32)
     high = np.asarray((0.22, 0.27, 0.34), np.float32)
     color = low + (high - low) * vertical[:, None]
-    light = normalize_rows(np.asarray(((-0.15, 0.10, 0.98),), np.float32))[0]
+    light = normalize_rows(np.asarray(((-0.15, 0.98, 0.10),), np.float32))[0]
     glow = np.exp((directions @ light - 1.0) * np.float32(12.0))
     return color + glow[:, None] * np.asarray((1.5, 1.35, 1.1), np.float32)
 
@@ -640,8 +705,8 @@ def shade_video_frame(
         view = -ray_dir
         flip = np.einsum("ij,ij->i", normals, view) < 0.0
         normals[flip] *= -1.0
-        key = normalize_rows(np.asarray(((-0.15, 0.10, 0.98),), np.float32))[0]
-        rim = normalize_rows(np.asarray(((-0.75, 0.55, 0.35),), np.float32))[0]
+        key = normalize_rows(np.asarray(((-0.15, 0.98, 0.10),), np.float32))[0]
+        rim = normalize_rows(np.asarray(((-0.75, 0.35, 0.55),), np.float32))[0]
         diffuse = np.clip(normals @ key, 0.0, 1.0)
         rim_light = np.power(np.clip(normals @ rim, 0.0, 1.0), np.float32(3.0))
         reflected = normalize_rows(ray_dir - 2.0 * np.einsum("ij,ij->i", ray_dir, normals)[:, None] * normals)
@@ -656,7 +721,7 @@ def shade_video_frame(
 
 def render_rotation_video(image: HardwareImage, args, angles: list[float]) -> None:
     origins, directions, _ = camera_rays(args.width, args.height, [angles[0]])
-    config = MarchConfig(*VIDEO_CONFIG)
+    config = MarchConfig(*CURRENT_RTL) if args.video_config is None else parse_exact_config(args.video_config)
     sim = HardwareSimulator(image, origins, directions, [config])
     output = args.video.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -687,6 +752,13 @@ def render_rotation_video(image: HardwareImage, args, angles: list[float]) -> No
         "video": str(output), "width": args.width, "height": args.height,
         "fps": args.fps, "frames": len(angles), "angles_degrees": angles,
         "hardware_config": asdict(config),
+        "hardware_layout": {
+            "sdf_global_res": SDF_GLOBAL_RES, "sdf_local_res": SDF_LOCAL_RES,
+            "dda_global_res": DDA_GLOBAL_RES, "dda_sub_res": DDA_SUB_RES,
+            "grid_min": GRID_MIN.tolist(), "grid_max": GRID_MAX.tolist(),
+            "camera_origin": CAMERA_ORIGIN.tolist(),
+            "camera_target": CAMERA_TARGET.tolist(),
+        },
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Video: {output}")
@@ -696,7 +768,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mem-dir", type=Path, default=DEFAULT_MEM)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "sim/out")
-    parser.add_argument("--video", type=Path, help="render the recommended hardware profile to an MP4 file")
+    parser.add_argument("--video", type=Path, help="render the current RTL profile to an MP4 file")
+    parser.add_argument(
+        "--video-config", metavar="CSV",
+        help="override video with an exact max_steps,t1,t2,t3,backoff,scale,dda_backtrack,halo,dda_steps config",
+    )
     parser.add_argument("--fps", type=int, default=30, help="video frame rate")
     parser.add_argument("--stream-report", type=Path, help="evaluate exact configs one view at a time")
     parser.add_argument(
@@ -737,6 +813,8 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Loading hardware image from {args.mem_dir} ...")
     image = load_hardware_image(args.mem_dir)
+    configure_scene(image)
+    validate_hardware_image(image)
     if args.stream_report is not None:
         evaluate_streaming(image, args, angles, stream_configs)
         return 0

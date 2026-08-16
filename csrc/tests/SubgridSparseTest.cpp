@@ -1,3 +1,4 @@
+#include <GlobalConfig.h>
 #include <Mem.h>
 
 #include <cassert>

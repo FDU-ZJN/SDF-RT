@@ -1,5 +1,25 @@
 # KV260 Render Optimization Log
 
+## Hardware Rotation Deployment (2026-08-16)
+
+The current David deployment traces the complete `1920x1080` frame with one
+DMA batch per frame. Ray directions are static in DDR; the FPGA applies the
+per-frame Y rotation in `InitStage`. A one-frame isolated run measured:
+
+- Trace: 52.157 ms, 39.757 Mray/s
+- G-buffer: 439.879 ms with result-stream validation enabled
+- BRDF/direct scanout: 112.045 ms
+- Triangle DataMover: 21,933 issued and completed, zero errors
+
+A 10-frame run with validation disabled and four OpenMP threads measured a
+steady pipeline interval of 201.083 ms (4.973 FPS). Steady stage averages were
+103.819 ms Trace, 208.865 ms G-buffer, and 148.461 ms BRDF. The isolated first
+two Trace frames remained close to 52 ms; once the three-stage pipeline was
+full, shared DDR/HP0 traffic from result processing and Mali increased Trace
+wall time. The frame interval tracks the 208.865 ms G-buffer stage, making CPU
+result decoding and normal G-buffer construction the primary throughput
+bottleneck. FPGA traversal is the secondary contention-sensitive cost.
+
 All comparable measurements use the deployed KV260, `1920x1080`, 10 frames,
 four OpenMP threads, and the first-frame hit ROI for frames 2 through 10. The
 reported steady stage averages cover frames 2 through 10. Pipeline FPS excludes
