@@ -330,6 +330,34 @@ bool DrmScanout::start(std::string& error) {
         error = system_error("mmap scanout buffers");
         return false;
     }
+    const Buffer& initial = impl_->buffers[0];
+    const auto* initial_bytes =
+        static_cast<const std::uint8_t*>(impl_->source_maps[0]);
+    auto* base_bytes = static_cast<std::uint8_t*>(impl_->base_map);
+    for (std::uint32_t y = 0; y < impl_->height; ++y) {
+        const auto* src = initial_bytes +
+            static_cast<std::size_t>(impl_->height - 1u - y) * initial.pitch;
+        auto* dst = base_bytes + static_cast<std::size_t>(y) * impl_->base_buffer.pitch;
+#if defined(__aarch64__)
+        std::uint32_t x = 0;
+        for (; x + 16u <= impl_->width; x += 16u) {
+            const uint8x16x4_t rgba = vld4q_u8(src + 4u * x);
+            const uint8x16x3_t rgb = {rgba.val[2], rgba.val[1], rgba.val[0]};
+            vst3q_u8(dst + 3u * x, rgb);
+        }
+        for (; x < impl_->width; ++x) {
+            dst[3u * x + 0] = src[4u * x + 2];
+            dst[3u * x + 1] = src[4u * x + 1];
+            dst[3u * x + 2] = src[4u * x + 0];
+        }
+#else
+        for (std::uint32_t x = 0; x < impl_->width; ++x) {
+            dst[3u * x + 0] = src[4u * x + 2];
+            dst[3u * x + 1] = src[4u * x + 1];
+            dst[3u * x + 2] = src[4u * x + 0];
+        }
+#endif
+    }
     refresh_other_planes(impl_->fd, impl_->plane, impl_->other_planes);
     if (drmModeSetPlane(impl_->fd, impl_->plane, impl_->crtc,
                         impl_->buffers[0].framebuffer, 0,

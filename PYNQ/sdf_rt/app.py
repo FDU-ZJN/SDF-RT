@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .camera import camera_vectors, make_tiled_pixel_order
+from .camera import camera_vectors, make_tiled_pixel_order, select_trace_roi
 from .config import RAY_BYTES
 from .dma import Kv260Runner
 from .formats import pack_ray_records_uniform_origin
@@ -34,6 +34,10 @@ class TracePlan:
     rotation_cos: np.float32
     rotation_sin: np.float32
     ray_update_elapsed: float = 0.0
+    roi_x: int = 0
+    roi_y: int = 0
+    roi_width: int = 0
+    roi_height: int = 0
 
     @property
     def ray_count(self):
@@ -59,6 +63,10 @@ class FrameContext:
     right: np.ndarray = None
     up: np.ndarray = None
     ray_update_elapsed: float = 0.0
+    roi_x: int = 0
+    roi_y: int = 0
+    roi_width: int = 0
+    roi_height: int = 0
 
     def reset(self, index, plan, store_results):
         self.index = index
@@ -66,6 +74,10 @@ class FrameContext:
         self.right = plan.right
         self.up = plan.up
         self.ray_update_elapsed = plan.ray_update_elapsed
+        self.roi_x = plan.roi_x
+        self.roi_y = plan.roi_y
+        self.roi_width = plan.roi_width
+        self.roi_height = plan.roi_height
         self.gbuffer.fill(0)
         if store_results:
             self.hit.fill(False)
@@ -127,7 +139,10 @@ class PerformanceStats:
             f"brdf={brdf_avg:.6f}s "
             f"render_total={gbuffer_avg + brdf_avg:.6f}s "
             f"trace_to_render={frame_avg:.6f}s "
-            f"throughput={throughput_avg:.3f} Mray/s"
+            f"throughput={throughput_avg:.3f} Mray/s "
+            f"trace_p95={np.percentile(self.trace_times[start:stop], 95):.6f}s "
+            f"gbuffer_p95={np.percentile(self.gbuffer_times[start:stop], 95):.6f}s "
+            f"brdf_p95={np.percentile(self.brdf_times[start:stop], 95):.6f}s"
         )
 
 
@@ -151,15 +166,22 @@ class RenderApplication:
             thread_count=args.render_threads,
         )
         self.pixel_order = make_tiled_pixel_order(args.width, args.height)
-        self.raster_index_by_order = np.ascontiguousarray(
-            self.pixel_order[:, 1].astype(np.uint32) * np.uint32(args.width)
-            + self.pixel_order[:, 0].astype(np.uint32)
-        )
         self.total_rays = args.width * args.height
-        self.full_order_positions = np.arange(self.total_rays, dtype=np.int64)
-        self.full_directions = np.ascontiguousarray(
-            self.renderer.directions_for_coords(self.pixel_order), dtype=np.float32
+        self.roi_x, self.roi_y, self.roi_width, self.roi_height = map(int, args.trace_roi)
+        selected_positions, self.roi_local_index = select_trace_roi(
+            self.pixel_order, args.width, args.height, args.trace_roi
         )
+        self.roi_pixel_order = self.pixel_order[selected_positions]
+        self.roi_raster_index = np.ascontiguousarray(
+            self.roi_pixel_order[:, 1].astype(np.uint32) * np.uint32(args.width)
+            + self.roi_pixel_order[:, 0].astype(np.uint32)
+        )
+        self.roi_rays = int(selected_positions.size)
+        self.roi_order_positions = np.arange(self.roi_rays, dtype=np.int64)
+        self.roi_directions = np.ascontiguousarray(
+            self.renderer.directions_for_coords(self.roi_pixel_order), dtype=np.float32
+        )
+        del self.pixel_order
         self.camera_origin = self.renderer.origin
         self.setup_origin = (
             self.camera_origin if args.origin is None else np.asarray(args.origin, dtype=np.float32)
@@ -238,27 +260,27 @@ class RenderApplication:
     def _prepare_frame_rays(self, runner):
         if self.args.no_prepack_rays:
             return None
-        prepacked_rays = runner.allocate_frame_ray_buffer(self.total_rays)
+        prepacked_rays = runner.allocate_frame_ray_buffer(self.roi_rays)
         prepack_frame_rays(
             prepacked_rays,
-            self.renderer,
-            self.pixel_order,
+            self.roi_directions,
             self.camera_origin,
             self.args.batch_rays,
         )
         return prepacked_rays
 
-    def _allocate_frame_context(self, index):
+    def _allocate_frame_context(self, index, plan):
         return FrameContext(
             index=index,
-            gbuffer=self.renderer.allocate_gbuffer(),
+            gbuffer=self.renderer.allocate_gbuffer(plan.roi_width, plan.roi_height),
             hit=np.zeros(self.total_rays, dtype=bool),
             hit_t_bits=np.zeros(self.total_rays, dtype=np.uint32),
         )
 
     def _run_frames(self, runner, prepacked_rays):
         stats = PerformanceStats()
-        contexts = [self._allocate_frame_context(index) for index in range(3)]
+        initial_plan = self._trace_plan(0, prepacked_rays)
+        contexts = [self._allocate_frame_context(index, initial_plan) for index in range(3)]
         completed = []
         pipeline = FramePipeline(
             self.renderer,
@@ -289,7 +311,7 @@ class RenderApplication:
                      directions) in self._batches(plan):
                     slot = pipeline.acquire_slot()
                     ray_address, flush_ray = self._prepare_batch_source(
-                        runner, plan, start, count, order_positions
+                        runner, plan, start, count
                     )
                     runner.launch_batch(
                         slot,
@@ -303,9 +325,6 @@ class RenderApplication:
                         frame,
                         raster_index,
                         local_index,
-                        directions,
-                        plan.rotation_cos,
-                        plan.rotation_sin,
                         runner.result_buffers[slot],
                         count,
                         store_results,
@@ -358,11 +377,21 @@ class RenderApplication:
                 f"fps={(len(completed) - 1) / duration:.3f}"
             )
         if len(completed) > 2:
-            steady_duration = completed[-1].completed_at - completed[1].completed_at
+            steady_intervals = np.diff(
+                np.asarray([frame.completed_at for frame in completed], dtype=np.float64)
+            )[1:]
+            steady_interval = float(np.mean(steady_intervals))
+            steady_p95 = float(np.percentile(steady_intervals, 95))
             print(
                 f"[PERF] pipeline-steady frames={len(completed) - 2} "
-                f"interval={steady_duration / (len(completed) - 2):.6f}s "
-                f"fps={(len(completed) - 2) / steady_duration:.3f}"
+                f"interval={steady_interval:.6f}s "
+                f"fps={1.0 / steady_interval:.3f} "
+                f"p95={steady_p95:.6f}s max={np.max(steady_intervals):.6f}s"
+            )
+            target_pass = 1.0 / steady_interval >= 22.0 and steady_p95 <= 0.050
+            print(
+                f"[PERF] target average>=22.000fps p95<=0.050000s "
+                f"result={'PASS' if target_pass else 'FAIL'}"
             )
         self.last_frame = completed[-1]
         runner.print_triangle_status()
@@ -400,10 +429,10 @@ class RenderApplication:
             angle = 0.0
         origin, forward, right, up = camera_vectors(angle)
         return TracePlan(
-            self.full_order_positions,
-            self.raster_index_by_order,
-            self.raster_index_by_order,
-            self.full_directions,
+            self.roi_order_positions,
+            self.roi_raster_index,
+            self.roi_local_index,
+            self.roi_directions,
             prepacked_rays,
             "static rays + hardware rotation",
             origin,
@@ -413,6 +442,10 @@ class RenderApplication:
             np.float32(math.cos(angle)),
             np.float32(math.sin(angle)),
             0.0,
+            self.roi_x,
+            self.roi_y,
+            self.roi_width,
+            self.roi_height,
         )
 
     def _print_plan(self, frame_index, plan):
@@ -432,10 +465,9 @@ class RenderApplication:
             directions = plan.directions[start:start + count]
             yield start, count, order_positions, raster_index, local_index, directions
 
-    def _prepare_batch_source(self, runner, plan, start, count, order_positions):
+    def _prepare_batch_source(self, runner, plan, start, count):
         if plan.ray_buffer is not None:
             return int(plan.ray_buffer.physical_address) + start * RAY_BYTES, False
-        coords = self.pixel_order[order_positions]
         directions = plan.directions[start:start + count]
         pack_ray_records_uniform_origin(
             runner.allocate_staging_ray_buffer(), plan.origin, directions, count

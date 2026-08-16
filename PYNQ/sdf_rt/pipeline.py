@@ -56,15 +56,15 @@ class FramePipeline:
 
     def submit_batch(
         self, slot, frame, batch_raster_index, batch_local_index,
-        batch_directions, rotation_cos, rotation_sin, result_buffer, count, store_results
+        result_buffer, count, store_results
     ):
         self.gbuffer_queue.put(
-            (slot, frame, batch_raster_index, batch_local_index, batch_directions,
-             rotation_cos, rotation_sin, result_buffer, count, store_results)
+            (slot, frame, batch_raster_index, batch_local_index,
+             result_buffer, count, store_results)
         )
 
     def finish_frame(self, frame):
-        self.gbuffer_queue.put((None, frame, None, None, None, None, None, None, None, None))
+        self.gbuffer_queue.put((None, frame, None, None, None, None, None))
 
     def wait_gbuffer(self, frame):
         self._wait_event(frame.gbuffer_done)
@@ -84,8 +84,8 @@ class FramePipeline:
                 if task is None:
                     self.gbuffer_queue.task_done()
                     return
-                (slot, frame, raster_index, local_index, directions,
-                 rotation_cos, rotation_sin, result_buffer, count, store_results) = task
+                (slot, frame, raster_index, local_index,
+                 result_buffer, count, store_results) = task
                 if slot is None:
                     frame.gbuffer_done_at = time.perf_counter()
                     frame.gbuffer_done.set()
@@ -95,9 +95,6 @@ class FramePipeline:
                         frame.gbuffer,
                         raster_index,
                         local_index,
-                        directions,
-                        rotation_cos,
-                        rotation_sin,
                         result_buffer,
                         count,
                         frame.hit,
@@ -121,6 +118,10 @@ class FramePipeline:
                 start = time.perf_counter()
                 self.renderer.finish_frame(
                     frame.gbuffer,
+                    frame.roi_x,
+                    frame.roi_y,
+                    frame.roi_width,
+                    frame.roi_height,
                     frame.forward,
                     frame.right,
                     frame.up,

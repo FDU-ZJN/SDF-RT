@@ -57,6 +57,27 @@ def make_tiled_pixel_order(width, height, tile=TRACE_BLOCK_SIZE):
     return order
 
 
+def select_trace_roi(pixel_order, width, height, roi):
+    """Select tiled ray positions and their compact ROI indices."""
+    x, y, roi_width, roi_height = (int(value) for value in roi)
+    if x < 0 or y < 0 or roi_width <= 0 or roi_height <= 0:
+        raise ValueError("trace ROI must have positive dimensions and non-negative origin")
+    if x + roi_width > width or y + roi_height > height:
+        raise ValueError("trace ROI lies outside the frame")
+    if any(value % TRACE_BLOCK_SIZE for value in (x, y, roi_width, roi_height)):
+        raise ValueError(f"trace ROI must be aligned to {TRACE_BLOCK_SIZE}x{TRACE_BLOCK_SIZE} blocks")
+    selected = (
+        (pixel_order[:, 0] >= x) & (pixel_order[:, 0] < x + roi_width)
+        & (pixel_order[:, 1] >= y) & (pixel_order[:, 1] < y + roi_height)
+    )
+    positions = np.flatnonzero(selected).astype(np.int64)
+    coords = pixel_order[positions]
+    local = ((coords[:, 1] - y) * roi_width + (coords[:, 0] - x)).astype(np.uint32)
+    if positions.size != roi_width * roi_height or np.unique(local).size != positions.size:
+        raise AssertionError("trace ROI selection is incomplete or contains duplicate pixels")
+    return positions, local
+
+
 def make_camera_rays(pixel_xy, width, height, origin, forward, right, up):
     x = pixel_xy[:, 0].astype(np.float32)
     y = pixel_xy[:, 1].astype(np.float32)

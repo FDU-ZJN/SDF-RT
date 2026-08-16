@@ -1,5 +1,29 @@
 # KV260 Render Optimization Log
 
+## Fixed Orbit ROI Deployment (2026-08-16)
+
+The runtime now defaults to the block-aligned David orbit-union ROI
+`x=732, y=252, width=456, height=604` at `1920x1080`. It pre-packs 275,424
+rays once and allocates compact per-frame G-buffers. The CPU writes one RGBA8
+record only for each hit: source triangle ID plus 8-bit U/V. Mali keeps a
+`768x94` oct-encoded vertex-normal atlas and performs normal interpolation,
+orientation, and BRDF shading. The static background is captured once in a
+GPU texture; current-frame misses sample it while hits take the BRDF path.
+This fills pixels outside the ROI and prevents old hits from accumulating in
+the double buffers. Tight ROI uploads bypass staging, and direct scanout no
+longer copies a full 1080p frame; it converts only the dirty ROI into the
+RGB888 primary framebuffer required by the deployed display path. The FPGA
+result protocol and bitstream are unchanged.
+
+A 30-frame deployed run with visible, background-restored RGB888 scanout
+measured 20.404 steady FPS. Steady stage averages were 28.558 ms Trace,
+34.337 ms G-buffer, and 48.859 ms BRDF. The result check passed with 155,266
+hits, and Triangle DataMover completed all 639,396 issued requests without a
+read error. Removing the RGB888 dirty-ROI conversion benchmarked faster but
+produced a black output on the deployed display controller. Preserving misses
+with fragment `discard` also left historical silhouettes in the double
+buffers. Neither invalid variant is retained.
+
 ## Hardware Rotation Deployment (2026-08-16)
 
 The current David deployment traces the complete `1920x1080` frame with one

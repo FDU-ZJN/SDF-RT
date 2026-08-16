@@ -103,6 +103,10 @@ constexpr const char* kBrdfFragmentShader = R"GLSL(
 precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uGbuffer;
+uniform sampler2D uNormalAtlas;
+uniform sampler2D uBackground;
+uniform vec2 uNormalAtlasSize;
+uniform vec2 uOutputResolution;
 uniform vec2 uResolution;
 uniform vec3 uForward;
 uniform vec3 uRight;
@@ -180,15 +184,33 @@ void main() {
         uGbufferTransform.x + vUv.x * uGbufferTransform.y,
         uGbufferTransform.z - vUv.y * uGbufferTransform.w);
     vec4 gbuffer = texture2D(uGbuffer, gbufferUv);
-    if (gbuffer.a < 0.5) discard;
+    float packedLow = floor(gbuffer.r * 255.0 + 0.5);
+    float packedHigh = floor(gbuffer.g * 255.0 + 0.5);
+    if (packedLow + packedHigh < 0.5) {
+        gl_FragColor = texture2D(uBackground, gl_FragCoord.xy / uOutputResolution);
+        return;
+    }
+    float atlasX = (packedLow > 0.5 ? packedLow - 1.0 : 255.0) * 3.0;
+    float atlasY = packedHigh - (packedLow > 0.5 ? 0.0 : 1.0);
+    vec2 atlasScale = 1.0 / uNormalAtlasSize;
+    vec3 normal0 = octDecode(texture2D(
+        uNormalAtlas, vec2(atlasX + 0.5, atlasY + 0.5) * atlasScale).rg);
+    vec3 normal1 = octDecode(texture2D(
+        uNormalAtlas, vec2(atlasX + 1.5, atlasY + 0.5) * atlasScale).rg);
+    vec3 normal2 = octDecode(texture2D(
+        uNormalAtlas, vec2(atlasX + 2.5, atlasY + 0.5) * atlasScale).rg);
+    float baryU = gbuffer.b;
+    float baryV = gbuffer.a;
     float aspect = uResolution.x / uResolution.y;
     float screenX = (2.0 * pixel.x / uResolution.x - 1.0) * aspect * uTanHalfFov;
     // gl_FragCoord uses a bottom-left origin. Convert it to the same camera
     // convention as the CPU raster, whose row zero is at the top.
     float screenY = (2.0 * pixel.y / uResolution.y - 1.0) * uTanHalfFov;
     vec3 rayDir = normalize(uForward + screenX * uRight + screenY * uUp);
-    vec3 normal = octDecode(gbuffer.rg);
+    vec3 normal = normalize(normal0 * (1.0 - baryU - baryV) +
+                            normal1 * baryU + normal2 * baryV);
     vec3 view = -rayDir;
+    if (dot(normal, view) < 0.0) normal = -normal;
     vec3 reflected = normalize(reflect(rayDir, normal));
     vec3 color = environment(reflected) * fresnel(max(dot(normal, view), 0.0));
     color += directLight(normal, view, normalize(vec3(-0.15, 0.10, 0.98)), vec3(3.0, 2.9, 2.65));
@@ -207,10 +229,16 @@ struct Renderer {
     GLuint background_program = 0;
     GLuint vertex_buffer = 0;
     GLuint gbuffer_texture = 0;
+    GLuint normal_atlas_texture = 0;
+    GLuint background_texture = 0;
     std::uint32_t gbuffer_width = 0;
     std::uint32_t gbuffer_height = 0;
     GLint position_location = -1;
     GLint gbuffer_location = -1;
+    GLint normal_atlas_location = -1;
+    GLint normal_atlas_size_location = -1;
+    GLint background_location = -1;
+    GLint output_resolution_location = -1;
     GLint resolution_location = -1;
     GLint forward_location = -1;
     GLint right_location = -1;
@@ -236,6 +264,8 @@ struct Renderer {
         scanout.reset();
         if (vertex_buffer) glDeleteBuffers(1, &vertex_buffer);
         if (gbuffer_texture) glDeleteTextures(1, &gbuffer_texture);
+        if (normal_atlas_texture) glDeleteTextures(1, &normal_atlas_texture);
+        if (background_texture) glDeleteTextures(1, &background_texture);
         if (program) glDeleteProgram(program);
         if (background_program) glDeleteProgram(background_program);
         eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -245,7 +275,9 @@ struct Renderer {
     }
 };
 
-bool initialize(Renderer& renderer, std::string& error) {
+bool initialize(Renderer& renderer, const std::uint8_t* normal_atlas,
+                std::uint32_t normal_atlas_width,
+                std::uint32_t normal_atlas_height, std::string& error) {
     renderer.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (renderer.display == EGL_NO_DISPLAY || !eglInitialize(renderer.display, nullptr, nullptr)) {
         error = egl_error("eglInitialize");
@@ -313,6 +345,12 @@ bool initialize(Renderer& renderer, std::string& error) {
     }
     renderer.position_location = glGetAttribLocation(renderer.program, "aPosition");
     renderer.gbuffer_location = glGetUniformLocation(renderer.program, "uGbuffer");
+    renderer.normal_atlas_location = glGetUniformLocation(renderer.program, "uNormalAtlas");
+    renderer.normal_atlas_size_location =
+        glGetUniformLocation(renderer.program, "uNormalAtlasSize");
+    renderer.background_location = glGetUniformLocation(renderer.program, "uBackground");
+    renderer.output_resolution_location =
+        glGetUniformLocation(renderer.program, "uOutputResolution");
     renderer.resolution_location = glGetUniformLocation(renderer.program, "uResolution");
     renderer.forward_location = glGetUniformLocation(renderer.program, "uForward");
     renderer.right_location = glGetUniformLocation(renderer.program, "uRight");
@@ -335,6 +373,14 @@ bool initialize(Renderer& renderer, std::string& error) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glGenTextures(1, &renderer.normal_atlas_texture);
+    glBindTexture(GL_TEXTURE_2D, renderer.normal_atlas_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, normal_atlas_width,
+                 normal_atlas_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, normal_atlas);
 
     constexpr float kPi = 3.14159265358979323846f;
     const float tan_half_fov = std::tan(renderer.fov_degrees * kPi / 360.0f);
@@ -357,6 +403,11 @@ bool initialize(Renderer& renderer, std::string& error) {
 
     glUseProgram(renderer.program);
     glUniform1i(renderer.gbuffer_location, 0);
+    glUniform1i(renderer.normal_atlas_location, 1);
+    glUniform1i(renderer.background_location, 2);
+    glUniform2f(renderer.normal_atlas_size_location,
+                static_cast<float>(normal_atlas_width),
+                static_cast<float>(normal_atlas_height));
     glUniform2f(renderer.resolution_location,
                 static_cast<float>(renderer.width), static_cast<float>(renderer.height));
     glUniform3fv(renderer.forward_location, 1, renderer.forward.data());
@@ -382,8 +433,11 @@ bool initialize(Renderer& renderer, std::string& error) {
 
 extern "C" void* sdf_rt_gles_create(
     std::uint32_t width, std::uint32_t height, const float* forward, const float* right,
-    const float* up, float fov_degrees, char* error, std::uint32_t error_size) {
-    if (!width || !height || !forward || !right || !up) {
+    const float* up, const std::uint8_t* normal_atlas,
+    std::uint32_t normal_atlas_width, std::uint32_t normal_atlas_height,
+    float fov_degrees, char* error, std::uint32_t error_size) {
+    if (!width || !height || !forward || !right || !up || !normal_atlas ||
+        !normal_atlas_width || !normal_atlas_height) {
         set_error(error, error_size, "invalid GLES renderer arguments");
         return nullptr;
     }
@@ -395,7 +449,8 @@ extern "C" void* sdf_rt_gles_create(
     std::copy_n(up, 3, renderer->up.begin());
     renderer->fov_degrees = fov_degrees;
     std::string detail;
-    if (!initialize(*renderer, detail)) {
+    if (!initialize(*renderer, normal_atlas, normal_atlas_width,
+                    normal_atlas_height, detail)) {
         set_error(error, error_size, detail);
         return nullptr;
     }
@@ -439,6 +494,19 @@ extern "C" int sdf_rt_gles_enable_direct_scanout(
         glViewport(0, 0, output_width, output_height);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
+    glBindFramebuffer(GL_FRAMEBUFFER, scanout->framebuffer(0));
+    glGenTextures(1, &renderer->background_texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderer->background_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0,
+                     output_width, output_height, 0);
+    glUseProgram(renderer->program);
+    glUniform2f(renderer->output_resolution_location,
+                static_cast<float>(output_width), static_cast<float>(output_height));
     glFinish();
     if (glGetError() != GL_NO_ERROR || !scanout->start(detail)) {
         set_error(error, error_size, detail.empty() ? "scanout initialization failed" : detail);
@@ -485,56 +553,54 @@ extern "C" int sdf_rt_gles_render(void* handle, const std::uint8_t* gbuffer_rgba
     const std::uint32_t scanout_index = renderer->scanout->next_index();
     glBindFramebuffer(GL_FRAMEBUFFER, renderer->scanout->framebuffer(scanout_index));
 
-    // The orbit camera changes every frame. Refresh the entire background in
-    // the selected output buffer before the full-frame BRDF pass preserves misses.
-    glUseProgram(renderer->background_program);
-    glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);
-    glUniform3fv(glGetUniformLocation(renderer->background_program, "uForward"),
-                 1, renderer->forward.data());
-    glUniform3fv(glGetUniformLocation(renderer->background_program, "uRight"),
-                 1, renderer->right.data());
-    glUniform3fv(glGetUniformLocation(renderer->background_program, "uUp"),
-                 1, renderer->up.data());
-    glUniform2f(glGetUniformLocation(renderer->background_program, "uPixelOffset"),
-                static_cast<float>(renderer->crop_x),
-                static_cast<float>(renderer->crop_y));
-    glViewport(0, 0, renderer->output_width, renderer->output_height);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
     glViewport(draw_x - renderer->crop_x,
                draw_y - renderer->crop_y,
                draw_width, draw_height);
-    const std::uint8_t* texture_source = gbuffer_rgba;
+    const std::uint8_t* metadata_source = gbuffer_rgba;
     const std::uint32_t texture_width = draw_width;
     const std::uint32_t texture_height = draw_height;
-    renderer->scanout_gbuffer.resize(
-        static_cast<std::size_t>(texture_width) * texture_height * 4u);
     const std::uint32_t source_x = draw_x - roi_x;
     const std::uint32_t source_y =
         renderer->height - draw_y - draw_height - roi_y;
-    for (std::uint32_t row = 0; row < texture_height; ++row) {
-        const auto* source = gbuffer_rgba +
-            (static_cast<std::size_t>(source_y + row) * roi_width + source_x) * 4u;
-        auto* destination = renderer->scanout_gbuffer.data() +
-            static_cast<std::size_t>(row) * texture_width * 4u;
-        std::memcpy(destination, source, static_cast<std::size_t>(texture_width) * 4u);
+    const bool tight_source = source_x == 0 && source_y == 0 &&
+        texture_width == roi_width && texture_height == roi_height;
+    if (!tight_source) {
+        renderer->scanout_gbuffer.resize(
+            static_cast<std::size_t>(texture_width) * texture_height * 4u);
+        for (std::uint32_t row = 0; row < texture_height; ++row) {
+            const std::size_t source_offset =
+                (static_cast<std::size_t>(source_y + row) * roi_width + source_x) * 4u;
+            auto* metadata_destination = renderer->scanout_gbuffer.data() +
+                static_cast<std::size_t>(row) * texture_width * 4u;
+            std::memcpy(metadata_destination, gbuffer_rgba + source_offset,
+                        static_cast<std::size_t>(texture_width) * 4u);
+        }
+        metadata_source = renderer->scanout_gbuffer.data();
     }
-    texture_source = renderer->scanout_gbuffer.data();
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
-    if (renderer->gbuffer_width != texture_width || renderer->gbuffer_height != texture_height) {
+    const bool resize_textures = renderer->gbuffer_width != texture_width ||
+        renderer->gbuffer_height != texture_height;
+    if (resize_textures) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_width, texture_height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         renderer->gbuffer_width = texture_width;
         renderer->gbuffer_height = texture_height;
     }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texture_width, texture_height,
-                    GL_RGBA, GL_UNSIGNED_BYTE, texture_source);
+                    GL_RGBA, GL_UNSIGNED_BYTE, metadata_source);
     glUseProgram(renderer->program);
+    glEnableVertexAttribArray(renderer->position_location);
+    glVertexAttribPointer(renderer->position_location, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
     glUniform3fv(renderer->forward_location, 1, renderer->forward.data());
     glUniform3fv(renderer->right_location, 1, renderer->right.data());
     glUniform3fv(renderer->up_location, 1, renderer->up.data());
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, renderer->gbuffer_texture);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, renderer->normal_atlas_texture);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, renderer->background_texture);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vertex_buffer);
     glUniform2f(renderer->pixel_offset_location,
                 static_cast<float>(renderer->crop_x),

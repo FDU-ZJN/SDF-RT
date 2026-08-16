@@ -42,16 +42,17 @@ class NativeRenderLibrary:
 
     def _bind(self):
         self.lib.sdf_rt_build_gbuffer.argtypes = [
-            _U32_P, _U32_P, _U32_P, ctypes.c_uint32, _F32_P,
-            ctypes.c_float, ctypes.c_float,
-            ctypes.c_uint32, ctypes.c_uint32, _F32_P, ctypes.c_uint32,
-            _U32_P, ctypes.c_uint32, _U8_P, _U8_P, _U32_P,
+            _U32_P, _U32_P, _U32_P, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, _U32_P, ctypes.c_uint32,
+            ctypes.c_uint32,
+            _U8_P, _U8_P, _U32_P,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
             ctypes.c_uint32,
         ]
         self.lib.sdf_rt_build_gbuffer.restype = ctypes.c_int
         self.lib.sdf_rt_gles_create.argtypes = [
             ctypes.c_uint32, ctypes.c_uint32, _F32_P, _F32_P, _F32_P,
+            _U8_P, ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_float, ctypes.c_char_p, ctypes.c_uint32,
         ]
         self.lib.sdf_rt_gles_create.restype = ctypes.c_void_p
@@ -93,12 +94,7 @@ class MaliBrdfRenderer:
         self.forward = self.reference.forward
         self.right = self.reference.right
         self.up = self.reference.up
-        self.directions = self.reference.directions
-        # The native ABI uses a dense normal table so each OpenMP worker can
-        # gather one interpolated float3 directly.
-        self.vertex_normals = np.ascontiguousarray(
-            self.reference.vertex_normals, dtype=np.float32
-        )
+        self.normal_atlas = self._build_normal_atlas()
         self.thread_count = int(thread_count)
         if self.thread_count <= 0:
             raise ValueError("native render thread count must be positive")
@@ -115,6 +111,9 @@ class MaliBrdfRenderer:
             _pointer(self.forward, _F32_P),
             _pointer(self.right, _F32_P),
             _pointer(self.up, _F32_P),
+            _pointer(self.normal_atlas, _U8_P),
+            self.normal_atlas.shape[1],
+            self.normal_atlas.shape[0],
             ctypes.c_float(CAMERA_FOV_DEGREES),
             error,
             len(error),
@@ -128,8 +127,29 @@ class MaliBrdfRenderer:
         name = self.native.lib.sdf_rt_gles_renderer(self._handle).decode(errors="replace")
         print(
             f"[RENDER] backend=mali-gles2 renderer={name} "
-            f"gbuffer=RGBA8-oct-normal threads={self.thread_count}"
+            f"gbuffer=RGBA8-hit-data normal-atlas={self.normal_atlas.shape[1]}x"
+            f"{self.normal_atlas.shape[0]} threads={self.thread_count}"
         )
+
+    def _build_normal_atlas(self):
+        normals = self.reference.vertex_normals.reshape(-1, 3).astype(np.float32, copy=False)
+        inv_l1 = 1.0 / np.sum(np.abs(normals), axis=1)
+        oct_xy = normals[:, :2] * inv_l1[:, None]
+        negative = normals[:, 2] < 0.0
+        old_x = oct_xy[negative, 0].copy()
+        old_y = oct_xy[negative, 1].copy()
+        oct_xy[negative, 0] = (1.0 - np.abs(old_y)) * np.where(old_x >= 0.0, 1.0, -1.0)
+        oct_xy[negative, 1] = (1.0 - np.abs(old_x)) * np.where(old_y >= 0.0, 1.0, -1.0)
+        encoded = np.rint(np.clip(oct_xy * 0.5 + 0.5, 0.0, 1.0) * 255.0).astype(np.uint8)
+        triangle_count = self.reference.vertex_normals.shape[0]
+        atlas_width = 256 * 3
+        atlas_height = (triangle_count + 255) // 256
+        atlas = np.zeros((atlas_height, atlas_width, 4), dtype=np.uint8)
+        triangle = np.arange(triangle_count, dtype=np.int64)
+        for vertex in range(3):
+            atlas[triangle // 256, (triangle % 256) * 3 + vertex, :2] = encoded[vertex::3]
+            atlas[triangle // 256, (triangle % 256) * 3 + vertex, 3] = 255
+        return atlas
 
     def close(self):
         if self._handle:
@@ -145,8 +165,10 @@ class MaliBrdfRenderer:
     def directions_for_coords(self, coords):
         return self.reference.directions_for_coords(coords)
 
-    def allocate_gbuffer(self):
-        return np.zeros((self.height, self.width, 4), dtype=np.uint8)
+    def allocate_gbuffer(self, width=None, height=None):
+        width = self.width if width is None else int(width)
+        height = self.height if height is None else int(height)
+        return np.zeros((height, width, 4), dtype=np.uint8)
 
     def enable_direct_scanout(self, output_width, output_height):
         error = self.native.error_buffer()
@@ -163,9 +185,6 @@ class MaliBrdfRenderer:
         gbuffer,
         batch_raster_index,
         batch_local_index,
-        batch_directions,
-        rotation_cos,
-        rotation_sin,
         result_words,
         count,
         hit,
@@ -176,7 +195,6 @@ class MaliBrdfRenderer:
         words = np.asarray(result_words[:count], dtype=np.uint32)
         raster = np.ascontiguousarray(batch_raster_index, dtype=np.uint32)
         local = np.ascontiguousarray(batch_local_index, dtype=np.uint32)
-        directions = np.ascontiguousarray(batch_directions, dtype=np.float32)
         if words.ndim != 2 or words.shape[1] != 4:
             raise ValueError(f"result buffer must have shape (N, 4), got {words.shape}")
         error = self.native.error_buffer()
@@ -189,15 +207,11 @@ class MaliBrdfRenderer:
                 _pointer(raster, _U32_P),
                 _pointer(local, _U32_P),
                 count,
-                _pointer(directions, _F32_P),
-                ctypes.c_float(rotation_cos),
-                ctypes.c_float(rotation_sin),
                 self.width * self.height,
-                self.width * self.height,
-                _pointer(self.vertex_normals, _F32_P),
-                self.reference.triangle_count,
+                gbuffer.shape[0] * gbuffer.shape[1],
                 _pointer(self.reference.compact_src_ids, _U32_P),
                 self.reference.compact_src_ids.size,
+                self.reference.vertex_normals.shape[0],
                 _pointer(gbuffer, _U8_P),
                 _pointer(hit.view(np.uint8), _U8_P),
                 _pointer(hit_t_bits, _U32_P),
@@ -212,7 +226,8 @@ class MaliBrdfRenderer:
             raise RuntimeError(error.value.decode(errors="replace"))
         return result, build_elapsed
 
-    def finish_frame(self, gbuffer, forward, right, up):
+    def finish_frame(self, gbuffer, roi_x, roi_y, roi_width, roi_height,
+                     forward, right, up):
         if not self._handle:
             raise RuntimeError("GLES renderer is closed")
         gbuffer = np.ascontiguousarray(gbuffer, dtype=np.uint8)
@@ -223,10 +238,10 @@ class MaliBrdfRenderer:
         result = self.native.lib.sdf_rt_gles_render(
             self._handle,
             _pointer(gbuffer, _U8_P),
-            0,
-            0,
-            self.width,
-            self.height,
+            int(roi_x),
+            int(roi_y),
+            int(roi_width),
+            int(roi_height),
             _pointer(forward, _F32_P),
             _pointer(right, _F32_P),
             _pointer(up, _F32_P),

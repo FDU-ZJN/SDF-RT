@@ -9,6 +9,7 @@ from .config import (
     DEFAULT_GRID_MIN,
     DEFAULT_HWH,
     DEFAULT_MEM_DIR,
+    DEFAULT_TRACE_ROI,
     DMA_NAME,
     FRAME_HEIGHT,
     FRAME_WIDTH,
@@ -73,9 +74,16 @@ def build_parser():
     parser.add_argument(
         "--render-threads",
         type=int,
-        default=1,
+        default=4,
         help="OpenMP threads used by the native normal G-buffer builder",
     )
+    roi_group = parser.add_mutually_exclusive_group()
+    roi_group.add_argument(
+        "--trace-roi", nargs=4, type=int,
+        metavar=("X", "Y", "WIDTH", "HEIGHT"), default=None,
+        help="4x4-aligned intersection/G-buffer ROI",
+    )
+    roi_group.add_argument("--full-frame", action="store_true")
     return parser
 
 
@@ -96,6 +104,21 @@ def validate_args(parser, args):
         parser.error("display-hold-seconds must be non-negative")
     if args.display_width > args.width or args.display_height > args.height:
         parser.error("direct scanout output must fit inside the render dimensions")
+    if args.full_frame:
+        args.trace_roi = (0, 0, args.width, args.height)
+    elif args.trace_roi is None:
+        args.trace_roi = (
+            DEFAULT_TRACE_ROI
+            if (args.width, args.height) == (FRAME_WIDTH, FRAME_HEIGHT)
+            else (0, 0, args.width, args.height)
+        )
+    x, y, roi_width, roi_height = args.trace_roi
+    if x < 0 or y < 0 or roi_width <= 0 or roi_height <= 0:
+        parser.error("trace-roi must have positive dimensions and non-negative origin")
+    if x + roi_width > args.width or y + roi_height > args.height:
+        parser.error("trace-roi must fit inside the render dimensions")
+    if any(value % 4 for value in args.trace_roi):
+        parser.error("trace-roi must be aligned to 4x4 Trace blocks")
 
 
 def main(argv=None):

@@ -1,0 +1,114 @@
+    - 单帧 FPGA Trace：52.16 ms，39.76 Mray/s
+  - 10 帧稳态：4.97 FPS
+  - 稳态 Trace：103.82 ms
+  - G-buffer：208.87 ms，当前主要瓶颈
+  - BRDF/显示：148.46 ms
+  - DataMover：212,424 issued/completed，无错误
+  - 验证：PASS，无结果流丢失
+
+  流水并发时 Trace 变慢主要来自 FPGA、CPU G-buffer 和 Mali 共享 DDR/HP0 的带宽竞争，但最终帧率仍由 CPU G-buffer 阶段限制。数据已记录在 PYNQ/PERFORMANCE.md。
+
+
+
+
+FPGA result DMA
+    -> CPU 解包/插值法线
+    -> CPU RGBA8 G-buffer
+    -> CPU 再复制一份 scanout_gbuffer
+    -> glTexSubImage2D 再上传到 Mali
+    -> GPU BRDF
+
+  1080p G-buffer 每帧是 1920×1080×4 = 8.29 MB。当前 PYNQ/native/gles_renderer.cpp:507 先逐行复制到 scanout_gbuffer，随后又调用 glTexSubImage2D，至少存在两次整帧搬运。
+
+  最适合按以下顺序优化。
+
+  第一阶段：立即减少复制针对
+  David，按 sim 的 1920x1080、180 帧、每帧旋转 2°，并按 4x4 Trace block 对齐计算：
+
+  - 全旋转固定 ROI：x=732, y=252, width=456, height=604
+  - ROI 像素：275,424，占全屏 13.28%
+  - 每帧可减少 86.72% 的光线
+  - 180 帧光线数：从 373,248,000 降到 49,576,320
+  CPU计算和拷贝，GPU渲染等应只考虑这个区域，从而能大幅减少计算量
+  - 全屏渲染时直接把 gbuffer_rgba 传给 glTexSubImage2D，跳过 scanout_gbuffer 的逐行复制。
+  - 只有裁剪 ROI 且源 stride 不兼容时才使用 staging buffer。
+  - G-buffer、result、raster index 已连续时避免重复 np.ascontiguousarray。
+  - 保持纹理对象常驻，只更新内容，不重新分配。
+
+  这一阶段改动小，但只能消除一份 8.29 MB CPU copy；不会解决主要的 G-buffer 计算时间。
+
+  第二阶段：共享 CPU/GPU G-buffer
+
+  创建一个可 CPU 映射、同时可作为 EGLImage 纹理采样的 GBM/dma-buf：
+
+  CPU gbuffer.cpp
+    -> 直接写映射的共享 buffer
+    -> cache/fence 同步
+  Mali
+    -> EGLImage 直接采样
+
+  这样可以去掉：
+
+  - scanout_gbuffer 复制
+  - glTexSubImage2D
+  - GLES driver 内部纹理上传
+
+  需要先在板上确认：
+
+  EGL_EXT_image_dma_buf_import
+  EGL_KHR_image_base
+  DRM PRIME / GBM buffer mapping
+
+  当前显示输出已经在使用 EGLImage/DRM，因此技术路径是可行的；但 G-buffer 作为采样纹理还需单独验证 Mali 驱动支持和 CPU/GPU cache coherence。
+
+  第三阶段：把更多 G-buffer 运算移到 GPU
+
+  最容易先移动的是法线朝向判断。GPU 已经重建了每像素 rayDir，可在 shader 中执行：
+
+  if (dot(normal, -rayDir) < 0.0)
+      normal = -normal;
+
+  于是 CPU 不再需要逐命中读取方向，也不需要处理硬件旋转后的方向。CPU 只负责法线插值、归一化和 oct 编码。
+
+  进一步把完整 G-buffer 放到 GPU，则需要 GPU 接收：
+
+  hit
+  compact triangle ID
+  barycentric U/V
+
+  GPU 再完成：
+
+  - compact ID 查表
+  - 三顶点法线读取
+  - 重心插值
+  - 归一化
+  - 法线翻转
+  - BRDF
+
+  主要障碍是当前 FPGA result 按完成顺序输出，不是像素顺序；而 KV260 的 Mali-400 主要是 GLES2 路径，没有 compute shader/SSBO scatter。普通全屏 fragment shader无法直接把乱序 result 散射到对应像素。
+
+  可行的完整 GPU 方案是改变结果格式并使用 GL_POINTS：
+
+  每条 FPGA result -> 一个 point vertex
+  pixel x/y          -> point 屏幕位置
+  compact ID + UV    -> fragment attributes
+  normal atlas       -> GPU 常驻纹理
+  fragment shader    -> 插值法线并写最终颜色
+
+  为避免 GLES2 对位操作和整数 attribute 的限制，FPGA 应输出 GPU 友好、字段对齐的记录，例如：
+
+  pixel_x: uint16
+  pixel_y: uint16
+  compact_id: uint32或拆为两个uint16
+  u: unorm16
+  v: unorm16
+  hit/status
+
+  并将顶点法线按 compact triangle 顺序预编码成 GPU texture，消除 CPU 的 compact_src_ids 映射。
+
+  结论：
+
+  - “避免频繁拷贝”：优先做共享 dma-buf/EGLImage G-buffer，收益直接且不改 FPGA协议。
+  - “降低 CPU G-buffer 时间”：先把法线朝向移入 GPU，再考虑 GPU point-raster G-buffer。
+  - 完整 GPU 化需要调整 FPGA 输出格式或引入 GLES2 point scatter，不能仅修改当前 BRDF shader。
+  - 当前约 0.42 s 的 G-buffer 时间主要来自 CPU 扫描约 207 万条 result，而不只是 8.29 MB 的复制；只删除 memcpy 不会带来数量级提升。

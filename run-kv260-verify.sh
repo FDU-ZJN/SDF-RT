@@ -5,7 +5,7 @@ set -Eeuo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 remote_dir="${KV260_RT_REMOTE_DIR:-kv260_rt}"
 sudo_password="${KV260_SUDO_PASSWORD:-xilinx123}"
-render_threads="${KV260_RT_RENDER_THREADS:-1}"
+render_threads="${KV260_RT_RENDER_THREADS:-4}"
 display_hold_seconds="${KV260_RT_DISPLAY_HOLD_SECONDS:-3}"
 validate_result_stream="${KV260_RT_VALIDATE_RESULT_STREAM:-0}"
 rotation_period_frames="${KV260_RT_ROTATION_PERIOD_FRAMES:-180}"
