@@ -1,11 +1,10 @@
+# Media, binary and scene data
 *.mp4
 *.png
 *.jpg
 *.jpeg
 *.npz
 *.bin
-*.vcd
-*.wlf
 *.mem
 *.coe
 *.ppm
@@ -14,17 +13,40 @@
 *.tar
 *.tar.gz
 *.zip
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+
+# Simulation waveforms and Verilator artifacts
+*.vcd
+*.wlf
+*.fsdb
+*.fst
+*.vcd.hier
+novas.conf
+novas.rc
+verdiLog/
 *.o
 *.so
+*.a
+*.d
+obj_dir/
 
-# Python cache
+# Python cache and virtual environments
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+.venv/
+venv/
+env/
+ENV/
+.ipynb_checkpoints/
 
 # Local environment files
 .env
@@ -36,25 +58,33 @@ htmlcov/
 *.jou
 *.str
 *.tmp
+*.bak
+*.swp
+*.swo
 *~
+.DS_Store
+Thumbs.db
 
-# 允许 resources 目录下的 .sv 文件
+# Resources whitelist
 !src/main/resources/*.sv
 
-# Build outputs
+# Scala / SBT build outputs
 target/
 build/
 test_run_dir/
-vivado/
-ZCU104_vivado/
-ip_repo/
-.cache/
-.codex-home/
+project/target/
+project/project/
 .sbt/
 .sbt-boot/
 .codex_sbt/
 .bsp/
+
+# Vivado / Vitis / FPGA generated projects, IP and reports
 .Xil/
+vivado/
+ZCU104_vivado/
+KV260_vivado/
+ip_repo/
 *.pdi
 *.ltx
 *.hwdef
@@ -63,30 +93,36 @@ ip_repo/
 *.spr
 *.vitis/
 *.vitis_workspace/
-
-# Vivado / FPGA generated projects and reports
-KV260_vivado/
 *.xsa
 *.bit
+*.dcp
+*.pb
+*.rpt
 *.wcfg
 *.lpr
 *.runs/
 *.sim/
 *.hw/
 *.srcs/
-*.cache/
 *.gen/
 *.ip_user_files/
-*.log
-*.jou
-*.str
+usage_statistics_webtalk.*
+webtalk.*
+clockInfo.txt
+hs_err_pid*.log
+vivado_pid*.str
+vitis_pid*.str
+NA/
 .Trash-1000/
 kv260_rt/verification/
 kv260_rt/*.hwh
 kv260_rt/*.bit
 kv260_rt/*.xsa
 
-# Generated analysis outputs
+# Generated memory dumps and analysis outputs
+csrc/vivado_mem/
+PYNQ/mem/
+sim/out/
 csrc/*blackspot*
 csrc/tripe_hit_step_hist.csv
 
@@ -108,5 +144,10 @@ main.cu
 .metals/
 .bloop/
 .scala-build/
+.cache/
+.codex-home/
 .qwen/
+.claude/
+.cursor/
+.gemini/
 PYNQ/native/native_test
